@@ -1,6 +1,9 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { TrafficProtectionDetector } from './traffic-protection.detector';
-import { detectStopWordsViolations } from './stop-words/stop-words.detection';
+import {
+  splitStopWordsSourceParagraphs,
+  detectStopWordsViolations,
+} from './stop-words/stop-words.detection';
 import { isValidMaxBotStartPayload } from '../max/max-deep-link.util';
 import type { ChatSettings } from '../prisma/prisma-client';
 import {
@@ -1243,26 +1246,30 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'message-count-limit');
 
-    const blockedWordViolation =
-      settings.stopWordsPolicy == null && !params.skipContentFiltersForReport
-        ? this.messageLimitsDetector.detectBlockedWordLimit({
-            text,
-            settings,
-          })
-        : null;
+    let blockedWordViolation: RuleViolation | null = null;
+    let blockedDomainViolation: RuleViolation | null = null;
+    if (settings.stopWordsPolicy == null && !params.skipContentFiltersForReport) {
+      for (const segment of splitStopWordsSourceParagraphs({
+        text,
+        textSegments: params.stopWordsTextSegments,
+      })) {
+        blockedWordViolation ??= this.messageLimitsDetector.detectBlockedWordLimit({
+          text: segment,
+          settings,
+        });
+        blockedDomainViolation ??= this.messageLimitsDetector.detectBlockedDomainLimit({
+          text: segment,
+          settings,
+          isLinkAllowlisted: allowlistLinkMatcher,
+        });
+        if (blockedWordViolation && blockedDomainViolation) break;
+      }
+    }
     if (blockedWordViolation) {
       violations.push(blockedWordViolation);
     }
     markRuleEngineDetectStage(profile, 'blocked-words');
 
-    const blockedDomainViolation =
-      settings.stopWordsPolicy == null && !params.skipContentFiltersForReport
-        ? this.messageLimitsDetector.detectBlockedDomainLimit({
-            text,
-            settings,
-            isLinkAllowlisted: allowlistLinkMatcher,
-          })
-        : null;
     if (blockedDomainViolation) {
       violations.push(blockedDomainViolation);
     }

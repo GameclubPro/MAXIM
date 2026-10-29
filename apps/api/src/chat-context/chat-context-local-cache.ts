@@ -64,6 +64,23 @@ export class ChatContextLocalCache {
   }
 
   set(key: string, value: ChatContext, encodedBytes?: number): void {
+    this.write(key, value, this.now() + this.options.ttlMs, encodedBytes);
+  }
+
+  replace(key: string, value: ChatContext, encodedBytes?: number): void {
+    const previous = this.entries.get(key);
+    if (!previous) return;
+    if (previous.expiresAtMs <= this.now()) {
+      this.remove(key, previous);
+      this.counters.expiredEvictions += 1;
+      return;
+    }
+    // FLAG: Title reconciliation changes presentation, never the freshness of settings.
+    // A cache hit cannot renew the source deadline or resurrect an expired snapshot.
+    this.write(key, value, previous.expiresAtMs, encodedBytes);
+  }
+
+  private write(key: string, value: ChatContext, expiresAtMs: number, encodedBytes?: number): void {
     const serializedBytes =
       encodedBytes ?? this.encodedSizes.get(value) ?? Buffer.byteLength(JSON.stringify(value));
     this.encodedSizes.set(value, serializedBytes);
@@ -91,7 +108,7 @@ export class ChatContextLocalCache {
       if (oldest[1].expiresAtMs <= now) this.counters.expiredEvictions += 1;
       else this.counters.capacityEvictions += 1;
     }
-    this.entries.set(key, { value, expiresAtMs: now + this.options.ttlMs, estimatedBytes });
+    this.entries.set(key, { value, expiresAtMs, estimatedBytes });
     this.sweepOrder.set(key, true);
     this.estimatedBytes += estimatedBytes;
     this.counters.writes += 1;

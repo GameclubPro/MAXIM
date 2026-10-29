@@ -7,6 +7,7 @@ import {
   resolveMaxUserDisplayName,
 } from '../common/max-user-display-name.util';
 import { selectMaxMessageCandidate } from '../max/max-message-candidate.util';
+import { extractMaxVisibleContentTextSegments } from '../max/max-visible-content-text';
 import { parseWebhookEventTimestampMs } from './webhook-event-timestamp';
 
 @Injectable()
@@ -841,40 +842,10 @@ export class WebhookParser {
   }
 
   private extractVisibleContentText(message: Record<string, unknown>): string {
-    const body = this.asRecord(message.body);
-    const content = this.asRecord(message.content);
-    const payload = this.asRecord(message.payload);
-    const messageNode = this.asRecord(message.message);
-
-    const directCandidates = [
-      message.text,
-      message.caption,
-      message.plain,
-      message.message_text,
-      message.messageText,
-      body?.text,
-      body?.caption,
-      body?.plain,
-      content?.text,
-      content?.caption,
-      content?.plain,
-      payload?.text,
-      payload?.caption,
-      payload?.plain,
-      messageNode?.text,
-      messageNode?.caption,
-      messageNode?.plain,
-      messageNode?.message_text,
-      messageNode?.messageText,
-    ];
-
-    const directSnippets: string[] = [];
-    for (const value of directCandidates) {
-      if (typeof value === 'string' && value.trim().length > 0) {
-        directSnippets.push(value.trim());
-      }
-    }
-    return this.mergeTextSnippets(directSnippets, []).join(' ');
+    return this.mergeTextSnippets(
+      extractMaxVisibleContentTextSegments(message, { preserveParagraphBoundaries: false }),
+      [],
+    ).join(' ');
   }
 
   private collectForwardedMaxMediaPreviewUrlsFromNode(

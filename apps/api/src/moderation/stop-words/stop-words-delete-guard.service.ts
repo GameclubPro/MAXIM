@@ -12,11 +12,13 @@ import {
 } from '../navigation/enabled-navigation-targets';
 import { createAllowlistLinkMatcher } from '../rule-engine-link-detector';
 import {
+  detectLegacyStopWordsViolations,
   detectStopWordsViolations,
   extractStopWordsTextSegments,
   fingerprintStopWordsSource,
 } from './stop-words.detection';
-import { migrateStopWordsPolicy, readStopWordsPolicy } from './stop-words.policy';
+import { readStopWordsPolicy } from './stop-words.policy';
+import { normalizeLegacyStopWordIdentity } from '../rule-engine-blocked-words.detector';
 
 export const STOP_WORDS_DELETE_RULE_CODES = new Set([
   'MESSAGE_BLOCKED_WORD_DELETE',
@@ -29,8 +31,31 @@ type GuardInput = {
   subjectUserId: string | null;
   botId?: string;
 };
+export const STOP_WORDS_GUARD_REJECTION_REASONS = [
+  'policy_disabled',
+  'policy_changed',
+  'source_changed',
+  'rule_unmatched',
+  'author_protected',
+  'author_absent',
+  'identity_changed',
+  'participant_immune',
+  'sanction_disabled',
+  'delete_receipt_missing',
+  'runtime_disabled',
+  'binding_invalid',
+  'binding_stale',
+  'deadline_expired',
+  'permission_changed',
+] as const;
+export type StopWordsGuardRejectionReason = (typeof STOP_WORDS_GUARD_REJECTION_REASONS)[number];
+
 export class StopWordsDeleteGuardRejectedError extends Error {
   readonly code = 'stop_words_delete_no_longer_authorized';
+
+  constructor(readonly rejectionReason: StopWordsGuardRejectionReason) {
+    super('Stop-list deletion is no longer authorized');
+  }
 }
 
 @Injectable()
@@ -99,7 +124,7 @@ export class StopWordsDeleteGuardService {
       [{ ruleCode: params.ruleCode + '_DELETE', metadata: params.metadata }],
       params.action,
     );
-    if (result === 'absent') this.reject();
+    if (result === 'absent') this.reject('delete_receipt_missing');
   }
 
   private async assertMessageStillActionable(
@@ -108,7 +133,8 @@ export class StopWordsDeleteGuardService {
     action?: 'WARN' | 'MUTE' | 'BAN',
   ): Promise<{ reasonKeys: string[] } | 'absent'> {
     const senderId = params.subjectUserId;
-    if (!senderId || this.maxBotLink.isKnownBotUserId(senderId)) this.reject();
+    if (!senderId) this.reject('identity_changed');
+    if (this.maxBotLink.isKnownBotUserId(senderId)) this.reject('author_protected');
     const settings = await this.load(params.chatId, senderId);
     if (action) this.assertSanctionPolicy(settings, reasons[0], action);
     const options = {
@@ -121,7 +147,8 @@ export class StopWordsDeleteGuardService {
       timeoutMs: this.config.get<number>('MODERATION_DELETE_INTENT_TIMEOUT_MS') ?? 5_000,
     };
     const access = await this.maxClient.getChatMemberAccess(params.chatId, senderId, options);
-    if (!access || access.isAdmin || access.isOwner) this.reject();
+    if (!access) this.reject('author_absent');
+    if (access.isAdmin || access.isOwner) this.reject('author_protected');
     if (access.userId !== null && access.userId !== senderId)
       throw new Error('Stop-list author access unavailable');
     const row = await this.maxClient.getExactMessageRow(params.chatId, params.messageId, options);
@@ -134,7 +161,7 @@ export class StopWordsDeleteGuardService {
         typeof metadata.stopWordsSourceSha256 !== 'string' ||
         metadata.stopWordsPolicyVersion !== 1
       )
-        this.reject();
+        this.reject('delete_receipt_missing');
       const completed = await this.prisma.moderationDeleteIntent.findFirst({
         where: {
           chatId: params.chatId,
@@ -167,8 +194,10 @@ export class StopWordsDeleteGuardService {
         },
         select: { id: true },
       });
-      if (!completed) this.reject();
-      await this.assertNoImmunity(params, senderId, settings.nightModeTimezone);
+      if (!completed) this.reject('delete_receipt_missing');
+      const currentSettings = await this.load(params.chatId, senderId);
+      this.assertSanctionPolicy(currentSettings, reasons[0], action);
+      await this.assertNoImmunity(params, senderId, currentSettings.nightModeTimezone);
       this.assertSanctionPolicy(await this.load(params.chatId, senderId), reasons[0], action);
       return { reasonKeys: reasons.flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])) };
     }
@@ -181,7 +210,7 @@ export class StopWordsDeleteGuardService {
       message.senderId !== senderId ||
       message.entityType === 'channel'
     )
-      this.reject();
+      this.reject('identity_changed');
     const targets = extractEnabledWebhookNavigationTargets(
       raw,
       resolveEnabledNavigationTargetOptions(this.config),
@@ -193,21 +222,32 @@ export class StopWordsDeleteGuardService {
       navigationTargets: targets,
     });
     const matchingReasons = (current: typeof settings) => {
-      const policy = readStopWordsPolicy(current) ?? migrateStopWordsPolicy(current);
-      const hits = detectStopWordsViolations({
+      const detection = {
         text: message.text,
         textSegments,
         navigationTargets: targets,
-        settings: { ...current, stopWordsPolicy: policy },
+        settings: current,
         isLinkAllowlisted: createAllowlistLinkMatcher(
           current.chat.domains.map((entry) => entry.domain),
         ),
-      });
+      };
+      // FLAG: Null is the legacy reader state, never an implicit EXACT-policy migration.
+      const hits =
+        current.stopWordsPolicy == null
+          ? detectLegacyStopWordsViolations(detection)
+          : detectStopWordsViolations(detection);
       return reasons.filter((reason) => {
         const metadata = this.metadata(reason.metadata);
         return hits.some(
           (hit) =>
             `${hit.ruleCode}_DELETE` === reason.ruleCode &&
+            (typeof metadata.blockedWord !== 'string' ||
+              (current.stopWordsPolicy == null
+                ? normalizeLegacyStopWordIdentity(metadata.blockedWord) ===
+                  normalizeLegacyStopWordIdentity(String(hit.metadata?.blockedWord ?? ''))
+                : metadata.blockedWord === hit.metadata?.blockedWord)) &&
+            (typeof metadata.blockedDomain !== 'string' ||
+              metadata.blockedDomain === hit.metadata?.blockedDomain) &&
             (metadata.stopWordsSourceSha256 === undefined ||
               metadata.stopWordsSourceSha256 === sourceFingerprint) &&
             (metadata.stopWordsRuleId === undefined ||
@@ -217,13 +257,38 @@ export class StopWordsDeleteGuardService {
         );
       });
     };
-    if (!matchingReasons(settings).length) this.reject();
-    await this.assertNoImmunity(params, senderId, settings.nightModeTimezone);
+    const assertReasonsMatch = (current: typeof settings) => {
+      const matching = matchingReasons(current);
+      if (matching.length) return matching;
+      const metadata = reasons.map((reason) => this.metadata(reason.metadata));
+      if (
+        metadata.every(
+          (entry) =>
+            entry.stopWordsSourceSha256 !== undefined &&
+            entry.stopWordsSourceSha256 !== sourceFingerprint,
+        )
+      )
+        this.reject('source_changed');
+      if (
+        metadata.every(
+          (entry) =>
+            entry.stopWordsRevision !== undefined &&
+            entry.stopWordsRevision !== current.stopWordsRevision,
+        )
+      )
+        this.reject('policy_changed');
+      this.reject('rule_unmatched');
+    };
+    // FLAG: Refresh policy after remote reads before spending participant protection.
+    // A rule revoked while MAX was awaited cannot consume immunity or mislabel its refusal.
+    const currentSettings = await this.load(params.chatId, senderId);
+    assertReasonsMatch(currentSettings);
+    await this.assertNoImmunity(params, senderId, currentSettings.nightModeTimezone);
     const finalSettings = await this.load(params.chatId, senderId);
-    if (!matchingReasons(finalSettings).length) this.reject();
+    const finalReasons = assertReasonsMatch(finalSettings);
     if (action) this.assertSanctionPolicy(finalSettings, reasons[0], action);
     return {
-      reasonKeys: matchingReasons(finalSettings).flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])),
+      reasonKeys: finalReasons.flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])),
     };
   }
 
@@ -249,19 +314,16 @@ export class StopWordsDeleteGuardService {
         },
       },
     });
-    if (
-      !settings ||
-      settings.chat.entityType !== 'CHAT' ||
-      settings.chat.admins.some((admin) => admin.userId === senderId)
-    )
-      this.reject();
+    if (!settings || settings.chat.entityType !== 'CHAT') this.reject('identity_changed');
+    if (settings.chat.admins.some((admin) => admin.userId === senderId))
+      this.reject('author_protected');
     const policy = readStopWordsPolicy(settings);
-    if (policy && !policy.enabled) this.reject();
+    if (policy && !policy.enabled) this.reject('policy_disabled');
     return settings;
   }
 
-  private reject(): never {
-    throw new StopWordsDeleteGuardRejectedError('Stop-list deletion is no longer authorized');
+  private reject(reason: StopWordsGuardRejectionReason): never {
+    throw new StopWordsDeleteGuardRejectedError(reason);
   }
 
   private async assertNoImmunity(
@@ -276,7 +338,7 @@ export class StopWordsDeleteGuardService {
       scope: 'stop-words-delete:v1',
       nightModeTimezone,
     });
-    if (result === 'granted') this.reject();
+    if (result === 'granted') this.reject('participant_immune');
   }
 
   private metadata(value: unknown): Record<string, unknown> {
@@ -292,10 +354,10 @@ export class StopWordsDeleteGuardService {
   ): void {
     const policy = readStopWordsPolicy(settings);
     const metadata = this.metadata(reason.metadata);
-    if (!policy || !policy.enabled || metadata.stopWordsRevision !== settings.stopWordsRevision)
-      this.reject();
+    if (!policy || !policy.enabled) this.reject('policy_disabled');
+    if (metadata.stopWordsRevision !== settings.stopWordsRevision) this.reject('policy_changed');
     const key =
       action === 'WARN' ? 'warnEnabled' : action === 'MUTE' ? 'muteEnabled' : 'banEnabled';
-    if (!policy.sanctions[key]) this.reject();
+    if (!policy.sanctions[key]) this.reject('sanction_disabled');
   }
 }

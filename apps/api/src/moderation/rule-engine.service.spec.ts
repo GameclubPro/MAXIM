@@ -387,8 +387,18 @@ function createRuleEngine(): RuleEngineService {
   return new RuleEngineService(new MockRedisCounterService() as never);
 }
 
-function getBlockedWordDetector(service: RuleEngineService): unknown {
-  return (service as any).messageLimitsDetector.blockedWordDetector;
+type BlockedWordDetectorInternals = {
+  buildMessageLimitsBlockedWordPattern(value: string): RegExp;
+  normalizeMessageLimitsBlockedWordToken(value: string): string | null;
+  resolveMessageLimitsBlockedWordList(values: readonly string[]): unknown;
+};
+
+function getBlockedWordDetector(service: RuleEngineService): BlockedWordDetectorInternals {
+  return (
+    service as unknown as {
+      messageLimitsDetector: { blockedWordDetector: BlockedWordDetectorInternals };
+    }
+  ).messageLimitsDetector.blockedWordDetector;
 }
 
 async function detectCommercialViolation(
@@ -3334,6 +3344,27 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it.each([
+    ['доход\n\nбез вложений'],
+    ['доход\u2029без вложений'],
+    ['доход\fбез вложений'],
+    ['доход', 'без вложений'],
+  ])(
+    'keeps legacy matching inside supplied source paragraphs %j',
+    async (...stopWordsTextSegments) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'доход без вложений',
+        stopWordsTextSegments,
+        settings: buildSettings({ messageLimitsBlockedWords: ['доходбезвложений'] }),
+        domainAllowlist: [],
+      });
+      expect(result.violations.some((hit) => hit.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
+    },
+  );
+
   it('detects MESSAGE_BLOCKED_DOMAIN for configured forbidden domains', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -3628,10 +3659,7 @@ describe('RuleEngineService', () => {
   it('avoids compiling blocked-word regexes for repeated non-matching detects on the same settings list', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const blockedWordDetector = getBlockedWordDetector(service);
-    const buildPatternSpy = jest.spyOn(
-      blockedWordDetector as any,
-      'buildMessageLimitsBlockedWordPattern',
-    );
+    const buildPatternSpy = jest.spyOn(blockedWordDetector, 'buildMessageLimitsBlockedWordPattern');
     const settings = buildSettings({
       messageLimitsBlockedWords: ['крипта', 'казино', 'ставки'],
     });
@@ -3658,18 +3686,12 @@ describe('RuleEngineService', () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const blockedWordDetector = getBlockedWordDetector(service);
     const normalizeTokenSpy = jest.spyOn(
-      blockedWordDetector as any,
+      blockedWordDetector,
       'normalizeMessageLimitsBlockedWordToken',
     );
 
-    const first = (blockedWordDetector as any).resolveMessageLimitsBlockedWordList([
-      'крипта',
-      'казино',
-    ]);
-    const second = (blockedWordDetector as any).resolveMessageLimitsBlockedWordList([
-      'крипта',
-      'казино',
-    ]);
+    const first = blockedWordDetector.resolveMessageLimitsBlockedWordList(['крипта', 'казино']);
+    const second = blockedWordDetector.resolveMessageLimitsBlockedWordList(['крипта', 'казино']);
 
     expect(second).toBe(first);
     expect(normalizeTokenSpy).toHaveBeenCalledTimes(2);
@@ -3678,10 +3700,7 @@ describe('RuleEngineService', () => {
   it('compiles regexes only for blocked words that survive the compact-text prefilter', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const blockedWordDetector = getBlockedWordDetector(service);
-    const buildPatternSpy = jest.spyOn(
-      blockedWordDetector as any,
-      'buildMessageLimitsBlockedWordPattern',
-    );
+    const buildPatternSpy = jest.spyOn(blockedWordDetector, 'buildMessageLimitsBlockedWordPattern');
 
     const result = await service.detect({
       chatId: 'chat-1',

@@ -17,6 +17,9 @@ const AUDITED_RULE_CODES = [
   'PROFANITY_DELETE',
   'MESSAGE_BLOCKED_WORD',
   'MESSAGE_BLOCKED_WORD_DELETE',
+  'MESSAGE_BLOCKED_DOMAIN',
+  'MESSAGE_BLOCKED_DOMAIN_DELETE',
+  'COMMERCIAL_OCR_DELETE',
 ] as const;
 
 loadEnv({ quiet: true });
@@ -189,31 +192,63 @@ export function dedupeProfanityAuditEvents(
   const decisions = new Map<string, ProfanityAuditDecision>();
 
   for (const event of events) {
-    const source = event.ruleCode.startsWith('MESSAGE_BLOCKED_WORD')
-      ? 'CHAT_STOP_LIST'
-      : 'BUILT_IN';
-    const baseRuleCode = source === 'CHAT_STOP_LIST' ? 'MESSAGE_BLOCKED_WORD' : 'PROFANITY';
-    const key = [event.chatId, event.messageId ?? event.id, baseRuleCode].join(':');
     const metadata = asRecord(event.metadata);
+    if (!AUDITED_RULE_CODES.includes(event.ruleCode as (typeof AUDITED_RULE_CODES)[number]))
+      continue;
+    const ocr = event.ruleCode === 'COMMERCIAL_OCR_DELETE';
+    if (
+      ocr &&
+      (metadata?.source !== 'image_text_ocr' ||
+        !['MESSAGE_BLOCKED_WORD', 'MESSAGE_BLOCKED_DOMAIN'].includes(
+          String(metadata?.matchedRuleCode),
+        ))
+    )
+      continue;
+    const source =
+      event.ruleCode.startsWith('MESSAGE_BLOCKED_') || ocr ? 'CHAT_STOP_LIST' : 'BUILT_IN';
+    const baseRuleCode = ocr
+      ? `OCR_${metadata?.matchedRuleCode}`
+      : event.ruleCode.replace(/_DELETE$/u, '');
+    const key = [event.chatId, event.messageId ?? event.id, baseRuleCode].join(':');
     const existing = decisions.get(key);
     const category =
       source === 'CHAT_STOP_LIST'
-        ? 'CHAT_STOP_LIST'
+        ? ocr
+          ? `CHAT_STOP_LIST_OCR_${metadata?.matchedRuleCode === 'MESSAGE_BLOCKED_DOMAIN' ? 'DOMAIN' : 'WORD'}`
+          : baseRuleCode === 'MESSAGE_BLOCKED_DOMAIN'
+            ? 'CHAT_STOP_LIST_DOMAIN'
+            : 'CHAT_STOP_LIST'
         : (readBoundedString(metadata?.category, 64) ?? 'LEGACY_OR_UNKNOWN');
     const candidate: ProfanityAuditDecision = {
       ...event,
       source,
       category,
-      detectorVersion: readBoundedString(metadata?.detectorVersion, 128),
+      detectorVersion:
+        source === 'CHAT_STOP_LIST' ? null : readBoundedString(metadata?.detectorVersion, 128),
       sensitivity:
-        readBoundedString(metadata?.sensitivity, 32) ??
-        readBoundedString(asRecord(metadata?.appliedPolicy)?.sensitivity, 32),
-      rolloutMode: readBoundedString(metadata?.rolloutMode, 32),
-      familyId: readBoundedString(metadata?.familyId, 96),
-      matchKind: readBoundedString(metadata?.matchKind, 64),
-      matchedVariant: readBoundedString(metadata?.matchedVariant, 64),
-      evidence: readBoundedStringArray(metadata?.evidence, 8, 64),
-      deleted: isDeleteAuditEvent(event),
+        source === 'CHAT_STOP_LIST'
+          ? null
+          : (readBoundedString(metadata?.sensitivity, 32) ??
+            readBoundedString(asRecord(metadata?.appliedPolicy)?.sensitivity, 32)),
+      rolloutMode:
+        source === 'CHAT_STOP_LIST' ? null : readBoundedString(metadata?.rolloutMode, 32),
+      familyId: source === 'CHAT_STOP_LIST' ? null : readBoundedString(metadata?.familyId, 96),
+      matchKind:
+        source === 'CHAT_STOP_LIST'
+          ? ['EXACT', 'MASKED', 'inflection', 'pattern', 'DOMAIN'].includes(
+              String(metadata?.matchKind),
+            )
+            ? String(metadata?.matchKind)
+            : null
+          : readBoundedString(metadata?.matchKind, 64),
+      // FLAG: Configured stop words/domains and OCR text never enter report samples,
+      // including the built-in profanity report's explicit text opt-in.
+      maskedExcerpt: source === 'CHAT_STOP_LIST' ? null : event.maskedExcerpt,
+      matchedVariant:
+        source === 'CHAT_STOP_LIST' ? null : readBoundedString(metadata?.matchedVariant, 64),
+      evidence:
+        source === 'CHAT_STOP_LIST' ? [] : readBoundedStringArray(metadata?.evidence, 8, 64),
+      deleted: event.action === 'DELETE_MESSAGE' && metadata?.moderationDeleteVerified === true,
       sanctionAction: isDeleteAuditEvent(event) ? 'UNKNOWN' : event.action,
     };
 
@@ -301,12 +336,12 @@ function countStrings(items: readonly string[]): Record<string, number> {
 function hasCompleteStructuredMetadata(decision: ProfanityAuditDecision): boolean {
   return Boolean(
     decision.category !== 'LEGACY_OR_UNKNOWN' &&
-      decision.detectorVersion &&
-      decision.sensitivity &&
-      decision.rolloutMode &&
-      decision.familyId &&
-      decision.matchKind &&
-      decision.evidence.length > 0,
+    decision.detectorVersion &&
+    decision.sensitivity &&
+    decision.rolloutMode &&
+    decision.familyId &&
+    decision.matchKind &&
+    decision.evidence.length > 0,
   );
 }
 

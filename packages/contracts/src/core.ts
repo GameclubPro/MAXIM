@@ -2031,6 +2031,7 @@ export const chatSettingsScreenResponseSchema = z.object({
   closure: chatClosureStatusSchema.optional(),
   messageRetention: messageRetentionSummarySchema.optional(),
   settings: chatSettingsSchema,
+  stopWordsStorageStatus: z.enum(['valid', 'legacy', 'invalid']).optional(),
   reportsAvailable: z.boolean().default(false),
   commercialPhotoModerationMode: z.enum(['OFF', 'OBSERVE', 'FULL', 'UNKNOWN']).default('UNKNOWN'),
   commercialAiModerationMode: z.enum(['OFF', 'OBSERVE', 'DELETE_ONLY']).optional(),

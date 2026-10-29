@@ -26,6 +26,11 @@ import {
   type BotSpeechMedia,
   type ChatSettings,
 } from '@maxim/contracts';
+import {
+  stopWordsMediaSchema,
+  stopWordsPolicySchema,
+  type StopWordsStorageStatus,
+} from '@maxim/contracts/settings';
 import { BadRequestException, ConflictException, type Logger } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import type { NetworkSettingsWriteOptions } from './network-settings-write';
@@ -38,8 +43,13 @@ import {
   migrateStopWordsPolicy,
   readStopWordsPolicy,
 } from '../moderation/stop-words/stop-words.policy';
+import { readStopWordsStorageStatus } from '../moderation/stop-words/stop-words-storage-status';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
-import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
+import {
+  ChatCatalogKind,
+  ChatEntityType,
+  type ChatSettings as StoredChatSettings,
+} from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   CHAT_SETTINGS_BUTTON_GROUPS,
@@ -498,11 +508,25 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
     }
   }
   if (normalizedSettings.stopWordsPolicy != null) {
-    // FLAG: An unsupported stop-list policy cannot reset unrelated settings during a read.
+    // FLAG: An unsupported stop-list policy or media cannot reset unrelated settings or be
+    // repaired by a GET. Disable only the returned copy; replacement requires the revision API.
+    const storedStopWords = {
+      stopWordsPolicy: normalizedSettings.stopWordsPolicy,
+      stopWordsMedia: normalizedSettings.stopWordsMedia,
+    };
     normalizedSettings = {
       ...normalizedSettings,
-      stopWordsPolicy: readStopWordsPolicy({ stopWordsPolicy: normalizedSettings.stopWordsPolicy }),
+      stopWordsPolicy:
+        readStopWordsStorageStatus(storedStopWords) === 'invalid'
+          ? stopWordsPolicySchema.parse({})
+          : readStopWordsPolicy(storedStopWords),
     };
+  }
+  if (
+    normalizedSettings.stopWordsMedia != null &&
+    !stopWordsMediaSchema.safeParse(normalizedSettings.stopWordsMedia).success
+  ) {
+    normalizedSettings = { ...normalizedSettings, stopWordsMedia: {} };
   }
 
   if (typeof normalizedSettings.adminBanCommandName !== 'string') {
@@ -731,13 +755,102 @@ export function getStoredChatSettingsSanitizationChanges(
   return changes;
 }
 
-export async function readChatSettings(params: {
+export type ChatSettingsReadSnapshot = {
+  settings: ChatSettings;
+  stopWordsStorageStatus: StopWordsStorageStatus;
+};
+
+type ChatSettingsReadRepair = Partial<ChatSettings> &
+  Partial<Pick<StoredChatSettings, 'stopWordsMedia'>>;
+
+const STOP_WORDS_READ_PRESERVED_SETTING_KEYS = [
+  'stopWordsPolicy',
+  'stopWordsMedia',
+  'stopWordsRevision',
+  'messageLimitsBlockedWords',
+  'messageLimitsBlockedDomains',
+  'messageLimitsImageTextScanEnabled',
+  'messageLimitsBotMessageEnabled',
+  'messageLimitsBotMessageText',
+  'messageLimitsWarnEnabled',
+  'messageLimitsWarnMessageText',
+  'messageLimitsMuteEnabled',
+  'messageLimitsMuteDurationHours',
+  'messageLimitsBanEnabled',
+  'messageLimitsBotButtonEnabled',
+  'messageLimitsBotButtons',
+  'messageLimitsBotButtonUrl',
+  'messageLimitsBotButtonText',
+  'messageLimitsAdminContactButtonEnabled',
+  'messageLimitsAdminContactButtonUrl',
+  'messageLimitsRulesButtonEnabled',
+  'rulesAttachViolationsEnabled',
+] as const satisfies readonly (keyof ChatSettingsReadRepair)[];
+
+function preserveStopWordsOnSettingsRead(
+  changes: ChatSettingsReadRepair,
+  storedSettings: StoredChatSettings,
+): Partial<ChatSettings> {
+  // FLAG: Read repairs own unrelated settings only. Legacy rules and sanctions, like typed
+  // policies, are normalized on copies until an administrator explicitly replaces the policy.
+  const repair = { ...changes };
+  for (const key of STOP_WORDS_READ_PRESERVED_SETTING_KEYS) delete repair[key];
+  const media = storedSettings.botSpeechMedia;
+  if (
+    media &&
+    typeof media === 'object' &&
+    (Object.hasOwn(media, 'messageLimitsBotMessageText') ||
+      Object.hasOwn(media, 'messageLimitsWarnMessageText'))
+  ) {
+    delete repair.botSpeechMedia;
+  }
+  return repair;
+}
+
+export async function readChatSettings(
+  params: Parameters<typeof readChatSettingsSnapshot>[0],
+): Promise<ChatSettings> {
+  return (await readChatSettingsSnapshot(params)).settings;
+}
+
+function buildChatSettingsReadSnapshot(params: {
+  normalizedSettings: ChatSettings;
+  storedSettings: StoredChatSettings;
+  logger: Pick<Logger, 'warn'>;
+  chatId: string;
+}): ChatSettingsReadSnapshot {
+  const stopWordsStorageStatus = readStopWordsStorageStatus(params.storedSettings);
+  let stopWordsPolicy =
+    stopWordsStorageStatus === 'invalid'
+      ? stopWordsPolicySchema.parse({})
+      : params.normalizedSettings.stopWordsPolicy;
+  if (stopWordsStorageStatus !== 'invalid') {
+    try {
+      stopWordsPolicy = migrateStopWordsPolicy(
+        sanitizeStoredChatSettings({ ...params.storedSettings }) as StoredChatSettings,
+      );
+    } catch {
+      params.logger.warn({ chatId: params.chatId }, 'Legacy stop-word policy requires review');
+    }
+  }
+  return {
+    settings: {
+      ...params.normalizedSettings,
+      settingsRevision: params.storedSettings.updatedAt?.toISOString(),
+      stopWordsPolicy,
+      stopWordsRevision: params.storedSettings.stopWordsRevision,
+    },
+    stopWordsStorageStatus,
+  };
+}
+
+export async function readChatSettingsSnapshot(params: {
   prisma: PrismaService;
   chatContextCache: Pick<ChatContextCacheService, 'invalidate'>;
   logger: Pick<Logger, 'warn'>;
   chatId: string;
   botAssignmentData?: ResolvedBotAssignmentData;
-}): Promise<ChatSettings> {
+}): Promise<ChatSettingsReadSnapshot> {
   const chat = await params.prisma.chat.upsert({
     where: { id: params.chatId },
     create: {
@@ -771,10 +884,13 @@ export async function readChatSettings(params: {
   if (parsed.success) {
     let normalizedSettings = normalizeChatSettings(parsed.data, undefined, params.chatId);
     let responseStoredSettings = chat.settings;
-    const normalizationChanges = {
-      ...getStoredChatSettingsSanitizationChanges(chat.settings, parsed.data),
-      ...getChatSettingsNormalizationChanges(parsed.data, normalizedSettings),
-    };
+    const normalizationChanges = preserveStopWordsOnSettingsRead(
+      {
+        ...getStoredChatSettingsSanitizationChanges(chat.settings, parsed.data),
+        ...getChatSettingsNormalizationChanges(parsed.data, normalizedSettings),
+      },
+      chat.settings,
+    );
     if (Object.keys(normalizationChanges).length > 0) {
       const repaired = await params.prisma.chatSettings.updateMany({
         where: { chatId: params.chatId, updatedAt: chat.settings.updatedAt },
@@ -801,18 +917,12 @@ export async function readChatSettings(params: {
       }
     }
 
-    let stopWordsPolicy = normalizedSettings.stopWordsPolicy;
-    try {
-      stopWordsPolicy = migrateStopWordsPolicy(responseStoredSettings);
-    } catch {
-      params.logger.warn({ chatId: params.chatId }, 'Legacy stop-word policy requires review');
-    }
-    return {
-      ...normalizedSettings,
-      settingsRevision: responseStoredSettings.updatedAt?.toISOString(),
-      stopWordsPolicy,
-      stopWordsRevision: responseStoredSettings.stopWordsRevision,
-    };
+    return buildChatSettingsReadSnapshot({
+      normalizedSettings,
+      storedSettings: responseStoredSettings,
+      logger: params.logger,
+      chatId: params.chatId,
+    });
   }
 
   params.logger.warn(
@@ -827,11 +937,10 @@ export async function readChatSettings(params: {
   );
 
   const fallback = DEFAULT_CHAT_SETTINGS;
+  const fallbackRepair = preserveStopWordsOnSettingsRead(fallback, chat.settings);
   const repaired = await params.prisma.chatSettings.updateMany({
     where: { chatId: params.chatId, updatedAt: chat.settings.updatedAt },
-    data: {
-      ...omitStopWordsPolicy(fallback),
-    },
+    data: fallbackRepair,
   });
   if (repaired.count > 0) {
     await params.chatContextCache.invalidate(params.chatId);
@@ -843,12 +952,19 @@ export async function readChatSettings(params: {
   const refreshedParsed =
     refreshed && chatSettingsSchema.safeParse(sanitizeStoredChatSettings(refreshed));
   if (refreshedParsed?.success) {
-    return {
-      ...normalizeChatSettings(refreshedParsed.data, undefined, params.chatId),
-      settingsRevision: refreshed!.updatedAt.toISOString(),
-    };
+    return buildChatSettingsReadSnapshot({
+      normalizedSettings: normalizeChatSettings(refreshedParsed.data, undefined, params.chatId),
+      storedSettings: refreshed!,
+      logger: params.logger,
+      chatId: params.chatId,
+    });
   }
-  return { ...fallback, settingsRevision: chat.settings.updatedAt?.toISOString() };
+  return buildChatSettingsReadSnapshot({
+    normalizedSettings: fallback,
+    storedSettings: refreshed ?? chat.settings,
+    logger: params.logger,
+    chatId: params.chatId,
+  });
 }
 
 export async function saveChatSettings(params: {

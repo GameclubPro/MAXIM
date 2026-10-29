@@ -41,6 +41,7 @@ import {
   STOP_WORDS_DELETE_RULE_CODES,
   StopWordsDeleteGuardService,
   StopWordsDeleteGuardRejectedError,
+  type StopWordsGuardRejectionReason,
 } from './stop-words/stop-words-delete-guard.service';
 import {
   isStopWordsImageScanEnabled,
@@ -605,7 +606,10 @@ function fingerprintGuardedDeleteReasons(reasons: readonly GuardedDeleteReason[]
 
 class ModerationDeleteReasonsRejectedError extends Error {
   readonly code = 'moderation_delete_reasons_no_longer_authorized';
-  constructor(readonly reasonFingerprint: string) {
+  constructor(
+    readonly reasonFingerprint: string,
+    readonly stopWordsRejectionReason?: StopWordsGuardRejectionReason,
+  ) {
     super('No current guarded reason authorizes this deletion');
   }
 }
@@ -702,6 +706,7 @@ type DeleteErrorDetails = {
   errorCode: string;
   message: string;
   retryDelayMs: number | null;
+  certifiedCapabilityLoss?: true;
 };
 
 type ReplacementCleanupRecoveryCandidate = {
@@ -3026,6 +3031,7 @@ export class ModerationDeleteIntentService {
                 lastAccessFailure = {
                   ...details,
                   status: 'WAITING_CAPABILITY',
+                  certifiedCapabilityLoss: true,
                   retryDelayMs: this.capabilityRetryDelayMs(intent.attemptCount),
                 };
                 await this.recordCandidateFailure(
@@ -4067,11 +4073,20 @@ export class ModerationDeleteIntentService {
             throw new Error('Participant report delete guard unavailable');
         }
       }
-      if (imageTextStopListGuard === 'allowed' && finalDispatchLeaseToken) {
+      if (typeof imageTextStopListGuard === 'object' && finalDispatchLeaseToken) {
         await this.assertImageTextStopListDispatchDeadline(
           intent.id,
           finalDispatchLeaseToken,
           botId,
+        );
+        // FLAG: Only these freshly authorized OCR reasons may receive the confirmed DELETE
+        // receipt. Keep each original expiry through all later awaited guards and mixed reasons.
+        verifiedReasonKeys.push(
+          ...imageTextStopListGuard.reasonDeadlines.map((permit) => permit.reasonKey),
+        );
+        verifiedReasonDeadlines.push(...imageTextStopListGuard.reasonDeadlines);
+        independentAuthorityDeadlineAtMs = Math.min(
+          ...imageTextStopListGuard.reasonDeadlines.map((permit) => permit.deadlineAtMs),
         );
       }
       return {
@@ -4158,6 +4173,7 @@ export class ModerationDeleteIntentService {
     };
     let recognized = false;
     let allowed = false;
+    let stopWordsRejectionReason: StopWordsGuardRejectionReason | undefined;
     let profanityVerified = false;
     let messageDuplicateVerified = false;
     let commercialVerifiedReasonKeys: string[] = [];
@@ -4218,7 +4234,11 @@ export class ModerationDeleteIntentService {
       } catch (error) {
         // FLAG: Only definite policy/content rejection can yield to another reason. A
         // timeout, unknown remote state or storage failure must stop this transport attempt.
-        if (this.isTerminalDeleteGuardRejection(error)) return null;
+        if (this.isTerminalDeleteGuardRejection(error)) {
+          if (error instanceof StopWordsDeleteGuardRejectedError)
+            stopWordsRejectionReason = error.rejectionReason;
+          return null;
+        }
         throw error;
       }
     };
@@ -4427,7 +4447,10 @@ export class ModerationDeleteIntentService {
           verifiedReasonDeadlines.set(receipt.reasonKey, receipt.deadlineAtMs);
     }
     if (recognized && !allowed)
-      throw new ModerationDeleteReasonsRejectedError(fingerprintGuardedDeleteReasons(reasons));
+      throw new ModerationDeleteReasonsRejectedError(
+        fingerprintGuardedDeleteReasons(reasons),
+        stopWordsRejectionReason,
+      );
     return {
       profanityVerified,
       commercialVerifiedReasonKeys,
@@ -4815,7 +4838,7 @@ export class ModerationDeleteIntentService {
   private async assertImageTextStopListDeleteIntentStillActionable(
     intent: IntentRow,
     botId: string,
-  ): Promise<'not_applicable' | 'allowed' | 'absent'> {
+  ): Promise<'not_applicable' | 'absent' | { reasonDeadlines: VerifiedDeleteReasonDeadline[] }> {
     if (
       intent.imageTextStopListDeleteReason !== true ||
       this.hasExecutableNonCommercialOcrReason(intent)
@@ -4834,13 +4857,21 @@ export class ModerationDeleteIntentService {
 
     const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: intent.id },
-      select: { ruleCode: true, metadata: true },
+      select: { ruleCode: true, reasonKey: true, metadata: true },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 65,
     });
     const bindings = reasons.map((reason) => parseImageTextStopListBinding(reason.metadata));
     if (
       reasons.length === 0 ||
-      reasons.some((reason) => reason.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE) ||
+      reasons.length > 64 ||
+      reasons.some(
+        (reason, index) =>
+          reason.ruleCode !== COMMERCIAL_OCR_DELETE_RULE_CODE ||
+          this.asRecord(reason.metadata)?.source !== 'image_text_ocr' ||
+          this.asRecord(reason.metadata)?.enforcementScope !== 'delete_only' ||
+          this.asRecord(reason.metadata)?.matchedRuleCode !== bindings[index]?.ruleCode,
+      ) ||
       bindings.some((binding) => binding === null)
     ) {
       throw new ImageTextStopListDeleteIntentGuardRejectedError(
@@ -4866,6 +4897,8 @@ export class ModerationDeleteIntentService {
           binding.sourceCreatedAt !== primaryBinding.sourceCreatedAt ||
           binding.deleteDeadlineAt !== primaryBinding.deleteDeadlineAt ||
           binding.policyFingerprint !== primaryBinding.policyFingerprint ||
+          binding.nativeBehaviorFingerprintSha256 !==
+            primaryBinding.nativeBehaviorFingerprintSha256 ||
           binding.ocrVersion !== primaryBinding.ocrVersion,
       )
     ) {
@@ -4961,7 +4994,12 @@ export class ModerationDeleteIntentService {
         'Image text stop-list authorization expired before delete dispatch',
       );
     }
-    return 'allowed';
+    return {
+      reasonDeadlines: reasons.map((reason, index) => ({
+        reasonKey: reason.reasonKey,
+        deadlineAtMs: Date.parse(validBindings[index]!.deleteDeadlineAt),
+      })),
+    };
   }
 
   private async loadImageTextStopListGuardContext(
@@ -6364,7 +6402,22 @@ export class ModerationDeleteIntentService {
           },
           { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
         )
-      : await persistRetry(intent, this.prisma);
+      : details.certifiedCapabilityLoss &&
+          details.status === 'WAITING_CAPABILITY' &&
+          !this.hasDeleteMutationEvidence(intent)
+        ? await this.prisma.$transaction(async (tx) => {
+            const updated = await persistRetry(intent, tx);
+            if (updated === 1)
+              await this.persistStopWordsGuardDiagnostic(
+                tx,
+                intent.id,
+                'permission_changed',
+                'CAPABILITY_DEFERRED',
+                'all',
+              );
+            return updated;
+          })
+        : await persistRetry(intent, this.prisma);
     if (changed === 0) {
       if (requireInitialUnattempted === 'guarded') throw new ModerationDeleteIntentLeaseLostError();
       if (requireInitialUnattempted)
@@ -6533,6 +6586,19 @@ export class ModerationDeleteIntentService {
           return null;
         }
 
+        const stopWordsRejectionReason = this.readStopWordsGuardRejection(guardError);
+        if (status === 'FAILED_TERMINAL' && stopWordsRejectionReason) {
+          // FLAG: Diagnostic NONE events share the owned terminal transition transaction.
+          // Retried/concurrently changed reasons and uncertain effects never become rejections.
+          await this.persistStopWordsGuardDiagnostic(
+            tx,
+            latest.id,
+            stopWordsRejectionReason,
+            'GUARD_REJECTED',
+            guardError instanceof ImageTextStopListDeleteIntentGuardRejectedError ? 'ocr' : 'text',
+          );
+        }
+
         return {
           ...latest,
           status,
@@ -6553,6 +6619,62 @@ export class ModerationDeleteIntentService {
       await this.enqueueWakeup(resolved);
     }
     return this.toAttemptResult(resolved);
+  }
+
+  private async persistStopWordsGuardDiagnostic(
+    tx: Pick<Prisma.TransactionClient, '$executeRaw'>,
+    intentId: string,
+    rejectionReason: StopWordsGuardRejectionReason,
+    event: 'GUARD_REJECTED' | 'CAPABILITY_DEFERRED',
+    scope: 'text' | 'ocr' | 'all',
+  ): Promise<void> {
+    // FLAG: This collector-only event is not a violation, sanction or success receipt.
+    // Read one owned intent and at most 65 reasons through the existing keyset index.
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "moderation_events" (
+        "id", "chat_id", "bot_id", "user_id", "message_id", "event_type",
+        "rule_code", "action", "metadata", "created_at"
+      )
+      SELECT DISTINCT
+        'swgr-' || intent."id" || '-' || intent."attempt_count"::text || '-' || diagnostic."ruleCode",
+        intent."chat_id", intent."last_bot_id", diagnostic."userId", intent."message_id",
+        CAST('MESSAGE' AS "EventType"), diagnostic."ruleCode", CAST('NONE' AS "SanctionAction"),
+        jsonb_build_object('stopWordsRejectionReason', CAST(${rejectionReason} AS text)),
+        CURRENT_TIMESTAMP
+      FROM "moderation_delete_intents" intent
+      CROSS JOIN LATERAL (
+        SELECT
+          CASE
+            WHEN reason."rule_code" = 'MESSAGE_BLOCKED_WORD_DELETE' THEN 'STOP_WORD_' || ${event}
+            WHEN reason."rule_code" = 'MESSAGE_BLOCKED_DOMAIN_DELETE' THEN 'STOP_DOMAIN_' || ${event}
+            ELSE 'STOP_OCR_' || ${event}
+          END AS "ruleCode",
+          COALESCE(intent."subject_user_id", reason."user_id") AS "userId"
+        FROM (
+          SELECT "rule_code", "metadata", "user_id"
+          FROM "moderation_delete_intent_reasons"
+          WHERE "intent_id" = intent."id"
+          ORDER BY "reason_key" ASC
+          LIMIT 65
+        ) reason
+        WHERE (
+          ${scope !== 'text'}
+          AND reason."rule_code" = ${COMMERCIAL_OCR_DELETE_RULE_CODE}
+          AND reason."metadata"->>'source' = 'image_text_ocr'
+        ) OR (
+          ${scope !== 'ocr'}
+          AND reason."rule_code" IN ('MESSAGE_BLOCKED_WORD_DELETE', 'MESSAGE_BLOCKED_DOMAIN_DELETE')
+        )
+      ) diagnostic
+      WHERE intent."id" = ${intentId}
+        AND intent."status" = CAST(${event === 'GUARD_REJECTED' ? 'FAILED_TERMINAL' : 'WAITING_CAPABILITY'} AS "ModerationDeleteIntentStatus")
+        AND intent."delete_dispatch_started_at" IS NULL
+        AND intent."delete_dispatch_started_bot_id" IS NULL
+        AND intent."remote_delete_succeeded_at" IS NULL
+        AND intent."remote_delete_succeeded_bot_id" IS NULL
+        AND diagnostic."userId" IS NOT NULL
+      ON CONFLICT ("id") DO NOTHING
+    `);
   }
 
   private async recordRemoteSuccessAndFinalize(
@@ -8631,12 +8753,18 @@ export class ModerationDeleteIntentService {
       error instanceof MessageRetentionGuardError && error.reasonCode
         ? `message_retention_guard:${error.reasonCode}`
         : this.firstString(nestedError?.code, data?.code, row?.code, fallbackCode);
-    const message = this.firstString(
-      nestedError?.message,
-      data?.message,
-      row?.message,
-      'Unknown moderation delete error',
-    );
+    const stopWordsRejectionReason = this.readStopWordsGuardRejection(error);
+    const message = stopWordsRejectionReason
+      ? JSON.stringify({
+          type: 'stop_words_guard_rejection',
+          rejectionReason: stopWordsRejectionReason,
+        })
+      : this.firstString(
+          nestedError?.message,
+          data?.message,
+          row?.message,
+          'Unknown moderation delete error',
+        );
     return {
       status: 'RETRYABLE',
       statusCode,
@@ -8644,6 +8772,26 @@ export class ModerationDeleteIntentService {
       message,
       retryDelayMs: this.extractRetryAfterMs(row, data, headers),
     };
+  }
+
+  private readStopWordsGuardRejection(error: unknown): StopWordsGuardRejectionReason | undefined {
+    if (error instanceof StopWordsDeleteGuardRejectedError) return error.rejectionReason;
+    if (error instanceof ModerationDeleteReasonsRejectedError)
+      return error.stopWordsRejectionReason;
+    if (!(error instanceof ImageTextStopListDeleteIntentGuardRejectedError)) return undefined;
+    const reasons: Readonly<Record<string, StopWordsGuardRejectionReason>> = {
+      image_text_stop_list_runtime_disabled: 'runtime_disabled',
+      image_text_stop_list_binding_invalid: 'binding_invalid',
+      image_text_stop_list_binding_stale: 'binding_stale',
+      image_text_stop_list_settings_disabled: 'policy_disabled',
+      image_text_stop_list_bot_immune: 'author_protected',
+      image_text_stop_list_admin_immune: 'author_protected',
+      image_text_stop_list_message_changed: 'source_changed',
+      image_text_stop_list_participant_immune: 'participant_immune',
+      image_text_stop_list_policy_changed: 'policy_changed',
+      image_text_stop_list_deadline_expired: 'deadline_expired',
+    };
+    return reasons[error.code];
   }
 
   private isAmbiguousTransportError(error: unknown): boolean {
