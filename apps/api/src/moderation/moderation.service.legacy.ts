@@ -597,7 +597,10 @@ import type {
   NightModeTransitionJob,
   NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
-import type { NightModeTransitionSnapshot } from './night-mode-transition-time.util';
+import {
+  resolveEffectiveChatClosure,
+  type NightModeTransitionSnapshot,
+} from './night-mode-transition-time.util';
 import {
   NightModeTransitionRuntimeService,
   type NightModeTransitionRuntimeSettings,
@@ -1754,8 +1757,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const chat = await this.loadChatContext(chatId, chatTitle);
       this.markWebhookHotPathStage(hotPathProfile, 'chat-context');
       let settings = this.applyDegradeSettings(chat.settings, degradeMode);
-      const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
-      const nightModeActiveNow = !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
+      const closure = resolveEffectiveChatClosure(settings);
+      const manualGroupCloseActiveNow = closure.manual.active;
+      const nightModeActiveNow = !manualGroupCloseActiveNow && closure.night?.status === 'closed';
       const destructiveAccessGateActive = manualGroupCloseActiveNow || nightModeActiveNow;
       const forceSynchronousRemoteAdminLookup = this.shouldForceSynchronousRemoteAdminLookup(
         update,
@@ -8345,7 +8349,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings,
     });
 
-    if (this.isNightModeForceCloseActiveNow(settings) || this.isNightModeActiveNow(settings)) {
+    if (resolveEffectiveChatClosure(settings).closed) {
       return;
     }
 
@@ -12074,53 +12078,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `invitation-access:notice:v1:${chatId}:${userId}`;
   }
 
-  private isNightModeActiveNow(settings: {
-    nightModeEnabled: boolean;
-    nightModeStartTimeMinutes: number;
-    nightModeEndTimeMinutes: number;
-    nightModeTimezone: string;
-  }): boolean {
-    if (!settings.nightModeEnabled) {
-      return false;
-    }
-
-    const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
-    const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
-    const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
-    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone);
-
-    if (currentMinutes === null) {
-      return false;
-    }
-
-    if (startMinutes === endMinutes) {
-      return true;
-    }
-
-    if (startMinutes < endMinutes) {
-      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
-    }
-
-    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
-  }
-
-  private isNightModeForceCloseActiveNow(settings: {
-    nightModeForceCloseEnabled: boolean;
-    nightModeForceCloseForever: boolean;
-    nightModeForceCloseUntil: string;
-  }): boolean {
-    if (!settings.nightModeForceCloseEnabled) {
-      return false;
-    }
-
-    if (settings.nightModeForceCloseForever) {
-      return true;
-    }
-
-    const closeUntilTimestamp = Date.parse(settings.nightModeForceCloseUntil);
-    return Number.isFinite(closeUntilTimestamp) && closeUntilTimestamp > Date.now();
-  }
-
   private isBotStartedUpdate(update: MaxUpdate): boolean {
     return this.readLowerString(update.type) === 'bot_started';
   }
@@ -14621,28 +14578,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
     return consumeLegacyParticipantModerationImmunity(this.prisma, params);
-  }
-
-  private getCurrentMinutesInTimeZone(timeZone: string, date = new Date()): number | null {
-    try {
-      const parts = new Intl.DateTimeFormat('en-GB', {
-        timeZone,
-        hour: '2-digit',
-        minute: '2-digit',
-        hourCycle: 'h23',
-      }).formatToParts(date);
-
-      const hour = Number(parts.find((item) => item.type === 'hour')?.value ?? '');
-      const minute = Number(parts.find((item) => item.type === 'minute')?.value ?? '');
-
-      if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
-        return null;
-      }
-
-      return hour * 60 + minute;
-    } catch {
-      return null;
-    }
   }
 
   private normalizeDayMinutes(value: number, fallback: number): number {

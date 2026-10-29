@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
+import { matchesNightModeRecoveryBoundaryTime } from './night-mode-recovery-time-compat.util';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 import {
   buildNightModeTransitionSessionKey,
   parseNightModeTransitionSessionKey,
   resolveNightModeTransitionSessionCloseAt,
-  resolveNightModeTransitionSessionOpenAt,
   type NightModeTransitionKind,
 } from './night-mode-transition-time.util';
 
@@ -15,7 +15,7 @@ export const NIGHT_MODE_ROUTE_VERIFICATION_KIND = 'close_notice_presence' as con
 export const NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY = 'close_notice_event' as const;
 export const NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY = 'open_notice_event' as const;
 export const NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY = 'close_notice_cleanup' as const;
-export const NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 1;
+export const NIGHT_MODE_INDEPENDENT_RECOVERY_READER_VERSION = 2;
 export const NIGHT_MODE_RECOVERY_UNSAFE_PREFIX = 'Night mode recovery proof is unsafe';
 export class NightModeRecoveryUnsafeError extends Error {
   constructor(reason: string) {
@@ -259,7 +259,6 @@ export function parseNightModeTransitionRecoveryObligation(
   }
   const sessionKey = boundedString(record.sessionKey, 512);
   const session = sessionKey ? parseNightModeTransitionSessionKey(sessionKey) : null;
-  const openAt = sessionKey ? resolveNightModeTransitionSessionOpenAt(sessionKey) : null;
   const openScheduledFor = boundedString(record.openScheduledFor, 64);
   const scheduleFingerprint = boundedString(record.scheduleFingerprint, 128);
   const sideEffectFingerprint = boundedString(record.sideEffectFingerprint, 128);
@@ -268,11 +267,15 @@ export function parseNightModeTransitionRecoveryObligation(
     record.version !== 1 ||
     !sessionKey ||
     !session ||
-    !openAt ||
     record.timezone !== session.timezone ||
     record.startMinutes !== session.startMinutes ||
     record.endMinutes !== session.endMinutes ||
-    openScheduledFor !== openAt.toISOString() ||
+    !openScheduledFor ||
+    !matchesNightModeRecoveryBoundaryTime({
+      sessionKey,
+      transition: 'open',
+      scheduledFor: openScheduledFor,
+    }) ||
     !scheduleFingerprint ||
     !/^sha256:[a-f0-9]{64}$/u.test(scheduleFingerprint) ||
     !sideEffectFingerprint ||

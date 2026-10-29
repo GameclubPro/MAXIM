@@ -1,3 +1,4 @@
+import { matchesNightModeTransitionFenceAlias } from './night-mode-transition-fence-alias.util';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ChatEntityType, Prisma, type ChatSettings } from '../prisma/prisma-client';
@@ -22,6 +23,7 @@ import {
 } from './night-mode-transition.queue';
 import {
   parseNightModeTransitionSessionKey,
+  resolveEffectiveChatClosure,
   resolveNightModeTransitionSnapshot as resolveNightModeTransitionSnapshotValue,
   resolveNightModeTransitionSessionOpenAt,
   type NightModeTransitionSnapshot,
@@ -51,6 +53,7 @@ const NIGHT_MODE_TRANSITION_LOCK_HEARTBEAT_MS = Math.max(
 );
 
 type NightModeTransitionExecutionFence = {
+  transition: 'close' | 'open';
   chatId: string;
   jobId: string;
   sessionKey: string;
@@ -645,6 +648,7 @@ export class NightModeTransitionRuntimeService {
     try {
       const settings = await this.readCurrentSideEffectSettings(chatId, snapshot);
       const fence: NightModeTransitionExecutionFence = {
+        transition: 'open',
         chatId,
         sessionKey: recovery.sessionKey,
         jobId: buildNightModeTransitionJobId(
@@ -814,12 +818,7 @@ export class NightModeTransitionRuntimeService {
     if (!settings?.nightModeEnabled || settings.chat?.entityType !== ChatEntityType.CHAT) {
       return null;
     }
-    if (
-      expectedSnapshot.status === 'open' &&
-      settings.nightModeForceCloseEnabled &&
-      (settings.nightModeForceCloseForever ||
-        Date.parse(settings.nightModeForceCloseUntil) > Date.now())
-    ) {
+    if (expectedSnapshot.status === 'open' && resolveEffectiveChatClosure(settings).manual.active) {
       return null;
     }
 
@@ -875,6 +874,7 @@ export class NightModeTransitionRuntimeService {
       return null;
     }
     return {
+      transition: job.transition,
       chatId,
       jobId: buildNightModeTransitionJobId(
         chatId,
@@ -931,8 +931,10 @@ export class NightModeTransitionRuntimeService {
     return (
       row?.manualBlockedAt instanceof Date &&
       this.isManualBlockCategory(row.manualBlockedCategory) &&
-      row.manualBlockedJobId === fence.jobId &&
-      row.manualBlockedSessionKey === fence.sessionKey &&
+      matchesNightModeTransitionFenceAlias(fence, {
+        sessionKey: row.manualBlockedSessionKey,
+        jobId: row.manualBlockedJobId,
+      }) &&
       (fence.fingerprint === null || row.manualBlockedFingerprint === fence.fingerprint)
     );
   }

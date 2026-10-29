@@ -1,0 +1,55 @@
+@layer pages {
+  .night-status {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    background: var(--surface-card);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .night-status p {
+    margin: 0;
+  }
+  .night-status__heading {
+    font-size: 0.95rem;
+  }
+  .night-status__caption {
+    font-weight: 700;
+    padding-top: 4px;
+  }
+  .night-status__notice {
+    --night-status-notice-background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+    padding: 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    background: var(--night-status-notice-background);
+  }
+  .night-status__notice-heading {
+    display: grid;
+    gap: 2px;
+  }
+  .night-status__notice-heading span,
+  .night-status__date,
+  .night-status__detail,
+  .night-status__checked {
+    color: var(--text-secondary);
+  }
+  .night-status__notice .night-status__date {
+    margin: 6px 0;
+  }
+  .night-status__result {
+    font-weight: 700;
+  }
+  .night-status__result[data-outcome='sent'] {
+    color: var(--text-primary);
+  }
+  .night-status__warning {
+    font-weight: 600;
+  }
+}

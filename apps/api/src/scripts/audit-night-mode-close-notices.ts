@@ -1,17 +1,27 @@
+import type { NightModeNoticeDeliveryEvidence } from '@maxim/contracts/settings';
 import { NestFactory } from '@nestjs/core';
 import { buildNightModeNoticeIdempotencyKey } from '../max/max-action-idempotency.util';
 import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MAX_SEND_ROUTE_DISAPPEARANCE_FAILURE_CODE } from '../max/max-send-route-health';
-import { ChatEntityType, MaxActionLedgerStatus, Prisma } from '../prisma/prisma-client';
+import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { buildNightModeTransitionScheduleFingerprint } from '../moderation/night-mode-transition-generation.util';
 import { isNightModeTransitionMembershipCandidate } from '../moderation/night-mode-transition-eligibility.util';
 import { buildNightModeTransitionJobId } from '../moderation/night-mode-transition.queue';
 import {
   resolveCurrentNightModeCloseOccurrence,
+  resolveLatestNightModeTransitionOccurrences,
+  resolveNightModeNoticeCatchUpWindow,
+  type NightModeTransitionKind,
   resolveNextNightModeTransitionOccurrences,
   type NightModeTransitionOccurrence,
 } from '../moderation/night-mode-transition-time.util';
+import {
+  NIGHT_MODE_NOTICE_DIAGNOSTIC_LEDGER_SELECT,
+  classifyNightModeNoticeLedger,
+  classifyNightModeNoticeSendRoute,
+  type NightModeNoticeDiagnosticLedgerRow,
+} from '../moderation/night-mode-notice-diagnostics';
 import { getAppRole } from '../runtime/app-role';
 
 const DEFAULT_PAGE_SIZE = 200;
@@ -21,15 +31,15 @@ const MAX_MAX_CHATS = 100_000;
 const DEFAULT_SAMPLE_LIMIT = 25;
 const MAX_SAMPLE_LIMIT = 100;
 const NIGHT_MODE_TRANSITION_RUNTIME_VERSION = 4;
-const NIGHT_MODE_TRANSITION_SOURCE_TAG = 'night_mode_transition';
 
 export const NIGHT_MODE_CLOSE_NOTICE_AUDIT_USAGE = [
   'Usage:',
   '  [--page-size 1..500] [--max-chats 1..100000] [--sample-limit 0..100]',
   '  [--after <chat-id>] [--json]',
   '',
-  'Read-only fleet audit for enabled night-mode close notices.',
+  'Read-only fleet audit for both notices in all enabled night-mode settings.',
   'Run it in a Major API role (api-admin is recommended), never api-publisher.',
+  '--max-chats bounds ALL scanned settings, including disabled rows; --after resumes that cursor.',
   'The audit performs no MAX calls, queue calls, sends, or database mutations.',
 ].join('\n');
 
@@ -43,6 +53,8 @@ export type NightModeCloseNoticeAuditOptions = {
 const AUDIT_SETTINGS_SELECT = {
   chatId: true,
   nightModeEnabled: true,
+  nightModeBotMessageEnabled: true,
+  nightModeOpenMessageEnabled: true,
   nightModeStartTimeMinutes: true,
   nightModeEndTimeMinutes: true,
   nightModeTimezone: true,
@@ -51,12 +63,17 @@ const AUDIT_SETTINGS_SELECT = {
       title: true,
       entityType: true,
       routingState: true,
+      primaryBotId: true,
+      fixedModeratorBotId: true,
+      routingVersion: true,
       _count: { select: { botMemberships: true } },
       botMemberships: {
         select: {
           botId: true,
           status: true,
           botAccessState: true,
+          botAccessCheckedAt: true,
+          botAccessExpiresAt: true,
           botAccessSource: true,
           permissionsSnapshot: true,
           sendRouteFailureCount: true,
@@ -83,27 +100,10 @@ export type NightModeCloseNoticeRegistryRow = {
   scheduled_for: Date;
   schedule_fingerprint: string;
   runtime_version: number;
+  recovery_payload: Prisma.JsonValue | null;
 };
 
-const AUDIT_LEDGER_SELECT = {
-  jobId: true,
-  actionType: true,
-  chatId: true,
-  sourceTag: true,
-  status: true,
-  ambiguous: true,
-  terminal: true,
-  attemptCount: true,
-  lastStatusCode: true,
-  lastErrorCode: true,
-  completedAt: true,
-  dispatchBotId: true,
-  remoteMessageId: true,
-} satisfies Prisma.MaxActionLedgerEntrySelect;
-
-type NightModeCloseNoticeLedgerRow = Prisma.MaxActionLedgerEntryGetPayload<{
-  select: typeof AUDIT_LEDGER_SELECT;
-}>;
+type NightModeCloseNoticeLedgerRow = NightModeNoticeDiagnosticLedgerRow;
 
 type AuditPrisma = Pick<PrismaService, 'chatSettings' | 'maxActionLedgerEntry' | '$queryRaw'>;
 type AuditBotRegistry = Pick<MaxBotRegistryService, 'getActionableBots'>;
@@ -139,7 +139,10 @@ type LedgerState =
   | 'other';
 
 type ExpectedCloseOccurrence = {
-  scope: 'current' | 'next';
+  scope: 'current' | 'latest' | 'next';
+  transition: NightModeTransitionKind;
+  enabledNow: boolean;
+  catchUp: { state: 'within_window' | 'expired' | 'future'; endsAt: string };
   chatId: string;
   sessionKey: string;
   dueAt: Date;
@@ -159,6 +162,7 @@ type AuditedChat = {
   }>;
   occurrences: ExpectedCloseOccurrence[];
   hasCloseBoundary: boolean;
+  sendRouteNow: 'available' | 'unavailable' | 'unknown';
   noRouteReason: NoRouteReason | null;
 };
 
@@ -188,6 +192,11 @@ type RouteSample = {
 };
 
 type CoverageSample = {
+  transition: NightModeTransitionKind;
+  enabledNow: boolean;
+  sendRouteNow: AuditedChat['sendRouteNow'];
+  catchUp: ExpectedCloseOccurrence['catchUp'];
+  delivery: NightModeNoticeDeliveryEvidence;
   chatId: string;
   title: string;
   sessionKey: string;
@@ -210,7 +219,11 @@ type SampledChatCounter = { count: number; samples: ChatSample[] };
 type SampledRouteCounter = { count: number; affectedChats: number; samples: RouteSample[] };
 
 type CoverageCounter = {
+  expectationBasis: 'historical_unknown' | 'current_eligibility';
   occurrences: number;
+  notificationEnabledNow: number;
+  delivery: Record<NightModeNoticeDeliveryEvidence['outcome'], number>;
+  catchUp: Record<'within_window' | 'expired' | 'future', number>;
   scheduleExpected: number;
   registry: {
     exact: number;
@@ -230,6 +243,7 @@ type CoverageCounter = {
     other: number;
   };
   durableCovered: number;
+  absentRegistryAndLedger: number;
   missingDurable: number;
   successfulDeliveries: number;
   withoutSuccessfulDelivery: number;
@@ -247,13 +261,18 @@ type CoverageCounter = {
 };
 
 export type NightModeCloseNoticeFleetAudit = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   readOnly: true;
   generatedAt: string;
   snapshot: 'best_effort_read_only';
   scope: {
     nightModeEnabled: true;
-    botCloseMessageEnabled: true;
+    notices: 'close_and_open_regardless_of_current_notice_switch';
+    expectationBasis: 'current_schedule';
+    evidenceScope: 'exact_send_ledger';
+    historicalSettings: 'not_available';
+    legacyCoverage: 'current_and_next_close_with_close_switch_enabled_now';
+    scanBudget: 'all_settings_rows_before_eligibility';
     routeHealthPopulation: 'configured_actionable_bots_in_matching_chats';
     bullPayload: 'not_inspected_scheduler_self_heals_from_registry';
   };
@@ -266,9 +285,15 @@ export type NightModeCloseNoticeFleetAudit = {
   scan: {
     pages: number;
     scannedChats: number;
+    scannedSettings: number;
     complete: boolean;
     nextAfter: string | null;
   };
+  notices: Record<
+    NightModeTransitionKind,
+    { enabledNow: number; disabledNow: number; latest: CoverageCounter; next: CoverageCounter }
+  >;
+  sendRouteNow: Record<AuditedChat['sendRouteNow'], number>;
   configuredActionableBots: number;
   categories: Record<ChatCategory, SampledChatCounter>;
   noRouteReasons: Record<NoRouteReason, SampledChatCounter>;
@@ -371,9 +396,15 @@ function createSampledRouteCounter(): SampledRouteCounter {
   return { count: 0, affectedChats: 0, samples: [] };
 }
 
-function createCoverageCounter(): CoverageCounter {
+function createCoverageCounter(
+  expectationBasis: CoverageCounter['expectationBasis'] = 'current_eligibility',
+): CoverageCounter {
   return {
+    expectationBasis,
     occurrences: 0,
+    notificationEnabledNow: 0,
+    delivery: { sent: 0, not_recorded: 0, pending: 0, not_sent: 0, unknown: 0 },
+    catchUp: { within_window: 0, expired: 0, future: 0 },
     scheduleExpected: 0,
     registry: { exact: 0, missing: 0, mismatch: 0, unexpectedWhenUnscheduled: 0 },
     ledger: {
@@ -388,6 +419,7 @@ function createCoverageCounter(): CoverageCounter {
       other: 0,
     },
     durableCovered: 0,
+    absentRegistryAndLedger: 0,
     missingDurable: 0,
     successfulDeliveries: 0,
     withoutSuccessfulDelivery: 0,
@@ -411,18 +443,38 @@ function createAudit(
   configuredActionableBots: number,
 ): NightModeCloseNoticeFleetAudit {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     readOnly: true,
     generatedAt: generatedAt.toISOString(),
     snapshot: 'best_effort_read_only',
     scope: {
       nightModeEnabled: true,
-      botCloseMessageEnabled: true,
+      notices: 'close_and_open_regardless_of_current_notice_switch',
+      expectationBasis: 'current_schedule',
+      evidenceScope: 'exact_send_ledger',
+      historicalSettings: 'not_available',
+      legacyCoverage: 'current_and_next_close_with_close_switch_enabled_now',
+      scanBudget: 'all_settings_rows_before_eligibility',
       routeHealthPopulation: 'configured_actionable_bots_in_matching_chats',
       bullPayload: 'not_inspected_scheduler_self_heals_from_registry',
     },
     limits: { ...options },
-    scan: { pages: 0, scannedChats: 0, complete: true, nextAfter: null },
+    scan: { pages: 0, scannedChats: 0, scannedSettings: 0, complete: true, nextAfter: null },
+    notices: {
+      close: {
+        enabledNow: 0,
+        disabledNow: 0,
+        latest: createCoverageCounter('historical_unknown'),
+        next: createCoverageCounter(),
+      },
+      open: {
+        enabledNow: 0,
+        disabledNow: 0,
+        latest: createCoverageCounter('historical_unknown'),
+        next: createCoverageCounter(),
+      },
+    },
+    sendRouteNow: { available: 0, unavailable: 0, unknown: 0 },
     configuredActionableBots,
     categories: {
       no_memberships: createSampledChatCounter(),
@@ -558,19 +610,34 @@ function buildExpectedOccurrence(
   row: NightModeCloseNoticeAuditSettingsRow,
   occurrence: NightModeTransitionOccurrence,
   scheduleExpected: boolean,
+  now: Date,
 ): ExpectedCloseOccurrence {
+  const catchUp = resolveNightModeNoticeCatchUpWindow(occurrence, row, now);
   return {
     scope,
+    transition: occurrence.transition,
+    enabledNow:
+      occurrence.transition === 'close'
+        ? row.nightModeBotMessageEnabled
+        : row.nightModeOpenMessageEnabled,
+    catchUp: {
+      state: occurrence.dueAt > now ? 'future' : catchUp.state,
+      endsAt: catchUp.endsAt.toISOString(),
+    },
     chatId: row.chatId,
     sessionKey: occurrence.sessionKey,
     dueAt: occurrence.dueAt,
     registryJobId: buildNightModeTransitionJobId(
       row.chatId,
-      'close',
+      occurrence.transition,
       occurrence.dueAt.toISOString(),
       occurrence.sessionKey,
     ),
-    ledgerJobId: buildNightModeNoticeIdempotencyKey('close', row.chatId, occurrence.sessionKey),
+    ledgerJobId: buildNightModeNoticeIdempotencyKey(
+      occurrence.transition,
+      row.chatId,
+      occurrence.sessionKey,
+    ),
     scheduleFingerprint: buildNightModeTransitionScheduleFingerprint(row),
     scheduleExpected,
   };
@@ -603,15 +670,19 @@ function inspectChat(
   const scheduleExpected =
     row.chat.entityType === ChatEntityType.CHAT && actionableMemberships.length > 0;
   const current = resolveCurrentNightModeCloseOccurrence(row, now);
-  const next = resolveNextNightModeTransitionOccurrences(row, now).find(
-    (occurrence) => occurrence.transition === 'close',
-  );
+  const latest = resolveLatestNightModeTransitionOccurrences(row, now);
+  const next = resolveNextNightModeTransitionOccurrences(row, now);
   const occurrences: ExpectedCloseOccurrence[] = [];
-  if (current) {
-    occurrences.push(buildExpectedOccurrence('current', row, current, scheduleExpected));
+  // Compatibility counters retain their original close-switch population. Latest evidence
+  // includes both switches in either state; today's switches cannot prove yesterday's intent.
+  if (current && row.nightModeBotMessageEnabled) {
+    occurrences.push(buildExpectedOccurrence('current', row, current, scheduleExpected, now));
   }
-  if (next) {
-    occurrences.push(buildExpectedOccurrence('next', row, next, scheduleExpected));
+  for (const item of [latest.close, latest.open]) {
+    if (item) occurrences.push(buildExpectedOccurrence('latest', row, item, scheduleExpected, now));
+  }
+  for (const item of next) {
+    occurrences.push(buildExpectedOccurrence('next', row, item, scheduleExpected, now));
   }
   return {
     row,
@@ -619,7 +690,8 @@ function inspectChat(
     actionableMemberships: routableMemberships,
     routeHealth,
     occurrences,
-    hasCloseBoundary: Boolean(current || next),
+    hasCloseBoundary: Boolean(latest.close || next.some((item) => item.transition === 'close')),
+    sendRouteNow: classifyNightModeNoticeSendRoute({ chatId: row.chatId, ...row.chat }, now),
     noRouteReason,
   };
 }
@@ -644,7 +716,7 @@ export async function loadExactNightModeCloseNoticeRegistryRows(
     return [];
   }
 
-  // At most two deterministic close occurrences per bounded settings page hit the registry PK.
+  // At most four distinct transition occurrences per bounded settings page hit the registry PK.
   const pairSql = pairs.map(({ chatId, jobId }) => Prisma.sql`(${chatId}, ${jobId})`);
   return prisma.$queryRaw<NightModeCloseNoticeRegistryRow[]>(Prisma.sql`
     SELECT
@@ -654,7 +726,8 @@ export async function loadExactNightModeCloseNoticeRegistryRows(
       registry."session_key",
       registry."scheduled_for",
       registry."schedule_fingerprint",
-      registry."runtime_version"
+      registry."runtime_version",
+      registry."recovery_payload"
     FROM "night_mode_transition_scheduled_jobs" registry
     WHERE (registry."chat_id", registry."job_id") IN (${Prisma.join(pairSql)})
     ORDER BY registry."chat_id" ASC, registry."job_id" ASC
@@ -671,7 +744,7 @@ async function loadExactLedgerRows(
   }
   return prisma.maxActionLedgerEntry.findMany({
     where: { jobId: { in: jobIds } },
-    select: AUDIT_LEDGER_SELECT,
+    select: NIGHT_MODE_NOTICE_DIAGNOSTIC_LEDGER_SELECT,
     orderBy: { jobId: 'asc' },
   });
 }
@@ -685,56 +758,35 @@ function resolveRegistryState(
   }
   return row.chat_id === occurrence.chatId &&
     row.job_id === occurrence.registryJobId &&
-    row.transition === 'close' &&
+    row.transition === occurrence.transition &&
     row.session_key === occurrence.sessionKey &&
     row.scheduled_for.getTime() === occurrence.dueAt.getTime() &&
     row.schedule_fingerprint === occurrence.scheduleFingerprint &&
-    row.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION
+    row.runtime_version === NIGHT_MODE_TRANSITION_RUNTIME_VERSION &&
+    row.recovery_payload === null
     ? 'exact'
     : 'mismatch';
 }
 
-function resolveLedgerState(
-  occurrence: ExpectedCloseOccurrence,
-  row: NightModeCloseNoticeLedgerRow | undefined,
-): LedgerState {
-  if (!row) {
-    return 'missing';
+function resolveLedgerState(evidence: NightModeNoticeDeliveryEvidence): LedgerState {
+  switch (evidence.reason) {
+    case 'ledger_missing':
+      return 'missing';
+    case 'identity_mismatch':
+      return 'mismatch';
+    case 'successful_receipt':
+      return 'succeeded';
+    case 'awaiting_first_attempt':
+      return 'pending';
+    case 'proven_pre_dispatch_failure':
+      return 'terminal_failure';
+    case 'incomplete_success':
+      return 'invalid_success';
+    case 'ambiguous':
+      return 'ambiguous';
+    default:
+      return 'other';
   }
-  if (
-    row.jobId !== occurrence.ledgerJobId ||
-    row.chatId !== occurrence.chatId ||
-    row.actionType !== 'SEND_MESSAGE' ||
-    row.sourceTag !== NIGHT_MODE_TRANSITION_SOURCE_TAG
-  ) {
-    return 'mismatch';
-  }
-  if (row.ambiguous || row.status === MaxActionLedgerStatus.AMBIGUOUS) {
-    return 'ambiguous';
-  }
-  if (
-    row.status === MaxActionLedgerStatus.SUCCEEDED &&
-    row.terminal &&
-    row.completedAt &&
-    row.dispatchBotId?.trim() &&
-    row.remoteMessageId?.trim()
-  ) {
-    return 'succeeded';
-  }
-  if (row.status === MaxActionLedgerStatus.SUCCEEDED) {
-    return 'invalid_success';
-  }
-  if (
-    row.status === MaxActionLedgerStatus.ENQUEUED ||
-    row.status === MaxActionLedgerStatus.IN_PROGRESS ||
-    row.status === MaxActionLedgerStatus.FAILED_RETRYABLE
-  ) {
-    return 'pending';
-  }
-  if (row.status === MaxActionLedgerStatus.FAILED_TERMINAL || row.terminal) {
-    return 'terminal_failure';
-  }
-  return 'other';
 }
 
 function toChatSample(chat: AuditedChat): ChatSample {
@@ -816,21 +868,31 @@ function recordRouteCounters(
 }
 
 function recordCoverage(
-  audit: NightModeCloseNoticeFleetAudit,
+  target: CoverageCounter,
   chat: AuditedChat,
   occurrence: ExpectedCloseOccurrence,
   registryRows: ReadonlyMap<string, NightModeCloseNoticeRegistryRow>,
   ledgerRows: ReadonlyMap<string, NightModeCloseNoticeLedgerRow>,
   sampleLimit: number,
 ): void {
-  const target = audit.coverage[occurrence.scope];
   const registryState = resolveRegistryState(
     occurrence,
     registryRows.get(occurrenceRegistryKey(occurrence.chatId, occurrence.registryJobId)),
   );
   const ledgerRow = ledgerRows.get(occurrence.ledgerJobId);
-  const ledgerState = resolveLedgerState(occurrence, ledgerRow);
+  const delivery = classifyNightModeNoticeLedger({
+    chatId: occurrence.chatId,
+    transition: occurrence.transition,
+    sessionKey: occurrence.sessionKey,
+    ledger: { state: 'read', row: ledgerRow ?? null },
+  });
+  const ledgerState = resolveLedgerState(delivery);
   const sample: CoverageSample = {
+    transition: occurrence.transition,
+    enabledNow: occurrence.enabledNow,
+    sendRouteNow: chat.sendRouteNow,
+    catchUp: occurrence.catchUp,
+    delivery,
     chatId: chat.row.chatId,
     title: chat.row.chat.title,
     sessionKey: occurrence.sessionKey,
@@ -850,11 +912,18 @@ function recordCoverage(
   };
 
   target.occurrences += 1;
-  if (occurrence.scheduleExpected) {
+  target.notificationEnabledNow += Number(occurrence.enabledNow);
+  target.delivery[delivery.outcome] += 1;
+  target.catchUp[occurrence.catchUp.state] += 1;
+  if (target.expectationBasis === 'current_eligibility' && occurrence.scheduleExpected) {
     target.scheduleExpected += 1;
   }
   target.registry[registryState] += 1;
-  if (!occurrence.scheduleExpected && registryState !== 'missing') {
+  if (
+    target.expectationBasis === 'current_eligibility' &&
+    !occurrence.scheduleExpected &&
+    registryState !== 'missing'
+  ) {
     target.registry.unexpectedWhenUnscheduled += 1;
     pushBounded(target.samples.unexpectedRegistry, sample, sampleLimit);
   }
@@ -897,39 +966,51 @@ function recordCoverage(
   const ledgerCovered = ledgerState !== 'missing' && ledgerState !== 'mismatch';
   if (registryCovered || ledgerCovered) {
     target.durableCovered += 1;
-  } else if (occurrence.scheduleExpected) {
-    target.missingDurable += 1;
-    pushBounded(target.samples.missingDurable, sample, sampleLimit);
+  } else {
+    if (registryState === 'missing' && ledgerState === 'missing')
+      target.absentRegistryAndLedger += 1;
+    // FLAG: Completed ordinary jobs are retired and may never have required a notice.
+    // Current eligibility cannot turn absent historical records into missing work.
+    if (target.expectationBasis === 'current_eligibility' && occurrence.scheduleExpected) {
+      target.missingDurable += 1;
+      pushBounded(target.samples.missingDurable, sample, sampleLimit);
+    }
   }
 }
 
+export function buildNightModeAuditCursorQuery(after: string | null, take: number): Prisma.Sql {
+  // FLAG: Limit the unfiltered primary-key walk before any sparse eligibility predicate or
+  // membership relation. Keep the raw cursor even when the whole page is disabled.
+  return Prisma.sql`SELECT "chat_id" AS "chatId", "night_mode_enabled" AS "nightModeEnabled"
+    FROM "chat_settings"
+    ${after === null ? Prisma.empty : Prisma.sql`WHERE "chat_id" > ${after}`}
+    ORDER BY "chat_id" ASC LIMIT ${take}`;
+}
+
+type CursorRow = { chatId: string; nightModeEnabled: boolean };
+
 async function loadSettingsPage(
   prisma: Pick<AuditPrisma, 'chatSettings'>,
-  after: string | null,
-  take: number,
+  chatIds: readonly string[],
   actionableBotIds: readonly string[],
 ): Promise<NightModeCloseNoticeAuditSettingsRow[]> {
-  const select = {
-    ...AUDIT_SETTINGS_SELECT,
-    chat: {
-      select: {
-        ...AUDIT_SETTINGS_SELECT.chat.select,
-        botMemberships: {
-          ...AUDIT_SETTINGS_SELECT.chat.select.botMemberships,
-          where: { botId: { in: [...actionableBotIds] } },
+  if (chatIds.length === 0) return [];
+  return prisma.chatSettings.findMany({
+    where: { chatId: { in: [...chatIds] } },
+    select: {
+      ...AUDIT_SETTINGS_SELECT,
+      chat: {
+        select: {
+          ...AUDIT_SETTINGS_SELECT.chat.select,
+          botMemberships: {
+            ...AUDIT_SETTINGS_SELECT.chat.select.botMemberships,
+            where: { botId: { in: [...actionableBotIds] } },
+          },
         },
       },
     },
-  } satisfies Prisma.ChatSettingsSelect;
-  return prisma.chatSettings.findMany({
-    where: {
-      nightModeEnabled: true,
-      nightModeBotMessageEnabled: true,
-      ...(after ? { chatId: { gt: after } } : {}),
-    },
-    select,
     orderBy: { chatId: 'asc' },
-    take,
+    take: chatIds.length,
   });
 }
 
@@ -943,16 +1024,17 @@ async function processPage(
 ): Promise<void> {
   const chats = rows.map((row) => inspectChat(row, actionableBotIds, generatedAt));
   const occurrences = chats.flatMap((chat) => chat.occurrences);
-  const [registryRows, ledgerRows] = await Promise.all([
-    loadExactNightModeCloseNoticeRegistryRows(prisma, occurrences),
-    loadExactLedgerRows(prisma, occurrences),
-  ]);
+  const registryRows = await loadExactNightModeCloseNoticeRegistryRows(prisma, occurrences);
+  const ledgerRows = await loadExactLedgerRows(prisma, occurrences);
   const registryByKey = new Map(
     registryRows.map((row) => [occurrenceRegistryKey(row.chat_id, row.job_id), row]),
   );
   const ledgerByJobId = new Map(ledgerRows.map((row) => [row.jobId, row]));
 
   for (const chat of chats) {
+    audit.sendRouteNow[chat.sendRouteNow] += 1;
+    audit.notices.close[chat.row.nightModeBotMessageEnabled ? 'enabledNow' : 'disabledNow'] += 1;
+    audit.notices.open[chat.row.nightModeOpenMessageEnabled ? 'enabledNow' : 'disabledNow'] += 1;
     const chatCounter = audit.categories[chat.category];
     const chatSample = toChatSample(chat);
     chatCounter.count += 1;
@@ -968,7 +1050,14 @@ async function processPage(
       pushBounded(audit.schedule.withoutCloseBoundary.samples, chatSample, sampleLimit);
     }
     for (const occurrence of chat.occurrences) {
-      recordCoverage(audit, chat, occurrence, registryByKey, ledgerByJobId, sampleLimit);
+      const targets =
+        occurrence.scope === 'current'
+          ? [audit.coverage.current]
+          : [audit.notices[occurrence.transition][occurrence.scope]];
+      if (occurrence.scope === 'next' && occurrence.transition === 'close' && occurrence.enabledNow)
+        targets.push(audit.coverage.next);
+      for (const target of targets)
+        recordCoverage(target, chat, occurrence, registryByKey, ledgerByJobId, sampleLimit);
     }
   }
 }
@@ -985,24 +1074,27 @@ export async function runNightModeCloseNoticeFleetAudit(
   const audit = createAudit(options, generatedAt, actionableBotIds.size);
   let cursor = options.after;
 
-  while (audit.scan.scannedChats < options.maxChats) {
-    const remaining = options.maxChats - audit.scan.scannedChats;
+  while (audit.scan.scannedSettings < options.maxChats) {
+    const remaining = options.maxChats - audit.scan.scannedSettings;
     const take = Math.min(options.pageSize, remaining);
-    const rows = await loadSettingsPage(prisma, cursor, take, actionableBotIdList);
-    if (rows.length === 0) {
-      break;
-    }
+    const page = await prisma.$queryRaw<CursorRow[]>(buildNightModeAuditCursorQuery(cursor, take));
+    if (page.length === 0) break;
     audit.scan.pages += 1;
+    const eligibleIds = page.filter((row) => row.nightModeEnabled).map((row) => row.chatId);
+    const rows = (await loadSettingsPage(prisma, eligibleIds, actionableBotIdList)).filter(
+      (row) => row.nightModeEnabled,
+    );
     await processPage(prisma, audit, rows, actionableBotIds, generatedAt, options.sampleLimit);
+    audit.scan.scannedSettings += page.length;
     audit.scan.scannedChats += rows.length;
-    cursor = rows[rows.length - 1]!.chatId;
-    if (rows.length < take) {
-      break;
-    }
+    cursor = page[page.length - 1]!.chatId;
+    if (page.length < take) break;
   }
 
-  if (audit.scan.scannedChats === options.maxChats && cursor) {
-    const lookahead = await loadSettingsPage(prisma, cursor, 1, actionableBotIdList);
+  if (audit.scan.scannedSettings === options.maxChats && cursor !== null) {
+    const lookahead = await prisma.$queryRaw<CursorRow[]>(
+      buildNightModeAuditCursorQuery(cursor, 1),
+    );
     if (lookahead.length > 0) {
       audit.scan.complete = false;
       audit.scan.nextAfter = cursor;

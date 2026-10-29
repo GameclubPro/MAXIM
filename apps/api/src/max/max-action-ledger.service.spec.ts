@@ -2863,3 +2863,37 @@ describe('MaxActionLedgerService', () => {
     );
   });
 });
+
+describe('negative night-mode member aliases', () => {
+  it.each(['close', 'open'] as const)(
+    'blocks an existing %s member identity without moving its receipt',
+    async (transition) => {
+      const { service, prisma } = createService({ id: 'prior-member' });
+      const sessionKey = 'v1:Europe/Berlin:03:00:02:30:2026-03-28';
+      await expect(
+        service.hasNightModeAliasSendProvenance({ chatId: 'chat-1', transition, sessionKey }),
+      ).resolves.toBe(true);
+      expect(prisma.maxActionLedgerEntry.findFirst).toHaveBeenCalledWith({
+        where: {
+          jobId: {
+            in: [`night-mode:${transition}:chat-1:session:v1:Europe/Berlin:03:00:02:30:2026-03-29`],
+          },
+        },
+        select: { id: true },
+      });
+      expect(prisma.maxActionLedgerEntry.updateMany).not.toHaveBeenCalled();
+      expect(prisma.maxActionLedgerEntry.upsert).not.toHaveBeenCalled();
+    },
+  );
+  it('adds no alias lookup to an ordinary session', async () => {
+    const { service, prisma } = createService();
+    await expect(
+      service.hasNightModeAliasSendProvenance({
+        chatId: 'chat-1',
+        transition: 'open',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-10-29',
+      }),
+    ).resolves.toBe(false);
+    expect(prisma.maxActionLedgerEntry.findFirst).not.toHaveBeenCalled();
+  });
+});
