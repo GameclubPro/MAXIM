@@ -47,6 +47,19 @@ This procedure never deletes MAXIM history, publishes messages or grants access.
    [central audit](central-statistics-audit.md). Actual MAX devices and natural
    24/48-hour observations need independent evidence.
 
+## HTTP action registration
+
+The public internal API uses literal action colons, including `authorities:batch`
+and `authorities:resolve`. Fastify interprets an unescaped colon as a route
+parameter. The existing statistics `onRoute` hook escapes only the four exact
+contract action paths at registration, after selecting their original 128 KiB
+authority-batch or 64 KiB other-request limit. Preserve the single-colon wire
+URLs, authenticated controller and installed lifecycle source checks.
+The real Nest/Fastify bootstrap and injection regressions are in
+`apps/api/src/statistics/stats-controller-http.spec.ts`; copied route fixtures
+alone cannot prove that the production controller starts. See the
+[registration incident](../incidents/2026-10-30-statistics-route-registration.md).
+
 ## Failure handling
 
 An absent activation variable performs no dotenv or runtime change. `--plan`
