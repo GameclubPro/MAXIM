@@ -1,7 +1,11 @@
 import { KaravanMarketplaceResolverService } from './karavan-marketplace-resolver.service';
-import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
+import {
+  KaravanMarketplaceBindingStatusService,
+  karavanMarketplaceBindingStatusRequestSchema,
+} from './karavan-marketplace-binding-status.service';
 import { KaravanMarketplaceActorAccessService } from './karavan-marketplace-actor-access.service';
 import {
+  BadRequestException,
   Body,
   CanActivate,
   Controller,
@@ -15,8 +19,22 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
+import { z } from 'zod';
+import {
+  karavanPublicationChoiceListRequestSchema,
+  karavanPublicationChoiceSaveSchema,
+  karavanMarketplaceAuthorityRequestSchema,
+  karavanMarketplaceActorAccessRequestSchema,
+  karavanMarketplaceHandoffExchangeSchema,
+} from '@maxim/contracts/karavan-marketplace';
 import { KaravanMarketplaceAuthorityService } from './karavan-marketplace-authority.service';
 import { KaravanMarketplaceHandoffService } from './karavan-marketplace-handoff.service';
+
+function parseRequest<T>(schema: z.ZodType<T>, body: unknown): T {
+  const result = schema.safeParse(body);
+  if (!result.success) throw new BadRequestException('Некорректный запрос.');
+  return result.data;
+}
 
 @Injectable()
 export class KaravanMarketplaceIntegrationGuard implements CanActivate {
@@ -49,30 +67,30 @@ export class KaravanMarketplaceIntegrationController {
   ) {}
   @Post('publication-choices/list')
   choices(@Body() body: unknown) {
-    return this.resolver.listChoices(body);
+    return this.resolver.listChoices(parseRequest(karavanPublicationChoiceListRequestSchema, body));
   }
 
   @Post('publication-choices/save')
   saveChoice(@Body() body: unknown) {
-    return this.resolver.saveChoice(body);
+    return this.resolver.saveChoice(parseRequest(karavanPublicationChoiceSaveSchema, body));
   }
 
   @Post('bindings/status')
   status(@Body() body: unknown) {
-    return this.bindings.status(body);
+    return this.bindings.status(parseRequest(karavanMarketplaceBindingStatusRequestSchema, body));
   }
 
   @Post('authority/introspect')
   introspect(@Body() body: unknown) {
-    return this.authority.introspect(body);
+    return this.authority.introspect(parseRequest(karavanMarketplaceAuthorityRequestSchema, body));
   }
   @Post('authority/access-check')
   @HttpCode(200)
   accessCheck(@Body() body: unknown) {
-    return this.actorAccess.check(body);
+    return this.actorAccess.check(parseRequest(karavanMarketplaceActorAccessRequestSchema, body));
   }
   @Post('handoffs/exchange')
   exchange(@Body() body: unknown) {
-    return this.handoffs.exchange(body);
+    return this.handoffs.exchange(parseRequest(karavanMarketplaceHandoffExchangeSchema, body));
   }
 }

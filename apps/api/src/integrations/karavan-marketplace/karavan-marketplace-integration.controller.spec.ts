@@ -15,6 +15,22 @@ describe('Karavan actor access integration route', () => {
     KaravanMarketplaceActorAccessService,
     'check'
   >;
+  const authority = { introspect: jest.fn() } satisfies Pick<
+    KaravanMarketplaceAuthorityService,
+    'introspect'
+  >;
+  const handoffs = { exchange: jest.fn() } satisfies Pick<
+    KaravanMarketplaceHandoffService,
+    'exchange'
+  >;
+  const resolver = { listChoices: jest.fn(), saveChoice: jest.fn() } satisfies Pick<
+    KaravanMarketplaceResolverService,
+    'listChoices' | 'saveChoice'
+  >;
+  const bindings = { status: jest.fn() } satisfies Pick<
+    KaravanMarketplaceBindingStatusService,
+    'status'
+  >;
   const token = 'synthetic-dedicated-authority-credential';
   const input = {
     actorMaxUserId: '9007199254740993',
@@ -34,10 +50,10 @@ describe('Karavan actor access integration route', () => {
           provide: ConfigService,
           useValue: new ConfigService({ KARAVAN_MARKETPLACE_AUTHORITY_TOKEN: token }),
         },
-        { provide: KaravanMarketplaceAuthorityService, useValue: {} },
-        { provide: KaravanMarketplaceHandoffService, useValue: {} },
-        { provide: KaravanMarketplaceResolverService, useValue: {} },
-        { provide: KaravanMarketplaceBindingStatusService, useValue: {} },
+        { provide: KaravanMarketplaceAuthorityService, useValue: authority },
+        { provide: KaravanMarketplaceHandoffService, useValue: handoffs },
+        { provide: KaravanMarketplaceResolverService, useValue: resolver },
+        { provide: KaravanMarketplaceBindingStatusService, useValue: bindings },
         { provide: KaravanMarketplaceActorAccessService, useValue: actorAccess },
       ],
     }).compile();
@@ -94,5 +110,106 @@ describe('Karavan actor access integration route', () => {
     });
     expect(response.statusCode).toBe(503);
     expect(response.json()).not.toHaveProperty('allowed');
+  });
+
+  const routes = [
+    ['publication-choices/list', resolver.listChoices, { actorMaxUserId: input.actorMaxUserId }],
+    [
+      'publication-choices/save',
+      resolver.saveChoice,
+      {
+        actorMaxUserId: input.actorMaxUserId,
+        choiceId: '11111111-1111-4111-8111-111111111111',
+        storeId: '22222222-2222-4222-8222-222222222222',
+      },
+    ],
+    [
+      'bindings/status',
+      bindings.status,
+      {
+        chatId: input.chatId,
+        botId: input.botId,
+        authorityEpoch: input.authorityEpoch,
+        verifiedAt: input.verifiedAt,
+      },
+    ],
+    [
+      'authority/introspect',
+      authority.introspect,
+      {
+        actorMaxUserId: input.actorMaxUserId,
+        chatId: input.chatId,
+        commandId: 'synthetic-command',
+        action: 'read_chat_module',
+        marketplaceId: null,
+        expectedBindingGeneration: null,
+        payloadHash: 'a'.repeat(64),
+        proofId: 'b'.repeat(43),
+      },
+    ],
+    ['authority/access-check', actorAccess.check, input],
+    [
+      'handoffs/exchange',
+      handoffs.exchange,
+      {
+        actorMaxUserId: input.actorMaxUserId,
+        code: 'c'.repeat(43),
+        exchangeId: '33333333-3333-4333-8333-333333333333',
+        audience: 'client',
+      },
+    ],
+  ] as const;
+
+  describe.each(routes)('%s request boundary', (path, handler, validInput) => {
+    const route = `/v1/integrations/karavan/v1/${path}`;
+    it.each([
+      {},
+      [],
+      { ...validInput, actorMaxUserId: 123 },
+      { ...validInput, unexpected: 'private-value' },
+    ])('rejects malformed input before invoking services (%j)', async (payload) => {
+      const response = await app.inject({
+        method: 'POST',
+        url: route,
+        payload,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).not.toContain('private-value');
+      expect(handler).not.toHaveBeenCalled();
+    });
+    it('authenticates before validating the request', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: route,
+        payload: {},
+        headers: { authorization: 'Bearer synthetic-command-credential' },
+      });
+      expect(response.statusCode).toBe(401);
+      expect(handler).not.toHaveBeenCalled();
+    });
+    it('forwards valid input unchanged', async () => {
+      handler.mockResolvedValueOnce({ ok: true });
+      const response = await app.inject({
+        method: 'POST',
+        url: route,
+        payload: validInput,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(path === 'authority/access-check' ? 200 : 201);
+      expect(handler).toHaveBeenCalledWith(validInput);
+    });
+  });
+
+  it('keeps internal failures distinct from malformed input', async () => {
+    actorAccess.check.mockRejectedValueOnce(new Error('private-internal-error'));
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      payload: input,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.body).not.toContain('private-internal-error');
   });
 });
