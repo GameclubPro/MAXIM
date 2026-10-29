@@ -10,8 +10,12 @@ import {
 } from '../../../scripts/miniapp-local-server.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
 import { installNativeVisualModeInitScript } from '../../../scripts/miniapp-native-visual-mode.mjs';
-const base = await allocateMiniappBaseUrl('http://127.0.0.1/app/');
-const server = await ensureMiniappDevServer(base);
+const base =
+  process.env.MINIAPP_MARKETPLACE_TEST_BASE_URL ??
+  (await allocateMiniappBaseUrl('http://127.0.0.1/app/'));
+const server = await ensureMiniappDevServer(base, {
+  reuseServer: process.env.MINIAPP_MARKETPLACE_TEST_REUSE_SERVER === '1',
+});
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-advertising-modules-'));
 console.log(`Module screenshots: ${output}`);
 let browser;
@@ -77,9 +81,10 @@ try {
       await page.waitForFunction(
         () => !document.querySelector('.marketplace-button-policy input[type=checkbox]:checked'),
       );
-      await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).waitFor();
-      await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
+      await page
+        .locator('.marketplace-profile-overlay .settings-drilldown__panel')
+        .getByRole('button', { name: 'Закрыть панель', exact: true })
+        .click();
       await page.locator('.marketplace-profile-overlay').waitFor({ state: 'detached' });
       await page.getByRole('button', { name: 'Ссылки', exact: true }).click();
       await page.getByRole('heading', { name: 'Ссылки', exact: true }).waitFor();
@@ -93,12 +98,13 @@ try {
       );
       await page.locator('.settings-drilldown__close:visible').click();
       await page.getByRole('button', { name: 'Рекламная биржа', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).click();
+      await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
       await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).click();
       await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
-      await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).waitFor();
-      await page.locator('.marketplace-profile-overlay .settings-drilldown__close').click();
+      await page
+        .locator('.marketplace-profile-overlay .settings-drilldown__panel')
+        .getByRole('button', { name: 'Закрыть панель', exact: true })
+        .click();
       await page.locator('.marketplace-profile-overlay').waitFor({ state: 'detached' });
       await page.getByRole('button', { name: 'Ссылки', exact: true }).click();
       await page.getByRole('heading', { name: 'Ссылки', exact: true }).waitFor();

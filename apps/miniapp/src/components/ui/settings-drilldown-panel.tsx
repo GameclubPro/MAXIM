@@ -35,6 +35,7 @@ type SettingsDrilldownPanelProps = {
   variant?: 'sheet' | 'screen';
   tone?: 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
   onClose: () => void;
+  onBack?: () => void;
   children: ReactNode;
   className?: string;
   overlayClassName?: string;
@@ -147,6 +148,7 @@ function SettingsDrilldownPanelContent({
   variant = 'sheet',
   tone = 'sky',
   onClose,
+  onBack,
   children,
   className,
   overlayClassName,
@@ -175,9 +177,15 @@ function SettingsDrilldownPanelContent({
     onClose();
   }, [closeDisabled, confirmCloseWhen, onClose]);
 
+  const requestBack = useCallback(() => {
+    if (closeDisabled) return;
+    if (onBack) onBack();
+    else requestClose();
+  }, [closeDisabled, onBack, requestClose]);
+
   useNativeBackHandler(
     () => {
-      requestClose();
+      requestBack();
       return true;
     },
     { enabled: open, priority: 620 },
@@ -208,7 +216,7 @@ function SettingsDrilldownPanelContent({
         }
         event.preventDefault();
         event.stopImmediatePropagation();
-        requestClose();
+        requestBack();
         return;
       }
     };
@@ -218,7 +226,7 @@ function SettingsDrilldownPanelContent({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [open, requestClose]);
+  }, [open, requestBack]);
 
   useEffect(() => {
     if (!open || !confirmCloseWhen || closeDisabled) {
