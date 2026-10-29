@@ -17,7 +17,7 @@ function StorefrontToggle({
   state: SettingsFieldState<boolean>;
   title: string;
   label: string;
-  description: string;
+  description?: string;
   disabled: boolean;
   nested?: boolean;
   onChange: (value: boolean) => void;
@@ -47,7 +47,7 @@ function StorefrontToggle({
         </label>
       </div>
       {state.kind === 'mixed' ? <p className="field__hint">Разные значения</p> : null}
-      <p className="settings-native-toggle__hint">{description}</p>
+      {description ? <p className="settings-native-toggle__hint">{description}</p> : null}
     </div>
   );
 }
@@ -56,12 +56,11 @@ export function SharedSettingsStorefrontFields({ fields }: { fields: ChatSetting
   return (
     <>
       <StorefrontToggle
-        title="Караван"
+        title="Кнопка по $"
         label="Включить кнопку витрины Караван"
         state={enabled}
         disabled={fields.readOnly}
         onChange={(value) => fields.setScalar('karavanStorefrontEnabled', value)}
-        description="Одиночный $ без витрины покажет кнопки витрин."
       />
       {enabled.kind !== 'common' || enabled.value ? (
         <>
