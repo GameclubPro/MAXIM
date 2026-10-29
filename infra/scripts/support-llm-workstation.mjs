@@ -23,6 +23,11 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WORKSTATION_ARTIFACTS } from './commercial-llm-workstation-profile.mjs';
 import { SUPPORT_MODEL, supportModelArgs } from './support-llm-profile.mjs';
+import {
+  readSupportProvider,
+  readSupportProviderKey,
+  attestSupportApi,
+} from './support-llm-provider.mjs';
 
 const SCRIPT = 'support-llm-workstation.mjs';
 const CHAT_SCRIPT = 'support-chat-worker.mjs';
@@ -31,6 +36,7 @@ const HEARTBEAT_MS = 2000;
 const REQUIRED_FILES = [
   SCRIPT,
   'support-llm-profile.mjs',
+  'support-llm-provider.mjs',
   'support-llm-client.mjs',
   'support-llm-routing.mjs',
   'support-llm-knowledge.json',
@@ -557,9 +563,12 @@ export function createSupportController({
     const installed = installation();
     if (chat && !existsSync(scriptPath(installed.bundle, true)))
       throw new Error('support_chat_worker_not_installed');
-    if (chat && !(await status()).ready) throw new Error('support_model_not_ready');
+    const provider = chat ? readSupportProvider(root) : null;
+    if (provider?.backend === 'api')
+      await attestSupportApi(readSupportProviderKey(provider), AbortSignal.timeout(20_000));
+    else if (chat && !(await status()).ready) throw new Error('support_model_not_ready');
     await supportVerifyBundle(installed.bundle, installed.manifestSha256);
-    key();
+    if (provider?.backend !== 'api') key();
     atomic(enabledPath(chat), '1\n');
     if (!running(installed, chat)) {
       const child = spawn(
@@ -742,12 +751,18 @@ export function createSupportController({
     if (typeof text !== 'string' || !text.trim() || text.length > 1200)
       throw new Error('support_question_required');
     const installed = installation();
-    if (!(await status()).ready) throw new Error('support_model_not_ready');
+    const provider = readSupportProvider(root);
+    if (provider.backend !== 'api' && !(await status()).ready)
+      throw new Error('support_model_not_ready');
     await supportVerifyBundle(installed.bundle, installed.manifestSha256);
     const { answerSupport } = await import(
       pathToFileURL(join(installed.bundle, 'support-llm-client.mjs')).href
     );
-    return answerSupport({ text, key: key() });
+    return answerSupport({
+      text,
+      key: readSupportProviderKey(provider),
+      api: provider.backend === 'api',
+    });
   }
   return { install, start, stop, status, run, ask };
 }

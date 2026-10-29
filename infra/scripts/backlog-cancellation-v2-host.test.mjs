@@ -29,6 +29,11 @@ import {
 } from './backlog-cancellation-v2-host.mjs';
 import { readBacklogCancellation } from './backlog-cancellation-journal.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
+import {
+  archiveReleaseTransition,
+  beginReleaseTransition,
+  buildReleaseManifest,
+} from './release-manifest.mjs';
 
 const fixture = JSON.parse(
   readFileSync(new URL('../fixtures/backlog-cancellation-v2-contract.json', import.meta.url)),
@@ -40,6 +45,25 @@ function harness(t) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-cancel-v2-host-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const events = [];
+  const manifest = buildReleaseManifest({
+    releaseId: 'fixture-retained-components',
+    targetSha: 'e'.repeat(40),
+    components: [
+      {
+        id: 'api-shared',
+        sourceSha: nomination.sourceSha,
+        imageRef: `maxim-api:${nomination.sourceSha}`,
+        imageId: nomination.imageId,
+      },
+      ...['miniapp-major-static', 'admin-static'].map((id) => ({
+        id,
+        sourceSha: 'd'.repeat(40),
+        imageRef: `${id}:${'d'.repeat(40)}`,
+        imageId: `sha256:${'c'.repeat(64)}`,
+      })),
+    ],
+  });
+  writeFileSync(join(directory, 'current.json'), JSON.stringify(manifest), { mode: 0o640 });
   const state = {
     stopped: false,
     exists: false,
@@ -131,31 +155,36 @@ function harness(t) {
     assertMaintenance: (_directory, own) => events.push(`guard:${own ?? 'none'}`),
     report: (value) =>
       events.push(`report:${value.phase}:${value.outcome ?? value.decision ?? ''}`),
-    createRuntime: () => ({
-      inspectRuntime() {
-        events.push('inspect');
-        return structuredClone(baseline);
-      },
-      stopRuntime() {
-        events.push('stop');
-        state.stopped = true;
-      },
-      readStoppedRuntime() {
-        events.push('stopped-readback');
-        assert.equal(state.stopped, true);
-        return structuredClone(baseline);
-      },
-      async startBoundRuntime() {
-        events.push('start-same-16');
-        if (state.failStart) throw new Error('simulated startup failure');
-        state.stopped = false;
-      },
-      readRuntimeIdentity() {
-        events.push('running-readback');
-        assert.equal(state.stopped, false);
-        return structuredClone(baseline);
-      },
-    }),
+    createRuntime: ({ bindings }) => {
+      assert.equal(bindings.targetSha, nomination.sourceSha);
+      assert.equal(bindings.targetImageId, nomination.imageId);
+      return {
+        inspectRuntime() {
+          events.push('inspect');
+          assert.equal(state.stopped, false, 'stopped resume must use its frozen baseline');
+          return structuredClone(baseline);
+        },
+        stopRuntime() {
+          events.push('stop');
+          state.stopped = true;
+        },
+        readStoppedRuntime() {
+          events.push('stopped-readback');
+          assert.equal(state.stopped, true);
+          return structuredClone(baseline);
+        },
+        async startBoundRuntime() {
+          events.push('start-same-16');
+          if (state.failStart) throw new Error('simulated startup failure');
+          state.stopped = false;
+        },
+        readRuntimeIdentity() {
+          events.push('running-readback');
+          assert.equal(state.stopped, false);
+          return structuredClone(baseline);
+        },
+      };
+    },
     readConnection: () => ({
       networkId: 'f'.repeat(64),
       environment: 'DATABASE_URL=private\nREDIS_URL=private\n',
@@ -239,6 +268,7 @@ function harness(t) {
   };
   return {
     directory,
+    manifest,
     op,
     events,
     state,
@@ -250,6 +280,280 @@ function harness(t) {
     },
   };
 }
+
+test('mixed controller and API sources preserve installed runtime and immutable preview authority', async (t) => {
+  const h = harness(t);
+  h.options.expectedSha = 'f'.repeat(40);
+  h.options.expectedRuntimeSha = nomination.sourceSha;
+  const request = await h.preview();
+  assert.equal(h.events.includes('stop'), false);
+  const controller = JSON.parse(readFileSync(join(h.op, 'controller.json'), 'utf8'));
+  assert.equal(controller.controllerSha, h.options.expectedSha);
+  assert.equal(controller.sourceSha, nomination.sourceSha);
+  assert.equal(controller.nominationSha256, sha(nomination));
+  assert.equal((await runApplyHostV2(request, h.options)).outcome, 'APPLIED');
+  assert.equal(h.events.filter((event) => event === 'stop').length, 1);
+});
+
+test('mixed sources require independently admitted runtime identity before evidence or helpers', async (t) => {
+  const h = harness(t);
+  h.options.expectedSha = 'f'.repeat(40);
+  await assert.rejects(h.preview(), /controller source mismatch/);
+  assert.deepEqual(h.events, ['lock']);
+  assert.equal(readdirSync(h.directory).includes(`backlog-cancellation-${nomination.id}`), false);
+});
+
+for (const disposition of ['recovered', 'superseded']) {
+  test(`completed ${disposition} release history permits exact recovery and remains intact`, async (t) => {
+    const h = harness(t);
+    const current = join(h.directory, 'current.json');
+    writeFileSync(
+      current,
+      JSON.stringify({
+        ...h.manifest,
+        releaseId: 'fixture-before-transition',
+        createdAt: '2026-10-26T00:00:00.000Z',
+      }),
+    );
+    const recoveryPath = beginReleaseTransition({
+      stateDir: h.directory,
+      kind: 'deploy',
+      now: new Date('2026-10-27T00:00:00.000Z'),
+      pid: 123,
+    });
+    writeFileSync(
+      current,
+      JSON.stringify({ ...h.manifest, createdAt: '2026-10-27T00:00:01.000Z' }),
+      { mode: 0o640 },
+    );
+    const archive = archiveReleaseTransition({
+      stateDir: h.directory,
+      recoveryPath,
+      disposition,
+      now: new Date('2026-10-27T00:00:02.000Z'),
+      pid: 123,
+    });
+    const retainedBytes = readFileSync(archive);
+    const request = await h.preview();
+    assert.equal(h.events.includes('stop'), false);
+    assert.equal((await runApplyHostV2(request, h.options)).outcome, 'APPLIED');
+    assert.deepEqual(readFileSync(archive), retainedBytes);
+  });
+}
+
+test('a bounded complete current manifest is required before preview helpers', async (t) => {
+  const changes = {
+    missing: (h, path) => unlinkSync(path),
+    incomplete: (h, path, value) => {
+      delete value.components['admin-static'];
+      return value;
+    },
+    unknown: (h, path, value) => {
+      value.components['api-shared'].sourceSha = 'unknown';
+      return value;
+    },
+    source: (h, path, value) => {
+      value.components['api-shared'].sourceSha = 'f'.repeat(40);
+      return value;
+    },
+    ref: (h, path, value) => {
+      value.components['api-shared'].imageRef = 'maxim-api:latest';
+      return value;
+    },
+    image: (h, path, value) => {
+      value.components['api-shared'].imageId = `sha256:${'f'.repeat(64)}`;
+      return value;
+    },
+    transition: (h) => {
+      writeFileSync(join(h.directory, 'current.invalid-deploy-20261028T210000Z-1.json'), '{}');
+    },
+    'malformed-transition': (h) => {
+      writeFileSync(join(h.directory, 'current.invalid-unrecognized'), '{}');
+    },
+    'malformed-archive-base': (h) => {
+      writeFileSync(
+        join(h.directory, 'current.invalid-unrecognized.json.recovered-20261028T210000Z-1'),
+        '{}',
+      );
+    },
+    'malformed-archive-suffix': (h) => {
+      writeFileSync(
+        join(h.directory, 'current.invalid-deploy-20261028T210000Z-1.json.recovered'),
+        '{}',
+      );
+    },
+    mode: (h, path) => chmodSync(path, 0o666),
+    hardlink: (h, path) => linkSync(path, join(h.directory, 'other.json')),
+    symlink: (h, path) => {
+      unlinkSync(path);
+      symlinkSync('/dev/null', path);
+    },
+    fifo: (h, path) => {
+      unlinkSync(path);
+      execFileSync('mkfifo', ['-m', '640', path], { timeout: 1000 });
+    },
+    oversized: (h, path) => writeFileSync(path, ' '.repeat(65537)),
+  };
+  for (const [name, change] of Object.entries(changes))
+    await t.test(name, async (t) => {
+      const h = harness(t),
+        path = join(h.directory, 'current.json');
+      const value = change(h, path, structuredClone(h.manifest));
+      if (value && typeof value === 'object') writeFileSync(path, JSON.stringify(value));
+      await assert.rejects(h.preview());
+      assert.equal(
+        h.events.some((event) => event.startsWith('helper:') || event === 'stop'),
+        false,
+      );
+      assert.equal(readBacklogCancellation(h.directory), null);
+    });
+});
+
+test('apply rechecks the installed component before preflight or journal creation', async (t) => {
+  const h = harness(t),
+    request = await h.preview();
+  const before = [...h.events];
+  const manifest = structuredClone(h.manifest);
+  manifest.components['api-shared'].imageId = `sha256:${'f'.repeat(64)}`;
+  writeFileSync(join(h.directory, 'current.json'), JSON.stringify(manifest));
+  await assert.rejects(runApplyHostV2(request, h.options), /manifest mismatch/);
+  assert.deepEqual(h.events.slice(before.length), ['lock', `guard:${nomination.id}`]);
+  assert.equal(readdirSync(h.op).includes('apply.json'), false);
+  assert.equal(readBacklogCancellation(h.directory), null);
+});
+
+test('a new active release transition after READY refuses apply before preflight or stop', async (t) => {
+  const h = harness(t),
+    request = await h.preview();
+  const before = [...h.events];
+  writeFileSync(
+    join(h.directory, 'current.invalid-deploy-20261028T210000Z-1.json'),
+    JSON.stringify(h.manifest),
+  );
+  await assert.rejects(runApplyHostV2(request, h.options), /release transition unfinished/);
+  assert.deepEqual(h.events.slice(before.length), ['lock', `guard:${nomination.id}`]);
+  assert.equal(readdirSync(h.op).includes('apply.json'), false);
+  assert.equal(readBacklogCancellation(h.directory), null);
+});
+
+test('READY evidence refuses missing, changed or unsafe controller bindings before any apply work', async (t) => {
+  const changes = {
+    controller: (h) => {
+      h.options.expectedSha = 'e'.repeat(40);
+    },
+    missing: (h) => unlinkSync(join(h.op, 'controller.json')),
+    changed: (h) => writeFileSync(join(h.op, 'controller.json'), '{}\n'),
+    mode: (h) => chmodSync(join(h.op, 'controller.json'), 0o640),
+    hardlink: (h) => linkSync(join(h.op, 'controller.json'), join(h.op, 'controller-copy.json')),
+    'missing-ready': (h) => unlinkSync(join(h.op, 'controller-ready.json')),
+    'changed-ready': (h) => writeFileSync(join(h.op, 'controller-ready.json'), '{}\n'),
+  };
+  for (const [name, change] of Object.entries(changes))
+    await t.test(name, async (t) => {
+      const h = harness(t);
+      h.options.expectedSha = 'f'.repeat(40);
+      h.options.expectedRuntimeSha = nomination.sourceSha;
+      const request = await h.preview(),
+        before = h.events.length;
+      change(h);
+      await assert.rejects(runApplyHostV2(request, h.options));
+      assert.equal(
+        h.events.slice(before).some((event) => event.startsWith('helper:') || event === 'stop'),
+        false,
+      );
+      assert.equal(readdirSync(h.op).includes('apply.json'), false);
+      assert.equal(readBacklogCancellation(h.directory), null);
+    });
+});
+
+test('legacy same-source READY and stopped evidence remain resumable without new bindings', async (t) => {
+  const h = harness(t),
+    request = await h.preview();
+  for (const file of ['controller.json', 'controller-ready.json']) unlinkSync(join(h.op, file));
+  await runPreviewHostV2(nomination, h.options);
+  assert.equal(readdirSync(h.op).includes('controller.json'), false);
+  h.state.applyMode = 'partial';
+  await assert.rejects(runApplyHostV2(request, h.options), /after write/);
+  assert.equal(readBacklogCancellation(h.directory).controllerSha256, undefined);
+  h.state.applyMode = 'success';
+  assert.equal((await runApplyHostV2(request, h.options)).outcome, 'APPLIED');
+  assert.equal(h.events.filter((event) => event === 'start-same-16').length, 1);
+});
+
+test('old mixed-source preview cannot acquire new controller provenance', async (t) => {
+  const h = harness(t),
+    request = await h.preview();
+  for (const file of ['controller.json', 'controller-ready.json']) unlinkSync(join(h.op, file));
+  h.options.expectedSha = 'f'.repeat(40);
+  h.options.expectedRuntimeSha = nomination.sourceSha;
+  const before = h.events.length;
+  await assert.rejects(h.preview(), /controller missing/);
+  await assert.rejects(runApplyHostV2(request, h.options), /controller missing/);
+  assert.equal(
+    h.events.slice(before).some((event) => event.startsWith('helper:') || event === 'stop'),
+    false,
+  );
+  assert.equal(readdirSync(h.op).includes('controller.json'), false);
+});
+
+test('missing nomination cannot turn retained READY artifacts into a new controller binding', async (t) => {
+  const h = harness(t);
+  await h.preview();
+  for (const file of ['nomination.json', 'controller.json', 'controller-ready.json'])
+    unlinkSync(join(h.op, file));
+  const retained = readdirSync(h.op).sort();
+  const preview = readFileSync(join(h.op, 'preview.json'), 'utf8');
+  const before = h.events.length;
+  h.options.expectedSha = 'f'.repeat(40);
+  h.options.expectedRuntimeSha = nomination.sourceSha;
+  await assert.rejects(h.preview(), /incomplete retained evidence/);
+  assert.deepEqual(readdirSync(h.op).sort(), retained);
+  assert.equal(readFileSync(join(h.op, 'preview.json'), 'utf8'), preview);
+  assert.equal(
+    h.events.slice(before).some((event) => event.startsWith('helper:')),
+    false,
+  );
+});
+
+test('mixed-source stopped resume retains controller, client and all captured generations', async (t) => {
+  const h = harness(t);
+  h.options.expectedSha = 'f'.repeat(40);
+  h.options.expectedRuntimeSha = nomination.sourceSha;
+  const request = await h.preview();
+  h.state.applyMode = 'lost-after-write';
+  await assert.rejects(runApplyHostV2(request, h.options));
+  const journal = readFileSync(join(h.directory, 'backlog-cancellation.json'), 'utf8');
+  const before = h.events.length;
+  h.options.expectedSha = 'e'.repeat(40);
+  await assert.rejects(runApplyHostV2(request, h.options), /controller mismatch/);
+  assert.equal(readFileSync(join(h.directory, 'backlog-cancellation.json'), 'utf8'), journal);
+  assert.equal(
+    h.events.slice(before).some((event) => event.startsWith('helper:') || event === 'stop'),
+    false,
+  );
+  assert.equal(h.state.stopped, true);
+  h.options.expectedSha = 'f'.repeat(40);
+  h.state.applyMode = 'success';
+  const inspections = h.events.filter((event) => event === 'inspect').length;
+  assert.equal((await runApplyHostV2(request, h.options)).outcome, 'APPLIED');
+  assert.equal(h.events.filter((event) => event === 'inspect').length, inspections);
+  assert.equal(h.events.filter((event) => event === 'start-same-16').length, 1);
+});
+
+test('a new same-source operation cannot lose its controller binding while stopped', async (t) => {
+  const h = harness(t),
+    request = await h.preview();
+  h.state.applyMode = 'partial';
+  await assert.rejects(runApplyHostV2(request, h.options), /after write/);
+  for (const file of ['controller.json', 'controller-ready.json']) unlinkSync(join(h.op, file));
+  const before = h.events.length;
+  await assert.rejects(runApplyHostV2(request, h.options), /journal evidence mismatch/);
+  assert.equal(
+    h.events.slice(before).some((event) => event.startsWith('helper:') || event === 'stop'),
+    false,
+  );
+  assert.equal(h.state.stopped, true);
+});
 
 test('v2 input parsers agree with the frozen fixture and reject coercion, noncanonical and broad requests', () => {
   assert.equal(fixture.nominationMaxBytes, 16 * 1024);

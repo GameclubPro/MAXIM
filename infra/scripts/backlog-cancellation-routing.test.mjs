@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +33,15 @@ const start = connector.indexOf('validate_backlog_request() {');
 const end = connector.indexOf('\ncancel_webhook_backlog() {', start);
 assert.ok(start >= 0 && end > start);
 const validation = connector.slice(start, end);
+const functions = connector.slice(
+  connector.indexOf('cancel_webhook_backlog() {'),
+  connector.indexOf('\nlegacy_cold_recovery() {'),
+);
+const shellSource = readFileSync(new URL('./vps-backlog-cancellation.sh', import.meta.url), 'utf8');
+const entrypoints = [
+  ['cancel_webhook_backlog', fixture.validApply],
+  ['preview_webhook_backlog', fixture.validNomination],
+];
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -131,51 +150,222 @@ test('the broad legacy continuation refuses scoped requests before a runtime or 
   assert.match(result.stderr, /preserve the exact operation/);
 });
 
-test('connector sends the validated bytes even if the original file changes during the CI wait', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'maxim-cancel-pinned-input-'));
-  const functions = connector.slice(
-    connector.indexOf('cancel_webhook_backlog() {'),
-    connector.indexOf('\nlegacy_cold_recovery() {'),
-  );
-  try {
-    for (const [entrypoint, value] of [
-      ['cancel_webhook_backlog', fixture.validApply],
-      ['preview_webhook_backlog', fixture.validNomination],
-    ]) {
-      const path = join(directory, 'request.json');
-      writeFileSync(path, bytes(value), { mode: 0o600 });
-      const script = `${validation}\n${functions}\n
-git() { printf '%s\\n' "$TEST_SOURCE_SHA"; }
+function runConnector(value, entrypoint, settings = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-cancel-routing-'));
+  const path = join(directory, 'request.json');
+  const events = join(directory, 'events');
+  const remote = join(directory, 'remote');
+  writeFileSync(path, bytes(value), { mode: 0o600 });
+  const script = `${validation}\n${functions}\n
+git() {
+  if [[ "$3" == rev-parse && "$4" == HEAD ]]; then
+    if [[ -e "$TEST_EVENTS" && "$TEST_DRIFT" == sha ]]; then printf '%s\\n' "$TEST_CHANGED_SHA";
+    else printf '%s\\n' "$TEST_SOURCE_SHA"; fi
+  elif [[ "$3" == status ]]; then
+    if [[ "$TEST_DIRTY" == 1 || ( -e "$TEST_EVENTS" && "$TEST_DRIFT" == dirty ) ]]; then printf '%s\\n' ' M owned-script';
+    elif [[ "$TEST_GIT_STATUS_FAILURE" == 1 ]]; then return 3; fi
+  else return 99; fi
+}
 node() {
   if [[ "$1" == "$ROOT_DIR/scripts/ci/assert-green.mjs" ]]; then
-    printf '%s\\n' 'changed-during-ci' > "$TEST_REQUEST_PATH"
-  else
-    command node "$@"
-  fi
+    printf 'ci:%s\\n' "$2" >> "$TEST_EVENTS"
+    if [[ "$TEST_MUTATE" == 1 ]]; then printf '%s\\n' 'changed-during-ci' > "$TEST_REQUEST_PATH"; fi
+    if [[ "$2" == "$TEST_CI_FAIL_SHA" ]]; then return 1; fi
+  else command node "$@"; fi
 }
-shell_quote_args() { printf '%s' 'mock-remote'; }
-remote_exec() { cat; }
+shell_quote_args() { printf '%q ' "$@"; }
+remote_exec() {
+  printf '%s\\n' ssh >> "$TEST_EVENTS"
+  printf '%s\\n' "$1" > "$TEST_REMOTE"
+  cat
+}
 "$1" "$2"
 `;
-      const result = spawnSync(
-        'bash',
-        ['-euo', 'pipefail', '-c', script, 'pinned', entrypoint, path],
-        {
-          encoding: 'utf8',
-          timeout: 10_000,
-          env: {
-            ...process.env,
-            ROOT_DIR: root,
-            TEST_SOURCE_SHA: value.sourceSha,
-            TEST_REQUEST_PATH: path,
-          },
+  try {
+    const result = spawnSync(
+      'bash',
+      ['-euo', 'pipefail', '-c', script, 'routing', entrypoint, path],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          ROOT_DIR: root,
+          TEST_SOURCE_SHA: settings.controllerSha ?? value.sourceSha,
+          TEST_CHANGED_SHA: 'f'.repeat(40),
+          TEST_REQUEST_PATH: path,
+          TEST_EVENTS: events,
+          TEST_REMOTE: remote,
+          TEST_DIRTY: settings.dirty ? '1' : '0',
+          TEST_GIT_STATUS_FAILURE: settings.gitStatusFailure ? '1' : '0',
+          TEST_MUTATE: settings.mutate ? '1' : '0',
+          TEST_DRIFT: settings.drift ?? '',
+          TEST_CI_FAIL_SHA: settings.ciFailSha ?? '',
         },
-      );
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(readFileSync(path, 'utf8'), 'changed-during-ci\n');
-      assert.equal(result.stdout, bytes(value));
-    }
+      },
+    );
+    return {
+      ...result,
+      events: existsSync(events) ? readFileSync(events, 'utf8').trim().split('\n') : [],
+      remote: existsSync(remote) ? readFileSync(remote, 'utf8').trim() : '',
+      request: readFileSync(path, 'utf8'),
+    };
   } finally {
     rmSync(directory, { recursive: true });
+  }
+}
+
+test('connector sends frozen bytes and runtime identity when the input changes during either CI wait', () => {
+  const controllerSha = 'e'.repeat(40);
+  for (const [entrypoint, value] of entrypoints) {
+    const result = runConnector(value, entrypoint, { controllerSha, mutate: true });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.request, 'changed-during-ci\n');
+    assert.equal(result.stdout, bytes(value));
+    assert.deepEqual(result.events, [`ci:${controllerSha}`, `ci:${value.sourceSha}`, 'ssh']);
+    assert.ok(result.remote.includes(`MAXIM_EXPECTED_DEPLOY_SHA=${controllerSha}`));
+    assert.ok(result.remote.includes(`MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA=${value.sourceSha}`));
+    assert.equal(result.remote.includes('--preview'), entrypoint === 'preview_webhook_backlog');
+  }
+});
+
+test('connector checks one exact CI identity for same-source v2 and preserves same-source legacy apply', () => {
+  const legacy = Object.fromEntries(
+    ['id', 'cutoff', 'sourceSha', 'imageId'].map((key) => [key, fixture.validApply[key]]),
+  );
+  for (const [entrypoint, value] of [...entrypoints, ['cancel_webhook_backlog', legacy]]) {
+    const result = runConnector(value, entrypoint);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, bytes(value));
+    assert.deepEqual(result.events, [`ci:${value.sourceSha}`, 'ssh']);
+  }
+  const mismatch = runConnector(legacy, 'cancel_webhook_backlog', {
+    controllerSha: 'e'.repeat(40),
+  });
+  assert.equal(mismatch.status, 2);
+  assert.deepEqual(mismatch.events, []);
+  assert.equal(mismatch.remote, '');
+});
+
+test('either failed exact CI check blocks SSH and never falls back to the other source', () => {
+  const controllerSha = 'e'.repeat(40);
+  for (const [entrypoint, value] of entrypoints) {
+    for (const ciFailSha of [controllerSha, value.sourceSha]) {
+      const result = runConnector(value, entrypoint, { controllerSha, ciFailSha });
+      assert.equal(result.status, 1, result.stderr);
+      assert.deepEqual(
+        result.events,
+        ciFailSha === controllerSha
+          ? [`ci:${controllerSha}`]
+          : [`ci:${controllerSha}`, `ci:${value.sourceSha}`],
+      );
+      assert.equal(result.remote, '');
+      assert.equal(result.stdout, '');
+    }
+  }
+});
+
+test('dirty or unreadable local source refuses before CI and source drift during CI refuses before SSH', () => {
+  for (const [entrypoint, value] of entrypoints) {
+    for (const settings of [{ dirty: true }, { gitStatusFailure: true }]) {
+      const result = runConnector(value, entrypoint, settings);
+      assert.equal(result.status, 2, result.stderr);
+      assert.deepEqual(result.events, []);
+      assert.equal(result.remote, '');
+    }
+    for (const drift of ['sha', 'dirty']) {
+      const result = runConnector(value, entrypoint, { drift });
+      assert.equal(result.status, 2, result.stderr);
+      assert.deepEqual(result.events, [`ci:${value.sourceSha}`]);
+      assert.equal(result.remote, '');
+    }
+  }
+});
+
+function runHostShell(settings = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-cancel-shell-'));
+  const scripts = join(directory, 'infra', 'scripts');
+  const binary = join(directory, 'bin');
+  mkdirSync(join(scripts, 'lib'), { recursive: true });
+  mkdirSync(binary);
+  const events = join(directory, 'events');
+  writeFileSync(join(scripts, 'vps-backlog-cancellation.sh'), shellSource);
+  writeFileSync(
+    join(scripts, 'lib', 'deploy-lock.sh'),
+    `acquire_deploy_lock() {
+  printf '%s\n' lock >> "$TEST_EVENTS"
+  touch "$TEST_ACQUIRED"
+}\n`,
+  );
+  writeFileSync(
+    join(binary, 'git'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == rev-parse ]]; then
+  if [[ -e "$TEST_ACQUIRED" && "$TEST_DRIFT" == sha ]]; then printf '%s\n' "$TEST_CHANGED_SHA";
+  else printf '%s\n' "$MAXIM_EXPECTED_DEPLOY_SHA"; fi
+elif [[ "$1" == status ]]; then
+  if [[ "$TEST_DIRTY" == 1 || ( -e "$TEST_ACQUIRED" && "$TEST_DRIFT" == dirty ) ]]; then printf '%s\n' ' M changed';
+  elif [[ -e "$TEST_ACQUIRED" && "$TEST_DRIFT" == status-failure ]]; then exit 3; fi
+else exit 99; fi
+`,
+  );
+  writeFileSync(
+    join(binary, 'node'),
+    `#!/usr/bin/env bash
+printf '%s\n' node >> "$TEST_EVENTS"
+printf '%s\n' "$MAXIM_EXPECTED_DEPLOY_SHA" "\${MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA-unset}"
+`,
+  );
+  chmodSync(join(binary, 'git'), 0o700);
+  chmodSync(join(binary, 'node'), 0o700);
+  try {
+    const env = {
+      ...process.env,
+      PATH: `${binary}:${process.env.PATH}`,
+      TEST_EVENTS: events,
+      TEST_ACQUIRED: join(directory, 'acquired'),
+      TEST_DRIFT: settings.drift ?? '',
+      TEST_CHANGED_SHA: 'f'.repeat(40),
+      TEST_DIRTY: settings.dirty ? '1' : '0',
+      MAXIM_EXPECTED_DEPLOY_SHA: 'e'.repeat(40),
+    };
+    delete env.MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA;
+    if (Object.hasOwn(settings, 'runtimeSha'))
+      env.MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA = settings.runtimeSha;
+    const result = spawnSync('bash', [join(scripts, 'vps-backlog-cancellation.sh'), '--preview'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      env,
+    });
+    return {
+      ...result,
+      events: existsSync(events) ? readFileSync(events, 'utf8').trim().split('\n') : [],
+    };
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
+}
+
+test('host shell preserves separate identities and old omitted-runtime entry while checking clean locked source', () => {
+  for (const settings of [{}, { runtimeSha: fixture.validApply.sourceSha }]) {
+    const result = runHostShell(settings);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.events, ['lock', 'node']);
+    assert.equal(result.stdout, `${'e'.repeat(40)}\n${settings.runtimeSha ?? 'unset'}\n`);
+  }
+  for (const settings of [{ dirty: true }, { runtimeSha: '' }, { runtimeSha: 'invalid' }]) {
+    const result = runHostShell(settings);
+    assert.equal(result.status, 2, result.stderr);
+    assert.deepEqual(result.events, []);
+  }
+});
+
+test('host shell refuses source or cleanliness drift after acquiring the deploy lock before launching Node', () => {
+  for (const drift of ['sha', 'dirty', 'status-failure']) {
+    const result = runHostShell({ drift, runtimeSha: fixture.validApply.sourceSha });
+    assert.equal(result.status, 2, result.stderr);
+    assert.deepEqual(result.events, ['lock']);
+    assert.equal(result.stdout, '');
   }
 });

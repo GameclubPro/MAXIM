@@ -40,12 +40,33 @@ cutoffs and changed identities refuse. Nomination and apply inputs are bounded t
 16 KiB and 4 KiB respectively.
 
 Run `./infra/scripts/vps-connect.sh preview-webhook-backlog /absolute/private/nomination.json`.
-The connector requires exact green CI and matching installed source/image. The installed
+The connector requires a clean synchronized controller and exact green CI for both the
+controller and the nominated installed API source, checking once when they are identical.
+`sourceSha` remains the installed API source, not the current controller checkout. A static
+release or reviewed tooling synchronization can legitimately give these different identities.
+The host rechecks its clean exact controller after acquiring the shared deploy lock. Its
+bounded current manifest must be complete, with no unresolved `current.invalid-*` evidence.
+Exact `.json.recovered-<timestamp>-<pid>` and `.json.superseded-<timestamp>-<pid>` archives
+produced by the release writer remain retained history; active or unrecognized transition
+names still refuse. The API component must match the nominated source, canonical image ref
+and image ID.
+The manifest's overall target and retained static sources need not match the controller.
+The installed
 image's client performs read-only PostgreSQL and Redis inspection, without constructing
 BullMQ queues. It records the exact roots, stable claim/receipt digests and attributed
 queue/job identities in private immutable evidence under
 `/var/lib/maxim-deploy/backlog-cancellation-<id>/`. A READY result includes `previewSha256`;
 DENY, truncation, missing evidence or a cap is not permission to broaden the scope.
+
+New previews retain private immutable `controller.json` and `controller-ready.json` beside
+the existing evidence. They bind the exact controller to the nomination and READY digest
+without changing the installed client's request or binding format. Apply and stopped resume
+require these identities unchanged before helper execution or fleet mutation; the journal
+also retains the controller digest. A changed controller before the first stop requires a
+new preview and operation ID. Never replace sidecars or infer provenance for old mixed-source
+evidence. Legacy v2 evidence without these files remains supported only with its original
+same-source controller. Stopped recovery still uses the captured sixteen generations and
+does not require currently running API containers.
 
 Selection uses primary-key root reads and indexed semantic/pending-message families,
 not the global pre-cutoff backlog. The pending-message index excludes QUARANTINED;
