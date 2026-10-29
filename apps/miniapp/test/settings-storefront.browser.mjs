@@ -1,0 +1,238 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { chromium, webkit } from 'playwright';
+import {
+  allocateMiniappBaseUrl,
+  ensureMiniappDevServer,
+  stopChildProcess,
+} from '../../../scripts/miniapp-local-server.mjs';
+import {
+  captureBrowserLaunchOptions,
+  settleVisualFrame,
+} from '../../../scripts/miniapp-smartphone.mjs';
+import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+
+const fixtures = resolve(import.meta.dirname, '../build/storefront-browser-fixtures');
+await mkdir(fixtures, { recursive: true });
+const fixture = await mkdtemp(`${fixtures}/section-`);
+const output = await mkdtemp('/tmp/maxim-storefront-section-');
+const base = await allocateMiniappBaseUrl('http://127.0.0.1/app/');
+const url = `${base}build/storefront-browser-fixtures/${fixture.split('/').at(-1)}/index.html`;
+const scenarios = process.env.STOREFRONT_BROWSER_SCENARIOS?.split(',') ?? [
+  'disabled',
+  'off',
+  'loading',
+  'error',
+];
+assert.ok(
+  scenarios.length > 0 &&
+    scenarios.every((item) => ['disabled', 'off', 'loading', 'error'].includes(item)),
+  'Unknown storefront browser scenario',
+);
+await writeFile(
+  `${fixture}/index.html`,
+  '<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="./fixture.tsx"></script></body></html>',
+);
+await writeFile(
+  `${fixture}/fixture.tsx`,
+  `
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import type {ApiTransport} from '../../../src/lib/api/transport';
+import {ToastProvider} from '../../../src/components/ui/toast';
+import {SettingsStorefrontSection} from '../../../src/pages/settings/settings-storefront-section';
+import '../../../src/styles.css';
+// Load the actual route and shell styles, including lazy settings dependencies.
+import '../../../src/pages/settings-page';
+import '../../../src/styles/moderation-workspace.css';
+const params=new URLSearchParams(location.search);
+const scenario=params.get('scenario');
+document.documentElement.dataset.maxTheme=params.get('theme') || 'light';
+document.body.dataset.miniappProfile='moderation';
+document.body.classList.add('settings-home-page-open');
+window.__requests=[]; window.__saves=[];
+let reads=0;
+const api={request:async(path,init={})=>{
+  window.__requests.push({path,method:init.method||'GET'});
+  if(path.endsWith('/karavan-storefront/allowlist?limit=100')) return {items:[],nextCursor:null};
+  if(!path.endsWith('/karavan-marketplace')) throw new Error('Unexpected request: '+path);
+  if(scenario==='error' && reads++===0) throw new Error('Offline');
+  if(scenario==='loading') return new Promise(resolve=>{window.__resolveShop=()=>resolve({enabled:false});});
+  return {enabled:false};
+},requestKeepalive:()=>{}} satisfies ApiTransport;
+const initial={karavanStorefrontEnabled:scenario!=='off',karavanStorefrontAdminsOnly:false,karavanStorefrontMessageText:'',karavanStorefrontOpenButtonText:'',karavanStorefrontCatalogButtonText:'',karavanStorefrontCreateButtonText:''};
+function Harness(){
+  const [open,setOpen]=React.useState(false);
+  const [draft,setDraft]=React.useState(initial);
+  const [saved,setSaved]=React.useState(initial);
+  const change=(field,value)=>setDraft(current=>({...current,[field]:value}));
+  return <SettingsStorefrontSection api={api} chatId="-123" draft={draft} expanded={open} summary="" status=""
+    hasChanges={JSON.stringify(draft)!==JSON.stringify(saved)} onToggleSection={()=>setOpen(value=>!value)}
+    onDiscardChanges={()=>setDraft(saved)} onFieldChange={value=>change('karavanStorefrontEnabled',value)}
+    onAdminsOnlyChange={value=>change('karavanStorefrontAdminsOnly',value)} onTextChange={change}
+    footer={<button onClick={()=>{window.__saves.push(draft);setSaved(draft);}}>Сохранить</button>}/>;
+}
+createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}})}><ToastProvider><Harness/></ToastProvider></QueryClientProvider>);
+`,
+);
+
+let server;
+let passed = 0;
+try {
+  server = await ensureMiniappDevServer(base);
+  for (const [engineName, engine] of [
+    ['chromium', chromium],
+    ['webkit', webkit],
+  ]) {
+    const browser = await engine.launch(captureBrowserLaunchOptions(engineName, base));
+    try {
+      for (const width of [320, 360, 390, 430]) {
+        for (const theme of ['light', 'dark']) {
+          for (const scenario of scenarios) {
+            const context = await browser.newContext({
+              viewport: { width, height: 740 },
+              isMobile: true,
+              hasTouch: true,
+              colorScheme: theme,
+              reducedMotion: 'reduce',
+            });
+            try {
+              await context.route('**/*', (route) =>
+                new URL(route.request().url()).origin === new URL(base).origin
+                  ? route.continue()
+                  : route.abort(),
+              );
+              await installMaxBridgeShimInitScript(context, {
+                platform: engineName === 'webkit' ? 'ios' : 'android',
+              });
+              const page = await context.newPage();
+              page.setDefaultTimeout(10_000);
+              const errors = [];
+              page.on('pageerror', (error) => errors.push(error.message));
+              await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);
+              await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+              const sheet = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+              await sheet.waitFor();
+              const toggle = sheet.getByRole('checkbox', {
+                name: 'Включить кнопку витрины Караван',
+              });
+              await toggle.waitFor({ state: 'visible' });
+              if (scenario === 'loading') {
+                await sheet
+                  .getByRole('status', { name: 'Проверяем магазин', exact: true })
+                  .waitFor();
+                await page.waitForFunction(() => typeof window.__resolveShop === 'function');
+                await page.evaluate(() => window.__resolveShop());
+              }
+              if (scenario === 'error') {
+                await sheet
+                  .getByRole('alert')
+                  .filter({ hasText: 'Не удалось проверить магазин.' })
+                  .waitFor();
+                await sheet.getByRole('button', { name: 'Повторить', exact: true }).click();
+              }
+              await sheet.getByText('Магазин чата пока недоступен.', { exact: true }).waitFor();
+              await settleVisualFrame(page);
+              const label = `${engineName}-${width}-${theme}-${scenario}`;
+              assert.equal(
+                await sheet.getByRole('button', { name: 'Подключить магазин' }).count(),
+                0,
+              );
+              assert.equal(await toggle.isChecked(), scenario !== 'off');
+              assert.equal(
+                await sheet.locator('#karavanStorefrontMessageText').isVisible(),
+                scenario !== 'off',
+              );
+              assert.equal(
+                await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+                true,
+                `${label}: page overflow`,
+              );
+              const bounds = await sheet
+                .locator('.settings-storefront__publications')
+                .evaluate((node) => {
+                  const rect = node.getBoundingClientRect();
+                  const summary = node.querySelector('summary').getBoundingClientRect();
+                  return {
+                    left: rect.left,
+                    right: rect.right,
+                    height: summary.height,
+                    overflow: node.scrollWidth > node.clientWidth + 1,
+                  };
+                });
+              assert.ok(
+                bounds.left >= 0 &&
+                  bounds.right <= width + 1 &&
+                  bounds.height >= 44 &&
+                  !bounds.overflow,
+                `${label}: publication layout`,
+              );
+              const presentation = await sheet.evaluate((node) => {
+                const rect = node.getBoundingClientRect();
+                const close = node
+                  .querySelector('button[aria-label="Закрыть панель"]')
+                  .getBoundingClientRect();
+                const toggle = node
+                  .querySelector('.settings-native-switch')
+                  .getBoundingClientRect();
+                return { width: rect.width, close: close.width, toggle: toggle.width };
+              });
+              assert.ok(
+                presentation.width >= width - 32 &&
+                  presentation.close >= 40 &&
+                  presentation.toggle >= 44,
+                `${label}: actual sheet and switch styles must be loaded`,
+              );
+              await page.screenshot({ path: `${output}/${label}.png` });
+              const summary = sheet.locator('.settings-storefront__publications > summary');
+              await summary.click();
+              assert.equal(await toggle.isVisible(), false);
+              await summary.click();
+              await toggle.setChecked(scenario === 'off');
+              assert.deepEqual(
+                await page.evaluate(() => window.__saves),
+                [],
+                'draft changes require explicit save',
+              );
+              await sheet.getByRole('button', { name: 'Сохранить', exact: true }).click();
+              assert.equal(
+                await page.evaluate(() => window.__saves.at(-1).karavanStorefrontEnabled),
+                scenario === 'off',
+              );
+              await sheet.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+              await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+              await toggle.waitFor({ state: 'visible' });
+              assert.equal(
+                await toggle.isChecked(),
+                scenario === 'off',
+                'warm reopen preserves saved state',
+              );
+              assert.deepEqual(
+                await page.evaluate(() =>
+                  window.__requests.filter((item) => item.method !== 'GET'),
+                ),
+                [],
+                'opening settings never activates the marketplace',
+              );
+              assert.deepEqual(errors, []);
+              passed++;
+            } finally {
+              await context.close();
+            }
+          }
+          console.log(
+            `Storefront section: ${engineName}/${width}/${theme} passed (${passed} cases).`,
+          );
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+  }
+  console.log(`Storefront section: ${passed} cases passed. Screenshots: ${output}`);
+} finally {
+  if (server) await stopChildProcess(server);
+  await rm(fixture, { recursive: true, force: true });
+}
