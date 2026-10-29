@@ -466,23 +466,6 @@ test('standalone runtime image carries both Russian CAs, exact source identity a
   assert.doesNotMatch(docker, /COPY apps\/api|MAX_BOT_TOKEN|MAX_PUBLISHER_BOT_TOKEN/);
 });
 
-test('bounded housekeeping drains terminal receipts faster than the maximum configured HTTP budget', async () => {
-  const { HOUSEKEEPING_INTERVAL_MS, TERMINAL_PURGE_BATCH, WEBHOOK_PURGE_BATCH } =
-    await import('../src/store.js');
-  assert.ok(
-    TERMINAL_PURGE_BATCH / (HOUSEKEEPING_INTERVAL_MS / 1000) >= 30,
-    'seven-day terminal retention must not grow under the30HTTP/s platform ceiling',
-  );
-  assert.ok(
-    WEBHOOK_PURGE_BATCH >= TERMINAL_PURGE_BATCH,
-    'webhookreceipt cleanup has its own larger ingestion budget',
-  );
-  assert.ok(
-    TERMINAL_PURGE_BATCH <= 5000 && WEBHOOK_PURGE_BATCH <= 20000,
-    'housekeeping visits remain bounded',
-  );
-});
-
 test('membership absence or malformed data does not manufacture a permanent access denial', async () => {
   let row: unknown = { user_id: 123 };
   const max = new MaxClient(

@@ -3,10 +3,12 @@ set -euo pipefail
 umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BACKUP_DIR="${MAXIM_BACKUP_DIR:-$ROOT_DIR/infra/data/backups}"
+# shellcheck source=infra/scripts/lib/postgres-backup-profile.sh
+source "$ROOT_DIR/infra/scripts/lib/postgres-backup-profile.sh"
+BACKUP_DIR="$(maxim_backup_profile_directory "${MAXIM_BACKUP_DIR:-$ROOT_DIR/infra/data/backups}")"
 POSTGRES_IMAGE="${MAXIM_BACKUP_POSTGRES_IMAGE:-postgres:16-alpine}"
 COMPOSE_FILE="${MAXIM_BACKUP_COMPOSE_FILE:-$ROOT_DIR/infra/docker-compose.yml}"
-RESTORE_DATA_ROOT="${MAXIM_RESTORE_SMOKE_DATA_ROOT:-$BACKUP_DIR/restore-smoke-data}"
+RESTORE_DATA_ROOT="$(maxim_backup_profile_directory "${MAXIM_RESTORE_SMOKE_DATA_ROOT:-${MAXIM_BACKUP_DIR:-$ROOT_DIR/infra/data/backups}/restore-smoke-data}")"
 MIN_FREE_BYTES="${MAXIM_RESTORE_SMOKE_MIN_FREE_BYTES:-2147483648}"
 REQUIRED_PERCENT="${MAXIM_RESTORE_SMOKE_REQUIRED_PERCENT:-125}"
 REQUIRE_DEDICATED_FILESYSTEM="${MAXIM_RESTORE_SMOKE_REQUIRE_DEDICATED_FILESYSTEM:-1}"
@@ -51,7 +53,7 @@ fi
 # FLAG: A restore competes for the same disks as production. Serialize it with the
 # producer and deployments, and never start without healthy production readiness.
 probe_ready() {
-  node "$ROOT_DIR/infra/scripts/probe-postgres-backup-readiness.mjs" "$READINESS_URL" 10
+  maxim_backup_profile_readiness "$READINESS_URL" 10
 }
 probe_ready
 if [[ "$MODE" != --preflight-only ]]; then
@@ -61,7 +63,7 @@ if [[ "$MODE" != --preflight-only ]]; then
   trap release_deploy_lock EXIT
 fi
 if [[ -z "$DUMP_PATH" ]]; then
-  DUMP_PATH="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'maxim_*.dump' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d ' ' -f 2-)"
+  DUMP_PATH="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${MAXIM_BACKUP_PREFIX}_*.dump" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n 1 | cut -d ' ' -f 2-)"
 fi
 
 if [[ -z "$DUMP_PATH" || ! -f "$DUMP_PATH" || ! -s "$DUMP_PATH" ]]; then
@@ -71,6 +73,8 @@ fi
 
 DUMP_DIR="$(cd "$(dirname "$DUMP_PATH")" && pwd)"
 DUMP_PATH="$DUMP_DIR/$(basename "$DUMP_PATH")"
+[[ "$(basename "$DUMP_PATH")" =~ ^${MAXIM_BACKUP_PREFIX}_[0-9]{8}T[0-9]{6}Z\.dump$ ]]
+[[ ! -L "$DUMP_PATH" ]]
 CHECKSUM_PATH="$DUMP_PATH.sha256"
 if [[ ! -f "$CHECKSUM_PATH" ]]; then
   echo "Backup checksum is missing: $CHECKSUM_PATH" >&2
@@ -97,8 +101,8 @@ if [[ "$REQUIRE_DEDICATED_FILESYSTEM" == "1" ]] && \
   exit 1
 fi
 DATABASE_BYTES="$(
-  docker compose -f "$COMPOSE_FILE" exec -T postgres \
-    psql -U maxim -d maxim -Atqc 'SELECT pg_database_size(current_database())'
+  docker compose -f "$COMPOSE_FILE" exec -T "$MAXIM_BACKUP_SERVICE" \
+    psql -U "$MAXIM_BACKUP_DATABASE" -d "$MAXIM_BACKUP_DATABASE" -Atqc 'SELECT pg_database_size(current_database())'
 )"
 DATABASE_BYTES="${DATABASE_BYTES//[[:space:]]/}"
 AVAILABLE_BYTES="$(df -PB1 "$RESTORE_DATA_ROOT" | awk 'NR == 2 { print $4 }')"
@@ -122,8 +126,8 @@ if [[ "$MODE" == "--preflight-only" ]]; then
   exit 0
 fi
 
-CONTAINER_NAME="maxim-postgres-restore-smoke-$$-$RANDOM"
-RESTORE_DATA_DIR="$(mktemp -d "$RESTORE_DATA_ROOT/maxim-restore-smoke.XXXXXX")"
+CONTAINER_NAME="${MAXIM_BACKUP_UNIT_PREFIX}-restore-smoke-$$-$RANDOM"
+RESTORE_DATA_DIR="$(mktemp -d "$RESTORE_DATA_ROOT/${MAXIM_BACKUP_PREFIX}-restore-smoke.XXXXXX")"
 WATCHDOG_PID=""
 ABORT_MARKER="$RESTORE_DATA_DIR/.watchdog-aborted"
 cleanup() {
@@ -196,25 +200,31 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 docker exec -i "$CONTAINER_NAME" pg_restore --list < "$DUMP_PATH" >/dev/null
-docker exec "$CONTAINER_NAME" createdb -U postgres maxim_restore_smoke
+docker exec "$CONTAINER_NAME" createdb -U postgres "${MAXIM_BACKUP_PREFIX}_restore_smoke"
 timeout --signal=TERM --kill-after=30s "${MAX_DURATION_SEC}s" docker exec -i "$CONTAINER_NAME" pg_restore \
   -U postgres \
-  -d maxim_restore_smoke \
+  -d "${MAXIM_BACKUP_PREFIX}_restore_smoke" \
   --exit-on-error \
   --no-owner \
   --no-privileges < "$DUMP_PATH"
 
 HAS_MIGRATIONS_TABLE="$(
-  docker exec "$CONTAINER_NAME" psql -U postgres -d maxim_restore_smoke -Atqc \
-    "SELECT CASE WHEN to_regclass('public._prisma_migrations') IS NULL THEN 0 ELSE 1 END"
+  docker exec "$CONTAINER_NAME" psql -U postgres -d "${MAXIM_BACKUP_PREFIX}_restore_smoke" -Atqc \
+    "SELECT CASE WHEN to_regclass('public.${MAXIM_BACKUP_MIGRATIONS_TABLE}') IS NULL THEN 0 ELSE 1 END"
 )"
 if [[ "$HAS_MIGRATIONS_TABLE" != 1 ]]; then
-  echo "Restore smoke did not find the Prisma migration table." >&2
+  echo "Restore smoke did not find the selected migration table." >&2
   exit 1
 fi
 
+SCHEMA_DIGEST=""
+if [[ "$MAXIM_BACKUP_PROFILE" == eraser ]]; then
+  SCHEMA_DIGEST="$(node "$ROOT_DIR/infra/scripts/eraser-restore-invariants.mjs" --digest)"
+  INVARIANTS="$(node "$ROOT_DIR/infra/scripts/eraser-restore-invariants.mjs" --sql |
+    docker exec -i "$CONTAINER_NAME" psql -U postgres -d "${MAXIM_BACKUP_PREFIX}_restore_smoke" -XAtq -v ON_ERROR_STOP=1)"
+else
 # FLAG: These queries run only inside the disposable restored database, never the primary.
-INVARIANTS="$(docker exec "$CONTAINER_NAME" psql -U postgres -d maxim_restore_smoke -Atqc "
+INVARIANTS="$(docker exec "$CONTAINER_NAME" psql -U postgres -d "${MAXIM_BACKUP_PREFIX}_restore_smoke" -Atqc "
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM (VALUES ('webhook_events'), ('webhook_execution_claims'),
       ('max_action_ledger'), ('publications'), ('publication_occurrences'),
@@ -226,15 +236,16 @@ INVARIANTS="$(docker exec "$CONTAINER_NAME" psql -U postgres -d maxim_restore_sm
   ) AND NOT EXISTS (SELECT 1 FROM public._prisma_migrations
     WHERE finished_at IS NULL AND rolled_back_at IS NULL)
   THEN 1 ELSE 0 END")"
+fi
 [[ "$INVARIANTS" == 1 && ! -e "$ABORT_MARKER" ]]
 probe_ready
 RECEIPT_TMP="$(mktemp "$DUMP_PATH.restore-verified.XXXXXX.tmp")"
-node - "$DUMP_PATH" "$POSTGRES_IMAGE" >"$RECEIPT_TMP" <<'JS'
+node - "$DUMP_PATH" "$POSTGRES_IMAGE" "$MAXIM_BACKUP_PROFILE" "$MAXIM_BACKUP_RESTORE_VERIFICATION" "$SCHEMA_DIGEST" >"$RECEIPT_TMP" <<'JS'
 const fs=require('node:fs');
-const [dump, postgresImage]=process.argv.slice(2);
+const [dump, postgresImage, profile, verification, schemaDigest]=process.argv.slice(2);
 process.stdout.write(JSON.stringify({ schemaVersion:1, verifiedAt:new Date().toISOString(),
   dump:require('node:path').basename(dump), dumpSha256:fs.readFileSync(dump+'.sha256','utf8').split(/\s+/)[0],
-  postgresImage, verification:'isolated_restore_and_authority_schema', network:'none' })+'\n');
+  postgresImage, profile, verification, ...(schemaDigest ? {schemaDigest} : {}), network:'none' })+'\n');
 JS
 mv "$RECEIPT_TMP" "$DUMP_PATH.restore-verified.json"
 

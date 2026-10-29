@@ -2,7 +2,8 @@ import { opendir, readFile, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export async function checkPostgresBackupHealth(directory, now = Date.now()) {
+export async function checkPostgresBackupHealth(directory, now = Date.now(), profile = 'maxim') {
+  if (!['maxim', 'eraser'].includes(profile)) throw new Error('Unknown backup profile');
   const receipts = { independent: [], restore: [] };
   let entries = 0;
   const problems = [];
@@ -12,7 +13,9 @@ export async function checkPostgresBackupHealth(directory, now = Date.now()) {
         problems.push('directory_cap_exceeded');
         break;
       }
-      const match = /^maxim_\d{8}T\d{6}Z\.dump\.(remote|restore)-verified\.json$/.exec(entry.name);
+      const match = new RegExp(
+        '^' + profile + '_\\d{8}T\\d{6}Z\\.dump\\.(remote|restore)-verified\\.json$',
+      ).exec(entry.name);
       if (!match) continue;
       const path = join(directory, entry.name);
       const stat = await lstat(path);
@@ -27,9 +30,17 @@ export async function checkPostgresBackupHealth(directory, now = Date.now()) {
         const expected =
           kind === 'independent'
             ? 'full_ciphertext_readback'
-            : 'isolated_restore_and_authority_schema';
+            : profile === 'eraser'
+              ? 'isolated_restore_and_eraser_schema'
+              : 'isolated_restore_and_authority_schema';
         if (
           value.schemaVersion !== 1 ||
+          (profile === 'eraser'
+            ? value.profile !== 'eraser'
+            : value.profile !== undefined && value.profile !== 'maxim') ||
+          (kind === 'restore' &&
+            profile === 'eraser' &&
+            !/^[a-f0-9]{64}$/.test(value.schemaDigest ?? '')) ||
           value.verification !== expected ||
           !/^[a-f0-9]{64}$/.test(value.dumpSha256) ||
           !Number.isFinite(at) ||
@@ -59,6 +70,7 @@ export async function checkPostgresBackupHealth(directory, now = Date.now()) {
     problems.push('restore_overdue');
   return {
     schemaVersion: 1,
+    profile,
     ok: problems.length === 0,
     observedAt: new Date(now).toISOString(),
     evidence: 'verified_receipts',
@@ -73,7 +85,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   if (!directory || directory !== resolve(directory) || process.argv.length > 2) {
     throw new Error('Set an absolute MAXIM_BACKUP_DIR; this command accepts no arguments.');
   }
-  const report = await checkPostgresBackupHealth(directory);
+  const profile = process.env.MAXIM_BACKUP_PROFILE ?? 'maxim';
+  const report = await checkPostgresBackupHealth(
+    profile === 'eraser' ? join(directory, 'eraser') : directory,
+    Date.now(),
+    profile,
+  );
   process.stdout.write(JSON.stringify(report) + '\n');
   if (!report.ok) process.exitCode = 1;
 }

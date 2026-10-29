@@ -119,6 +119,9 @@ exit 1
     join(bin, 'node'),
     `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "\${1:-}" == *check-eraser-backup-readiness.mjs ]]; then
+  exit "\${MOCK_ERASER_READY_STATUS:-0}"
+fi
 if [[ "\${1:-}" == *rate-limit-stream.mjs && "\${MOCK_LIMITER_FAIL:-0}" == 1 ]]; then
   exit 8
 fi
@@ -461,3 +464,99 @@ test('timer and environment keep the scheduled backup bounded and fail closed', 
   assert.match(envSource, /MAXIM_BACKUP_WATCHDOG_FAILURE_THRESHOLD=2/u);
   assert.match(envSource, /MAXIM_BACKUP_READINESS_URL=http:\/\/127\.0\.0\.1:3001/u);
 });
+
+test('Lastik profile selects only its fixed store and isolated archive namespace', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { recursive: true, force: true }));
+  const result = runHelper(data, [], { MAXIM_BACKUP_PROFILE: 'eraser' });
+  assert.equal(result.status, 0, result.stderr);
+  const operations = readFileSync(data.dockerLog, 'utf8');
+  assert.match(operations, /exec -T eraser-postgres/);
+  assert.match(operations, /-U eraser -d eraser/);
+  assert.doesNotMatch(operations, /exec -T postgres(?: |$)/);
+  const dumps = readdirSync(join(data.backup, 'eraser')).filter((x) => x.endsWith('.dump'));
+  assert.equal(dumps.length, 1);
+  assert.match(dumps[0], /^eraser_/);
+  assert.equal(
+    readdirSync(data.backup).some((x) => x.endsWith('.dump')),
+    false,
+  );
+});
+test('Lastik readiness failure or unknown backup profile cannot start a dump', (t) => {
+  const data = fixture();
+  t.after(() => rmSync(data.directory, { recursive: true, force: true }));
+  assert.equal(
+    runHelper(data, [], { MAXIM_BACKUP_PROFILE: 'eraser', MOCK_ERASER_READY_STATUS: '1' }).status,
+    75,
+  );
+  assert.equal(existsSync(data.dockerLog), false);
+  assert.equal(runHelper(data, [], { MAXIM_BACKUP_PROFILE: 'other-project' }).status, 2);
+  assert.equal(existsSync(data.dockerLog), false);
+});
+
+for (const scenario of ['disabled', 'healthy', 'missing-evidence']) {
+  test(`Lastik timer installation keeps its own identity and evidence gate: ${scenario}`, (t) => {
+    const directory = mkdtempSync(join(tmpdir(), 'eraser-backup-units-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const bin = join(directory, 'bin');
+    const units = join(directory, 'units');
+    const log = join(directory, 'commands');
+    mkdirSync(bin);
+    mkdirSync(units);
+    writeFileSync(
+      join(bin, 'sudo'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$TEST_UNIT_LOG"
+case "$1" in
+  install) cp -- "$8" "$9" ;;
+  test) exit 0 ;;
+  systemctl)
+    if [[ "$2" == start && "$3" == maxim-eraser-postgres-backup-health.service ]]; then
+      exit "$TEST_UNIT_HEALTH"
+    fi ;;
+  *) exit 99 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    const result = spawnSync('bash', [installer], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        MAXIM_SYSTEMD_UNIT_DIR: units,
+        MAXIM_BACKUP_PROFILE: 'eraser',
+        MAXIM_ENABLE_POSTGRES_BACKUP_TIMER: scenario === 'disabled' ? '0' : '1',
+        MAXIM_ENABLE_POSTGRES_RESTORE_SMOKE_TIMER: scenario === 'disabled' ? '0' : '1',
+        TEST_UNIT_LOG: log,
+        TEST_UNIT_HEALTH: scenario === 'missing-evidence' ? '1' : '0',
+      },
+    });
+    assert.equal(result.status === 0, scenario !== 'missing-evidence', result.stderr);
+    const names = readdirSync(units);
+    assert.equal(names.length, 6);
+    assert.ok(names.every((name) => name.startsWith('maxim-eraser-postgres-')));
+    for (const name of names.filter((name) => name.endsWith('.service'))) {
+      const service = readFileSync(join(units, name), 'utf8');
+      assert.match(service, /ExecStart=.*MAXIM_BACKUP_PROFILE=eraser /);
+      const precheck = service.match(/^ExecStartPre=\/usr\/bin\/test -f (.+)$/m)?.[1];
+      assert.equal(precheck, join(root, 'infra/scripts/lib/postgres-backup-profile.sh'));
+      // A checkout rollback removes this newly introduced tracked capability file. Systemd
+      // must fail, not skip the unit successfully or execute the old main-database script.
+      assert.equal(spawnSync('/usr/bin/test', ['-f', precheck]).status, 0);
+      assert.notEqual(
+        spawnSync('/usr/bin/test', [
+          '-f',
+          join(directory, 'old-checkout', 'infra/scripts/lib/postgres-backup-profile.sh'),
+        ]).status,
+        0,
+      );
+      assert.doesNotMatch(service, /^ConditionPathExists=.*postgres-backup-profile/m);
+    }
+    const commands = readFileSync(log, 'utf8');
+    assert.doesNotMatch(commands, /systemctl (?:start|enable).* maxim-postgres-/);
+    assert.equal(commands.includes('systemctl enable --now'), scenario === 'healthy');
+  });
+}
