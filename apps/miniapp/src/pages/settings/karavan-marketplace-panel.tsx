@@ -196,7 +196,6 @@ export default function KaravanMarketplacePanel({
     setNotice(null);
     setup.mutate(request);
   }
-  if (query.data?.enabled === false) return null;
   if (query.isPending)
     return (
       <div className="karavan-module" role="status">
@@ -212,7 +211,12 @@ export default function KaravanMarketplacePanel({
         </button>
       </section>
     );
-  if (!module) return null;
+  if (!module)
+    return (
+      <div className="karavan-module" role="status">
+        <p>Магазин чата пока недоступен.</p>
+      </div>
+    );
   const marketplace = module.marketplace;
   const active = marketplace?.status === 'active';
   const canReview = module.permissions.includes('review_listing');
