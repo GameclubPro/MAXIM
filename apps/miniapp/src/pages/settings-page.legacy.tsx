@@ -104,6 +104,8 @@ import {
   SettingsSectionToggle,
 } from '../components/ui/settings-section-toggle';
 import { MarketplaceProfileCard } from '../components/marketplace-profile-card';
+import type { MarketplaceButtonModule } from '@maxim/contracts/marketplace-integration';
+const MarketplaceModuleToggle = lazy(() => import('../components/marketplace-module-toggle'));
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -4847,6 +4849,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         />
       </Suspense>
     );
+    const advertisingModules: Partial<Record<ApplySectionKey, MarketplaceButtonModule>> = {
+      greeting: 'GREETING',
+      links: 'LINKS',
+      profanityFilter: 'PROFANITY',
+      commercialFilter: 'COMMERCIAL',
+      duplicates: 'DUPLICATES',
+      limits: 'MESSAGE_LIMITS',
+      stopWords: 'STOP_WORDS',
+      phones: 'PHONE_NUMBERS',
+      requiredSubscription: 'REQUIRED_SUBSCRIPTION',
+      invitationAccess: 'INVITATION_ACCESS',
+      night: 'NIGHT_MODE',
+    };
+    const advertisingModule = advertisingModules[section];
     return (
       <SharedChatSettingsSection
         key={`${chatId}:${section}:${sharedSectionEpochs[section] ?? 0}`}
@@ -4854,6 +4870,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         fields={singleFields}
         context={{
           mode: 'single',
+          sectionTools:
+            advertisingModule && chatId && expandedSections[section]
+              ? {
+                  [section]: (
+                    <Suspense fallback={null}>
+                      <MarketplaceModuleToggle
+                        api={api}
+                        entityId={chatId}
+                        entityType="chat"
+                        profile="moderation"
+                        module={advertisingModule}
+                      />
+                    </Suspense>
+                  ),
+                }
+              : undefined,
           hasPublishedRules,
           api,
           commercialAiModerationMode: settingsScreenQuery.data?.commercialAiModerationMode,
@@ -5269,18 +5301,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }}
                                   adminContact={
                                     chatId ? (
-                                      <AdminContactToggle
-                                        key={`${chatId}:rules`}
-                                        api={api}
-                                        chatId={chatId}
-                                        title={ADMIN_CONTACT_BUTTON_TEXT}
-                                        checked={Boolean(rulesDraft.adminContactButtonEnabled)}
-                                        url={rulesDraft.adminContactButtonUrl}
-                                        onChange={handleRulesAdminContactButtonChange}
-                                        ariaLabel="Добавить связь с админом в пост правил"
-                                        meta={rulesAdminContactButtonSummary}
-                                        className="rules-native-card"
-                                      />
+                                      <>
+                                        <AdminContactToggle
+                                          key={`${chatId}:rules`}
+                                          api={api}
+                                          chatId={chatId}
+                                          title={ADMIN_CONTACT_BUTTON_TEXT}
+                                          checked={Boolean(rulesDraft.adminContactButtonEnabled)}
+                                          url={rulesDraft.adminContactButtonUrl}
+                                          onChange={handleRulesAdminContactButtonChange}
+                                          ariaLabel="Добавить связь с админом в пост правил"
+                                          meta={rulesAdminContactButtonSummary}
+                                          className="rules-native-card"
+                                        />
+                                        <Suspense fallback={null}>
+                                          <MarketplaceModuleToggle
+                                            api={api}
+                                            entityId={chatId}
+                                            entityType="chat"
+                                            profile="moderation"
+                                            module="RULES"
+                                          />
+                                        </Suspense>
+                                      </>
                                     ) : null
                                   }
                                   attachViolations={{

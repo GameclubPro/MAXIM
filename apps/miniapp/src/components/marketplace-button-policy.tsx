@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   marketplaceButtonPolicyStateSchema,
+  marketplaceButtonCaptionSchema,
+  type MarketplaceButtonModule,
+  type MarketplaceButtonPolicyMutation,
   marketplaceButtonPolicyMutationSchema,
   type MarketplaceButtonContext,
   type MarketplaceButtonPolicyState,
@@ -9,17 +12,15 @@ import {
 import { ApiRequestError } from '../lib/api-request-error';
 import {
   marketplaceButtonLabels,
+  marketplaceModuleLabels,
   marketplaceButtonStatus,
   marketplaceEntityPath,
   mergeMarketplaceButtonPolicy,
 } from '../lib/marketplace-button-policy';
 import type { MarketplaceProfileCardProps } from './marketplace-profile-card';
 
-type PolicyChange = {
-  expectedRevision: number;
-  context: MarketplaceButtonContext;
-  enabled: boolean;
-};
+type WithoutRequest<T> = T extends unknown ? Omit<T, 'requestId'> : never;
+type PolicyChange = WithoutRequest<MarketplaceButtonPolicyMutation>;
 type PolicyFailure = {
   change: PolicyChange;
   reason: 'conflict' | 'access' | 'unconfirmed';
@@ -35,12 +36,16 @@ export default function MarketplaceButtonPolicy({
   enableUnavailableReason,
   onRecheckProfile,
   recheckingProfile = false,
+  module,
+  onDirtyChange,
 }: MarketplaceProfileCardProps & {
   canEnable: boolean;
   onBusyChange: (value: boolean) => void;
   enableUnavailableReason?: string;
   onRecheckProfile?: () => void;
   recheckingProfile?: boolean;
+  module?: MarketplaceButtonModule;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const cache = useQueryClient();
   const queryKey = ['marketplace-button-policy', profile, entityType, entityId];
@@ -49,6 +54,10 @@ export default function MarketplaceButtonPolicy({
   const writing = useRef(false);
   const [failure, setFailure] = useState<PolicyFailure | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [captionDraft, setCaptionDraft] = useState<{ value: string; revision: number } | null>(
+    null,
+  );
+  const [modulesOpen, setModulesOpen] = useState(false);
   const previewId = `marketplace-button-preview-${profile}-${entityType}-${entityId}`;
   const query = useQuery({
     queryKey,
@@ -76,13 +85,14 @@ export default function MarketplaceButtonPolicy({
       );
     },
     onMutate: () => setFailure(null),
-    onSuccess: (result) => {
+    onSuccess: (result, change) => {
       cache.setQueryData(queryKey, (previous: MarketplaceButtonPolicyState | undefined) =>
         mergeMarketplaceButtonPolicy(result, previous),
       );
       attempt.current = null;
       setFailure(null);
-      void cache.invalidateQueries({ queryKey });
+      if ('caption' in change) setCaptionDraft(null);
+      void cache.invalidateQueries({ queryKey: ['marketplace-button-policy'] });
     },
     onError: async (error, change) => {
       setFailure({
@@ -107,29 +117,70 @@ export default function MarketplaceButtonPolicy({
   }, [mutation.isPending, onBusyChange]);
   const accessDenied =
     query.error instanceof ApiRequestError && [401, 403].includes(query.error.status);
-  const changedContext = query.data?.contexts.find(
-    (item) => item.context === failure?.change.context,
-  );
-  // FLAG: This only confirms the current setting, never which administrator wrote it.
-  // A still-enabled but unconfirmed policy must not hide a failed reconfirmation.
+  const changedContext =
+    failure && 'context' in failure.change
+      ? query.data?.contexts.find(
+          (item) =>
+            item.context ===
+            (failure.change as Extract<PolicyChange, { context: MarketplaceButtonContext }>)
+              .context,
+        )
+      : undefined;
   const reconciled =
     failure?.reason === 'unconfirmed' &&
     !query.isError &&
     !!query.data &&
-    query.data.revision > failure.change.expectedRevision &&
-    changedContext?.enabled === failure.change.enabled &&
-    (!failure.change.enabled || changedContext.status !== 'CONFIRM_REQUIRED');
+    ('caption' in failure.change
+      ? query.data.captionRevision > failure.change.expectedCaptionRevision &&
+        query.data.caption === failure.change.caption
+      : query.data.revision > failure.change.expectedRevision &&
+        (failure.change.module
+          ? changedContext?.modules.some(
+              (item) =>
+                item.module ===
+                  (failure.change as Extract<PolicyChange, { context: MarketplaceButtonContext }>)
+                    .module &&
+                item.enabled ===
+                  (failure.change as Extract<PolicyChange, { context: MarketplaceButtonContext }>)
+                    .enabled &&
+                !item.needsConfirmation,
+            )
+          : changedContext?.enabled === failure.change.enabled &&
+            !changedContext?.partial &&
+            (!failure.change.enabled || changedContext.status !== 'CONFIRM_REQUIRED')));
+  // FLAG: Once a reread confirms an uncertain write, retire that attempt.
+  // A later permission change must not resurrect its already-resolved error.
+  useEffect(() => {
+    if (!reconciled) return;
+    if (failure && 'caption' in failure.change) setCaptionDraft(null);
+    attempt.current = null;
+    setFailure(null);
+  }, [reconciled, failure]);
   const showFailure = !!failure && !reconciled && !mutation.isPending;
-  const change = (context: MarketplaceButtonContext, enabled: boolean) => {
+  const uncertain = showFailure && failure.reason === 'unconfirmed';
+  const caption = captionDraft?.value ?? query.data?.caption ?? '';
+  const dirty = !!captionDraft && captionDraft.value !== query.data?.caption;
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  const submit = (change: PolicyChange) => {
+    if (writing.current || accessDenied) return;
+    writing.current = true;
+    mutation.mutate(change);
+  };
+  const change = (
+    context: MarketplaceButtonContext,
+    enabled: boolean,
+    selectedModule?: MarketplaceButtonModule,
+    reconfirm = false,
+  ) => {
     if (
-      writing.current ||
       !query.data ||
-      accessDenied ||
+      (uncertain && enabled && !reconfirm) ||
       (enabled && (!canEnable || query.isError))
     )
       return;
-    writing.current = true;
-    mutation.mutate({ context, enabled, expectedRevision: query.data.revision });
+    submit({ context, enabled, module: selectedModule, expectedRevision: query.data.revision });
   };
   const contextLabel = (context: MarketplaceButtonContext) =>
     context === 'PUBLICATIONS' && profile === 'publisher'
@@ -138,44 +189,187 @@ export default function MarketplaceButtonPolicy({
   return (
     <section className="marketplace-button-policy" aria-label="Кнопка в сообщениях">
       {query.isPending && <p role="status">Проверяем настройки кнопки…</p>}
-      <div className="marketplace-button-policy__choices">
-        {query.data?.contexts.map((item) => (
-          <div key={item.context}>
-            <label className="marketplace-profile__toggle">
-              <span>
-                <strong>{contextLabel(item.context)}</strong>
-                {marketplaceButtonStatus[item.status] && (
-                  <small>{marketplaceButtonStatus[item.status]}</small>
-                )}
-              </span>
-              <span className="marketplace-profile__switch">
-                <input
-                  type="checkbox"
-                  aria-label={contextLabel(item.context)}
-                  checked={item.enabled}
-                  disabled={
-                    mutation.isPending ||
-                    accessDenied ||
-                    (!item.enabled && (!canEnable || query.isError))
-                  }
-                  onChange={(event) => change(item.context, event.target.checked)}
-                />
-                <span className="marketplace-profile__track" aria-hidden />
-              </span>
-            </label>
-            {item.enabled && item.status === 'CONFIRM_REQUIRED' && (
+      {!module && query.data && (
+        <form
+          className="marketplace-button-policy__caption"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const parsed = marketplaceButtonCaptionSchema.safeParse(caption);
+            if (parsed.success && dirty && !uncertain)
+              submit({
+                caption: parsed.data,
+                expectedCaptionRevision:
+                  failure?.reason === 'conflict' && !query.isError && !query.isFetching
+                    ? query.data!.captionRevision
+                    : (captionDraft?.revision ?? query.data!.captionRevision),
+              });
+          }}
+        >
+          <label>
+            Текст кнопки
+            <input
+              aria-label="Текст рекламной кнопки"
+              value={caption}
+              maxLength={48}
+              disabled={mutation.isPending || accessDenied || uncertain}
+              onChange={(event) =>
+                setCaptionDraft({
+                  value: event.target.value,
+                  revision: captionDraft?.revision ?? query.data!.captionRevision,
+                })
+              }
+            />
+          </label>
+          {dirty && (
+            <div className="marketplace-profile__actions">
+              <button
+                type="submit"
+                className="button button--primary"
+                disabled={
+                  mutation.isPending ||
+                  uncertain ||
+                  !marketplaceButtonCaptionSchema.safeParse(caption).success
+                }
+              >
+                Сохранить текст
+              </button>
               <button
                 type="button"
                 className="button button--ghost"
-                disabled={mutation.isPending || !canEnable || query.isError}
-                onClick={() => change(item.context, true)}
+                disabled={mutation.isPending || uncertain}
+                onClick={() => setCaptionDraft(null)}
               >
-                Подтвердить включение
+                Отмена
               </button>
-            )}
-          </div>
-        ))}
+            </div>
+          )}
+        </form>
+      )}
+      <div className="marketplace-button-policy__choices">
+        {query.data?.contexts
+          .filter((item) => !module || item.modules.some((child) => child.module === module))
+          .map((group) => {
+            const child = module ? group.modules.find((item) => item.module === module) : undefined;
+            const item = child
+              ? {
+                  ...group,
+                  ...child,
+                  partial: false,
+                  status: child.needsConfirmation
+                    ? ('CONFIRM_REQUIRED' as const)
+                    : child.effective
+                      ? ('READY' as const)
+                      : child.enabled
+                        ? group.status
+                        : ('OFF' as const),
+                }
+              : group;
+            const label = module ? 'Кнопка рекламы' : contextLabel(item.context);
+            return (
+              <div key={item.context}>
+                <label className="marketplace-profile__toggle">
+                  <span>
+                    <strong>{label}</strong>
+                    {item.partial && (
+                      <small>
+                        Включено {item.modules.filter((child) => child.enabled).length} из{' '}
+                        {item.modules.length}
+                      </small>
+                    )}
+                    {marketplaceButtonStatus[item.status] && (
+                      <small>{marketplaceButtonStatus[item.status]}</small>
+                    )}
+                  </span>
+                  <span className="marketplace-profile__switch">
+                    <input
+                      type="checkbox"
+                      aria-label={label}
+                      aria-checked={item.partial ? 'mixed' : item.enabled}
+                      ref={(node) => {
+                        if (node) node.indeterminate = item.partial;
+                      }}
+                      checked={item.enabled && !item.partial}
+                      disabled={
+                        mutation.isPending ||
+                        (uncertain && !item.enabled) ||
+                        accessDenied ||
+                        (!item.enabled && (!canEnable || query.isError))
+                      }
+                      onChange={(event) => change(item.context, event.target.checked, module)}
+                    />
+                    <span className="marketplace-profile__track" aria-hidden />
+                  </span>
+                </label>
+                {item.enabled && item.status === 'CONFIRM_REQUIRED' && (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    disabled={mutation.isPending || !canEnable || query.isError}
+                    onClick={() => change(item.context, true, module, true)}
+                  >
+                    Подтвердить включение
+                  </button>
+                )}
+                {item.partial && (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    disabled={mutation.isPending || accessDenied}
+                    onClick={() => change(item.context, false)}
+                  >
+                    Выключить все
+                  </button>
+                )}
+                {!module && modulesOpen && item.modules.length > 1 && (
+                  <div className="marketplace-button-policy__modules">
+                    {item.modules.map((child) => (
+                      <label className="marketplace-profile__toggle" key={child.module}>
+                        <span>{marketplaceModuleLabels[child.module]}</span>
+                        <span className="marketplace-profile__switch">
+                          <input
+                            type="checkbox"
+                            aria-label={marketplaceModuleLabels[child.module]}
+                            checked={child.enabled}
+                            disabled={
+                              mutation.isPending ||
+                              (uncertain && !child.enabled) ||
+                              accessDenied ||
+                              (!child.enabled && (!canEnable || query.isError))
+                            }
+                            onChange={(event) =>
+                              change(item.context, event.target.checked, child.module)
+                            }
+                          />
+                          <span className="marketplace-profile__track" aria-hidden />
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
       </div>
+      {!module && query.data?.contexts.some((item) => item.modules.length > 1) && (
+        <button
+          type="button"
+          className="button button--ghost"
+          aria-expanded={modulesOpen}
+          onClick={() => setModulesOpen((value) => !value)}
+        >
+          По модулям
+        </button>
+      )}
+      {uncertain && (
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={mutation.isPending || accessDenied}
+          onClick={() => submit(failure.change)}
+        >
+          Повторить сохранение
+        </button>
+      )}
       {mutation.isPending && (
         <p role="status">{failure ? 'Проверяем сохранение…' : 'Сохраняем…'}</p>
       )}
@@ -198,6 +392,9 @@ export default function MarketplaceButtonPolicy({
       )}
       {query.data?.buttonDiagnostic === 'KEYBOARD_FULL' && (
         <p role="status">Под сообщением нет места для ещё одной кнопки.</p>
+      )}
+      {showFailure && failure.reason === 'conflict' && 'caption' in failure.change && (
+        <p>Сейчас сохранено: «{query.data?.caption}»</p>
       )}
       {showFailure && (
         <p role="alert">
@@ -224,21 +421,23 @@ export default function MarketplaceButtonPolicy({
           Проверить настройки
         </button>
       )}
-      <div className="marketplace-button-policy__preview">
-        <button
-          type="button"
-          className="button button--ghost marketplace-button-policy__preview-toggle"
-          aria-expanded={previewOpen}
-          aria-controls={previewId}
-          onClick={() => setPreviewOpen((open) => !open)}
-        >
-          Как выглядит кнопка
-        </button>
-        <div id={previewId} hidden={!previewOpen}>
-          <div className="marketplace-button-policy__sample">Профиль в Биржике</div>
-          <p className="marketplace-profile-card__intro">Добавляется в новые сообщения.</p>
+      {!module && (
+        <div className="marketplace-button-policy__preview">
+          <button
+            type="button"
+            className="button button--ghost marketplace-button-policy__preview-toggle"
+            aria-expanded={previewOpen}
+            aria-controls={previewId}
+            onClick={() => setPreviewOpen((open) => !open)}
+          >
+            Как выглядит кнопка
+          </button>
+          <div id={previewId} hidden={!previewOpen}>
+            <div className="marketplace-button-policy__sample">{caption}</div>
+            <p className="marketplace-profile-card__intro">Добавляется в новые сообщения.</p>
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
