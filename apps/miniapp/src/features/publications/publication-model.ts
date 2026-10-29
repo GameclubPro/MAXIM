@@ -466,7 +466,7 @@ export function getPublicationActionCapabilities(
   }
 
   return {
-    canCancel: canManage && !terminal,
+    canCancel: !terminal,
     canEdit: canManage && editScope !== null,
     canPause: canManage && retryableLifecycle && isMultiSendSchedule && !scheduleError,
     canResume: canManage && canResumePublication(publication.lifecycle),
@@ -474,6 +474,16 @@ export function getPublicationActionCapabilities(
     editScope: canManage ? editScope : null,
     hasFutureSends,
   };
+}
+
+export function getPublicationCancelActionLabel(
+  publication: Parameters<typeof getPublicationActionCapabilities>[0],
+): string {
+  return publication.access?.canManageAllTargets === false
+    ? 'Отменить отправки'
+    : getPublicationActionCapabilities(publication).hasFutureSends
+      ? 'Отменить будущие отправки'
+      : 'Отменить публикацию';
 }
 
 export function normalizePublicationView(value: string | null): PublicationView {

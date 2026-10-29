@@ -3329,6 +3329,7 @@ model PublicationTarget {
   entityType    ChatEntityType @map("entity_type")
   position      Int
   createdAt     DateTime       @default(now()) @map("created_at")
+  canceledAt    DateTime?      @map("canceled_at")
 
   publication Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
   chat        Chat        @relation(fields: [targetChatId], references: [id], onDelete: Restrict)

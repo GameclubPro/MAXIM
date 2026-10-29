@@ -8,6 +8,10 @@ import { PublicationContentService } from './publication-content.service';
 import { selectPublicationSearchPage } from './publication-failed-page-query';
 import { PublicationPresenterService } from './publication-presenter.service';
 import { PublicationService } from './publication.service';
+import { PublisherManagedBroadcastDispatch } from './publisher-managed-broadcast-dispatch';
+import { PublicationPublisherRoutingService } from './publication-publisher-routing.service';
+import type { PublisherReadinessService } from '../publisher/publisher-readiness.service';
+import { findPublicationCalendarConflicts } from './publication-calendar-conflicts';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const postgres = databaseUrl ? describe : describe.skip;
@@ -227,7 +231,17 @@ postgres('entity administrators share Publisher publications on PostgreSQL', () 
       {} as never,
       {} as never,
       {} as never,
-      { requireNewRoute: () => ({ dispatchProfile: 'PUBLIK_V1', requiredBotId: botId }) } as never,
+      {
+        requireNewRoute: () => ({ dispatchProfile: 'PUBLIK_V1', requiredBotId: botId }),
+        async resolveAudienceTargets() {
+          return [
+            { chatId, entityType: 'chat', title: 'Shared target', avatarUrl: null, link: null },
+          ];
+        },
+      } satisfies Pick<
+        PublicationPublisherRoutingService,
+        'requireNewRoute' | 'resolveAudienceTargets'
+      > as never,
       wake as never,
       new ConfigService({ PUBLISHER_OCCURRENCE_ROLLUP_NOOP_ROLLOUT: 'off' }),
     );
@@ -312,6 +326,304 @@ postgres('entity administrators share Publisher publications on PostgreSQL', () 
     expect((await page('Common shared content')).map((row) => row.id).sort()).toEqual(
       [singleId, multiId].sort(),
     );
+  });
+
+  it('lets the remaining administrator cancel a blocked author post only in their own target', async () => {
+    const publication = await createPublication([privateChatId, chatId]);
+    const receipts = [];
+    for (const [index, status] of (
+      ['PENDING', 'SENDING', 'SENT', 'AMBIGUOUS'] as const
+    ).entries()) {
+      const scheduledAt = new Date(Date.now() - 10_000 - index * 1000);
+      const occurrence = await db.publicationOccurrence.create({
+        data: {
+          publicationId: publication.id,
+          scheduleId: publication.schedule!.id,
+          contentRevisionId: publication.contentRevisions[0]!.id,
+          scheduleRevision: 1,
+          scheduledAt,
+          status: 'IN_PROGRESS',
+          dispatchProfile: 'PUBLIK_V1',
+          requiredBotId: botId,
+          deliveryDeadlineAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      const broadcast = await db.managedBroadcast.create({
+        data: {
+          sourceChatId: chatId,
+          actorUserId: creator,
+          targetChatIds: [chatId, privateChatId],
+          buttons: [],
+          publicationOccurrenceId: occurrence.id,
+          publicationContentRevisionId: occurrence.contentRevisionId,
+          dispatchProfile: 'PUBLIK_V1',
+          requiredBotId: botId,
+        },
+      });
+      const own = await db.managedBroadcastDelivery.create({
+        data: {
+          broadcastId: broadcast.id,
+          occurrenceIndex: 1,
+          targetChatId: chatId,
+          status,
+          publicationOccurrenceId: occurrence.id,
+          contentRevisionId: occurrence.contentRevisionId,
+          attemptCount: status === 'PENDING' ? 0 : 1,
+          remoteMessageId: status === 'SENT' ? `${prefix}-sent` : null,
+          sentAt: status === 'SENT' ? scheduledAt : null,
+          botId: status === 'SENT' ? botId : null,
+          lockedAt: status === 'SENDING' ? new Date() : null,
+          lockToken: status === 'SENDING' ? `${prefix}-active-lease` : null,
+          ...deliveryRoute,
+        },
+      });
+      const foreign = await db.managedBroadcastDelivery.create({
+        data: {
+          broadcastId: broadcast.id,
+          occurrenceIndex: 1,
+          targetChatId: privateChatId,
+          status: 'PENDING',
+          publicationOccurrenceId: occurrence.id,
+          contentRevisionId: occurrence.contentRevisionId,
+          ...deliveryRoute,
+        },
+      });
+      await db.managedBroadcastCalendarReservation.createMany({
+        data: [chatId, privateChatId].map((targetChatId) => ({
+          broadcastId: broadcast.id,
+          sourceChatId: chatId,
+          targetChatId,
+          entityType: 'CHAT',
+          occurrenceIndex: 1,
+          scheduledAt,
+        })),
+      });
+      receipts.push({ own, foreign, occurrence });
+    }
+    const result = await service.cancel(
+      publication.id,
+      admin,
+      { requestId: `${prefix}-cancel-own-target`, expectedRevision: 1 },
+      'PUBLIK_V1',
+    );
+    expect(result.lifecycle).toBe('CANCELED');
+    expect(result.targets.map((target) => target.chatId)).toEqual([chatId]);
+    expect(await db.publication.findUniqueOrThrow({ where: { id: publication.id } })).toMatchObject(
+      {
+        lifecycle: 'ACTIVE',
+        actorUserId: creator,
+        version: 2,
+      },
+    );
+    const targets = await db.publicationTarget.findMany({
+      where: { publicationId: publication.id },
+    });
+    expect(targets.find((target) => target.targetChatId === chatId)).toHaveProperty(
+      'canceledAt',
+      expect.any(Date),
+    );
+    expect(targets.find((target) => target.targetChatId === privateChatId)).toHaveProperty(
+      'canceledAt',
+      null,
+    );
+    expect(
+      await db.publicationSchedule.findUniqueOrThrow({ where: { publicationId: publication.id } }),
+    ).toMatchObject({ status: 'ACTIVE', revision: 1 });
+    for (const { own, foreign } of receipts) {
+      const actual = await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: own.id } });
+      if (own.status === 'PENDING')
+        expect(actual).toMatchObject({ status: 'CANCELED', attemptCount: 0 });
+      else expect(actual).toEqual(own);
+      expect(
+        await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: foreign.id } }),
+      ).toEqual(foreign);
+      expect(
+        await db.managedBroadcastCalendarReservation.count({
+          where: { broadcastId: own.broadcastId, targetChatId: chatId },
+        }),
+      ).toBe(own.status === 'PENDING' ? 0 : 1);
+      expect(
+        await db.managedBroadcastCalendarReservation.count({
+          where: { broadcastId: foreign.broadcastId, targetChatId: privateChatId },
+        }),
+      ).toBe(1);
+    }
+    const conflict = await findPublicationCalendarConflicts(
+      db,
+      [{ chatId, entityType: 'chat' }],
+      receipts.map(({ occurrence }) => occurrence.scheduledAt),
+    );
+    expect(conflict.occurrences).toEqual([]);
+    expect(conflict.reservations).toHaveLength(3);
+    const calendar = await service.getCalendarAvailability(
+      admin,
+      {
+        audience: {
+          selection: 'SELECTED',
+          mode: 'SNAPSHOT',
+          targets: [{ chatId, entityType: 'chat' }],
+        },
+        from: new Date(Date.now() - 60_000).toISOString(),
+        to: new Date(Date.now() + 60_000).toISOString(),
+      },
+      'PUBLIK_V1',
+    );
+    expect(calendar.slots.map((slot) => slot.scheduledAt)).not.toContain(
+      receipts[0]!.occurrence.scheduledAt.toISOString(),
+    );
+    expect(calendar.slots).toHaveLength(3);
+    const routing = new PublicationPublisherRoutingService(
+      db as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    expect(
+      (await routing.resolveScheduledTargets({ ...publication, targets })).map(
+        (target) => target.chatId,
+      ),
+    ).toEqual([privateChatId]);
+    const readiness = {
+      async assertEntityReady(targetChatId) {
+        return {
+          chatId: targetChatId,
+          requiredBotId: botId,
+          entityType: 'chat',
+          policyRevision: 1,
+        };
+      },
+    } satisfies Pick<PublisherReadinessService, 'assertEntityReady'>;
+    const dispatch = new PublisherManagedBroadcastDispatch(
+      {
+        prisma: db,
+        publisherRuntimeBoundaryService: { assertDispatchEnabled() {} },
+        publisherDispatchHealthService: { async assertDispatchAllowed() {} },
+        publisherReadinessService: readiness,
+      } as never,
+      { warn() {} } as never,
+    );
+    const authority = {
+      kind: 'publication',
+      occurrenceId: receipts[0]!.occurrence.id,
+      contentRevisionId: receipts[0]!.occurrence.contentRevisionId,
+      actorUserId: creator,
+      entityType: 'chat',
+    } as const;
+    await expect(dispatch.assertDeliveryReady(chatId, botId, authority)).rejects.toMatchObject({
+      blockerCode: 'PUBLISHER_TARGET_CANCELED',
+    });
+    await expect(
+      dispatch.assertDeliveryReady(privateChatId, botId, authority),
+    ).resolves.toBeUndefined();
+    const lateOccurrence = await db.publicationOccurrence.create({
+      data: {
+        publicationId: publication.id,
+        scheduleId: publication.schedule!.id,
+        contentRevisionId: authority.contentRevisionId,
+        scheduleRevision: 1,
+        scheduledAt: new Date(),
+        status: 'IN_PROGRESS',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+        deliveryDeadlineAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    const lateEnvelope = await db.managedBroadcast.create({
+      data: {
+        sourceChatId: chatId,
+        actorUserId: creator,
+        targetChatIds: [chatId],
+        buttons: [],
+        publicationOccurrenceId: lateOccurrence.id,
+        publicationContentRevisionId: authority.contentRevisionId,
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: botId,
+      },
+    });
+    const lateDelivery = await db.managedBroadcastDelivery.create({
+      data: {
+        broadcastId: lateEnvelope.id,
+        occurrenceIndex: 1,
+        targetChatId: chatId,
+        publicationOccurrenceId: lateOccurrence.id,
+        contentRevisionId: authority.contentRevisionId,
+        ...deliveryRoute,
+      },
+    });
+    await db.managedBroadcastCalendarReservation.create({
+      data: {
+        broadcastId: lateEnvelope.id,
+        sourceChatId: chatId,
+        targetChatId: chatId,
+        occurrenceIndex: 1,
+        scheduledAt: lateOccurrence.scheduledAt,
+      },
+    });
+    await expect(
+      dispatch.deferUnreadyBeforeClaim(lateEnvelope, lateDelivery, botId, {
+        ...authority,
+        occurrenceId: lateOccurrence.id,
+      }),
+    ).resolves.toBeInstanceOf(Date);
+    expect(
+      await db.managedBroadcastDelivery.findUniqueOrThrow({ where: { id: lateDelivery.id } }),
+    ).toMatchObject({ status: 'CANCELED', attemptCount: 0, remoteMessageId: null });
+    expect(
+      await db.managedBroadcastCalendarReservation.count({
+        where: { broadcastId: lateEnvelope.id },
+      }),
+    ).toBe(0);
+    expect(
+      (await service.list(admin, { view: 'plan', limit: 100 }, 'PUBLIK_V1')).items.map(
+        (row) => row.id,
+      ),
+    ).not.toContain(publication.id);
+    expect(
+      (await service.list(admin, { view: 'history', limit: 100 }, 'PUBLIK_V1')).items.map(
+        (row) => row.id,
+      ),
+    ).toContain(publication.id);
+    expect(
+      (
+        await selectPublicationSearchPage(db as never, {
+          actorUserId: admin.userId,
+          publisherBotId: botId,
+          dispatchProfile: 'PUBLIK_V1',
+          view: 'history',
+          query: 'Common shared',
+          cursor: null,
+          limit: 100,
+        })
+      ).map((row) => row.id),
+    ).toContain(publication.id);
+    await expect(
+      service.pause(
+        publication.id,
+        admin,
+        { requestId: randomUUID(), expectedRevision: 2 },
+        'PUBLIK_V1',
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.cancel(
+        publication.id,
+        outsider,
+        { requestId: randomUUID(), expectedRevision: 2 },
+        'PUBLIK_V1',
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(
+      (
+        await service.cancel(
+          publication.id,
+          admin,
+          { requestId: `${prefix}-cancel-own-target`, expectedRevision: 1 },
+          'PUBLIK_V1',
+        )
+      ).version,
+    ).toBe(2);
   });
 
   it.each([

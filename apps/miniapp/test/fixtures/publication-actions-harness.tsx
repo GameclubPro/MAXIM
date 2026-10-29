@@ -9,6 +9,8 @@ import {
 } from '../../src/features/publications/publication-action-sheets';
 import { ToastProvider } from '../../src/components/ui/toast';
 import type { ApiTransport } from '../../src/lib/api/transport';
+import { PublicationFeedCard } from '../../src/features/publications/publication-feed-card';
+import { getPublicationActionCapabilities } from '../../src/features/publications/publication-model';
 import '../../src/styles.css';
 const api: ApiTransport = {
   async request(path, init) {
@@ -21,6 +23,9 @@ const api: ApiTransport = {
   requestKeepalive() {},
 };
 const details = publicationDetailsSchema.parse({
+  ...(new URLSearchParams(location.search).has('partial')
+    ? { access: { canManageAllTargets: false } }
+    : {}),
   id: 'publication-a',
   title: 'Проверка действий',
   lifecycle: 'ACTIVE',
@@ -69,6 +74,22 @@ function Harness() {
     actions.resolveAmbiguousMutation.isPending;
   return (
     <main>
+      {details.access?.canManageAllTargets === false ? (
+        <PublicationFeedCard
+          id={details.id}
+          title="Пост прежнего администратора"
+          preview="Объявление"
+          previewFormat="plain"
+          eyebrow="Ожидает доступа"
+          meta={['13 получателей']}
+          tone="warning"
+          canDuplicate
+          canCancel={getPublicationActionCapabilities(details).canCancel}
+          cancelLabel="Отменить отправки"
+          onDuplicate={() => {}}
+          onCancel={() => actions.setActionTarget({ publication: details, action: 'cancel' })}
+        />
+      ) : null}
       <button
         disabled={busy}
         onClick={() => {

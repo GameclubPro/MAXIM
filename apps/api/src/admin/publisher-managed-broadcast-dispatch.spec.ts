@@ -88,7 +88,12 @@ describe('Publisher pre-dispatch claim deferral', () => {
       deliveryDeadlineAt: new Date(Date.now() + 86_400_000) as Date | null,
       retryAuthorizedAt: null,
       retryExpiresAt: null,
-      publication: { lifecycle: 'ACTIVE', dispatchProfile: 'PUBLIK_V1', requiredBotId: 'publik' },
+      publication: {
+        lifecycle: 'ACTIVE',
+        dispatchProfile: 'PUBLIK_V1',
+        requiredBotId: 'publik',
+        targets: [{ canceledAt: null as Date | null }],
+      },
       schedule: { status: 'ACTIVE', revision: 1 },
     };
     const findMany = jest.fn().mockResolvedValue([]);
@@ -139,6 +144,19 @@ describe('Publisher pre-dispatch claim deferral', () => {
     });
     expect(f.findMany).toHaveBeenCalledTimes(1);
   });
+
+  it.each([false, true])(
+    'refuses a canceled recipient before SEND, legacy intent=%s',
+    async (legacy) => {
+      const f = acceptedHarness();
+      if (legacy) f.occurrence.deliveryDeadlineAt = null;
+      f.occurrence.publication.targets[0]!.canceledAt = new Date();
+      await expect(
+        f.service.assertDeliveryReady('channel', 'publik', f.authority),
+      ).rejects.toMatchObject({ blockerCode: 'PUBLISHER_TARGET_CANCELED' });
+      expect(f.findMany).not.toHaveBeenCalled();
+    },
+  );
 
   it('never falls back to author authority after finite intent expires', async () => {
     const f = acceptedHarness();
