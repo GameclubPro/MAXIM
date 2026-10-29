@@ -40,7 +40,7 @@ test('both API rollback paths check recovery before beginning a runtime transiti
     'infra/scripts/vps-release-rollback.sh',
   ]) {
     const source = read(path);
-    const gate = source.indexOf('maxim_topology_require_night_mode_recovery_reader');
+    const gate = source.indexOf('maxim_topology_require_statistics_and_night_mode_recovery');
     const transition = Math.max(
       source.lastIndexOf('\nbegin_release_runtime_transition\n'),
       source.lastIndexOf('\nbegin_runtime_rollback_transition\n'),

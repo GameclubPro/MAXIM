@@ -15,6 +15,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import {
   statsAuthorityRequestSchema,
+  statsAuthorityResolveRequestSchema,
   statsIngestRequestSchema,
   statsSummaryRequestSchema,
   statsHistoryRequestSchema,
@@ -105,6 +106,13 @@ export class StatsController {
   ) {
     this.enabled();
     return this.access.attest(this.parse(statsAuthorityRequestSchema, body, 131_072, req));
+  }
+  @Post('authorities:resolve') resolveAuthority(
+    @Body() body: unknown,
+    @Req() req: { headers: Record<string, string | number | undefined> },
+  ) {
+    this.enabled();
+    return this.access.resolve(this.parse(statsAuthorityResolveRequestSchema, body, 65_536, req));
   }
   @Post('ingest') ingest(
     @Body() body: unknown,

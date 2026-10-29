@@ -11,15 +11,18 @@ import type {
 import {
   statsHistoryResultSchema,
   statsSummaryResultSchema,
+  statsAuthorityResultSchema,
+  statsAuthorityResolveResultSchema,
 } from '@maxim/contracts/statistics-central-validation';
-import { PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
+import { Prisma, PrismaClient, createPrismaAdapter } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { StatsAccessService } from './stats-access.service';
 import { StatsIngestService } from './stats-ingest.service';
 import { StatsReadService } from './stats-read.service';
 import { StatsChangesService } from './stats-changes.service';
+import { decodeCursor, encodeCursor } from './stats-cursor';
 import { MaximNativeStatsAdapter } from './maxim-native-stats.adapter';
-import { allKeys, DAY_MS } from './stats-common';
+import { allKeys, DAY_MS, StatsFailure } from './stats-common';
 
 const databaseUrl =
   process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ||
@@ -137,6 +140,572 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       horizons: [0, 24, 48],
       cursor: null,
     });
+  it('reconnects an explicitly revoked authority through a new identity without losing measurements', async () => {
+    await ingest.ingest(request([audience('1', 20)]));
+    const revoked = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [{ ...consumer, revision: '2', operation: 'REVOKE' }],
+    });
+    const successor = {
+      ...consumer,
+      id: randomUUID(),
+      localAccessFence: '2026-10-29 19:30:00.654321+00',
+      checkedAt: now(),
+      supersedes: { id: consumer.id, revision: '2', epoch: revoked.results[0]!.epoch },
+    };
+    const result = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [successor],
+    });
+    expect(result.results[0]).toMatchObject({
+      id: successor.id,
+      status: 'APPLIED',
+      state: 'ACTIVE',
+    });
+    context.consumerAuthority = { id: successor.id, epoch: result.results[0]!.epoch };
+    const item = (await summary()).results[0]!;
+    expect(item.status).toBe('READY');
+    if (item.status === 'READY' && item.summary.audience.state === 'AVAILABLE')
+      expect(item.summary.audience.value.value).toBe(20);
+    else throw new Error('Recovered authority must retain its measured audience');
+    const replay = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [successor],
+    });
+    expect(replay.results[0]).toMatchObject({ epoch: result.results[0]!.epoch, status: 'RENEWED' });
+    const head = await access.resolve({
+      contractVersion: 1,
+      producerEpoch: epoch,
+      entity,
+      role: consumer.role,
+      actorMaxUserId: consumer.actorMaxUserId,
+      botRef: consumer.botRef,
+      consumer: consumer.consumer,
+      purpose: consumer.purpose,
+    });
+    expect(statsAuthorityResolveResultSchema.parse(head).head).toMatchObject({
+      id: successor.id,
+      state: 'ACTIVE',
+    });
+    for (const operation of ['ATTEST', 'REVOKE'] as const) {
+      const delayed = await access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [{ ...consumer, operation, revision: '999', checkedAt: now() }],
+      });
+      expect(delayed.results[0]).toMatchObject({
+        id: consumer.id,
+        status: 'SUPERSEDED',
+        state: 'REVOKED',
+        peerValidUntil: null,
+      });
+    }
+    await expect(
+      db.$executeRaw`UPDATE stats_authorities SET state='ACTIVE' WHERE id=${consumer.id}::uuid`,
+    ).rejects.toThrow('Superseded statistics authority is immutable');
+    await expect(
+      db.$executeRaw`UPDATE stats_authorities SET superseded_by=NULL,superseded_at=NULL WHERE id=${consumer.id}::uuid`,
+    ).rejects.toThrow('Superseded statistics authority is immutable');
+  });
+  it('replaces a disabled source with a revoked successor while renewing its consumer and an independent entity', async () => {
+    await ingest.ingest(request([audience('1', 29)]));
+    const retired = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [source, consumer].map((op) => ({
+        ...op,
+        revision: '2',
+        operation: 'REVOKE',
+      })),
+    });
+    const nextSource: StatsAuthorityOperation = {
+      ...source,
+      id: randomUUID(),
+      operation: 'REVOKE',
+      supersedes: { id: source.id, revision: '2', epoch: retired.results[0]!.epoch },
+    };
+    const nextConsumer: StatsAuthorityOperation = {
+      ...consumer,
+      id: randomUUID(),
+      supersedes: { id: consumer.id, revision: '2', epoch: retired.results[1]!.epoch },
+    };
+    const other = { ...entity, maxId: `${entity.maxId}1` };
+    const healthy = { ...consumer, id: randomUUID(), entity: other };
+    try {
+      const batch = {
+        contractVersion: 1 as const,
+        requestId: randomUUID(),
+        operations: [nextSource, nextConsumer, healthy],
+      };
+      const accepted = await access.attest(batch);
+      expect(accepted.results).toMatchObject([
+        { id: nextSource.id, status: 'APPLIED', state: 'REVOKED', peerValidUntil: null },
+        { id: nextConsumer.id, status: 'APPLIED', state: 'ACTIVE' },
+        { id: healthy.id, status: 'APPLIED', state: 'ACTIVE' },
+      ]);
+      const replay = await access.attest(batch);
+      expect(replay.results.map((r) => r.epoch)).toEqual(accepted.results.map((r) => r.epoch));
+      expect(replay.results.map((r) => r.status)).toEqual(['DUPLICATE', 'RENEWED', 'RENEWED']);
+      context.consumerAuthority = { id: nextConsumer.id, epoch: accepted.results[1]!.epoch };
+      expect((await summary()).results[0]).toMatchObject({
+        status: 'READY',
+        summary: { audience: { state: 'UNAVAILABLE' } },
+      });
+      const delayed = await access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [{ ...source, revision: '999', checkedAt: now() }],
+      });
+      expect(delayed.results[0]).toMatchObject({ status: 'SUPERSEDED', state: 'REVOKED' });
+      // An independently authorized source can still read the retained measurement.
+      await access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [{ ...source, id: randomUUID(), botRef: 'independent-native-proof' }],
+      });
+      expect((await summary()).results[0]).toMatchObject({
+        status: 'READY',
+        summary: { audience: { state: 'AVAILABLE', value: { value: 29 } } },
+      });
+    } finally {
+      await db.$executeRaw`DELETE FROM stats_entities WHERE kind=${other.kind} AND max_id=${other.maxId}`;
+    }
+  });
+  it('admits only one concurrent successor and retains the exact revoked predecessor', async () => {
+    const retired = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [{ ...consumer, revision: '2', operation: 'REVOKE' }],
+    });
+    const successors = [randomUUID(), randomUUID()].map((id) => ({
+      ...consumer,
+      id,
+      localAccessFence: 'a-new-exact-fence',
+      checkedAt: now(),
+      supersedes: { id: consumer.id, revision: '2', epoch: retired.results[0]!.epoch },
+    }));
+    const results = await Promise.all(
+      successors.map((operation) =>
+        access.attest({ contractVersion: 1, requestId: randomUUID(), operations: [operation] }),
+      ),
+    );
+    const items = results.flatMap((result) => result.results);
+    expect(items.filter((item) => item.state === 'ACTIVE')).toHaveLength(1);
+    expect(items.filter((item) => item.status === 'DENIED')).toHaveLength(1);
+    const rows = await db.$queryRaw<
+      Array<{ id: string; state: string; superseded_by: string | null }>
+    >`
+      SELECT id,state,superseded_by FROM stats_authorities WHERE id IN (${consumer.id}::uuid,${successors[0]!.id}::uuid,${successors[1]!.id}::uuid)`;
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === consumer.id)).toMatchObject({
+      state: 'REVOKED',
+      superseded_by: items.find((item) => item.state === 'ACTIVE')!.id,
+    });
+  });
+  it('requires the exact revoked scope and never replaces an expired active head', async () => {
+    const attempt = (operation: StatsAuthorityOperation) =>
+      access.attest({ contractVersion: 1, requestId: randomUUID(), operations: [operation] });
+    await db.$executeRaw`UPDATE stats_authorities SET peer_valid_until=now()-interval '1 second' WHERE id=${consumer.id}::uuid`;
+    const fresh = {
+      ...consumer,
+      id: randomUUID(),
+      checkedAt: now(),
+      supersedes: { id: consumer.id, revision: '1', epoch: consumerEpoch },
+    };
+    expect((await attempt(fresh)).results[0]).toMatchObject({
+      status: 'DENIED',
+      state: 'UNAVAILABLE',
+      errorCode: 'STALE_LOCAL_FENCE',
+    });
+    const retired = await attempt({ ...consumer, operation: 'REVOKE', revision: '2' });
+    const successor = {
+      ...fresh,
+      supersedes: { id: consumer.id, revision: '2', epoch: retired.results[0]!.epoch },
+    };
+    for (const operation of [
+      { ...successor, actorMaxUserId: '777777' },
+      { ...successor, botRef: 'other-bot' },
+      { ...successor, role: 'SOURCE' as const },
+      { ...successor, purpose: 'PUBLISHED_AGGREGATE' as const },
+      { ...successor, supersedes: { ...successor.supersedes, epoch: '999' } },
+      { ...successor, supersedes: { ...successor.supersedes, revision: '999' } },
+      { ...successor, supersedes: undefined },
+    ])
+      expect((await attempt(operation)).results[0]).toMatchObject({
+        status: 'DENIED',
+        state: 'UNAVAILABLE',
+      });
+    expect((await attempt(successor)).results[0]!.state).toBe('ACTIVE');
+  });
+  it('rebinds an existing identity to a bot scope only after explicitly retiring that scope head', async () => {
+    const attempt = (operation: StatsAuthorityOperation) =>
+      access.attest({ contractVersion: 1, requestId: randomUUID(), operations: [operation] });
+    const target = { ...consumer, id: randomUUID(), botRef: 'previous-binding' };
+    await attempt(target);
+    const retired = await attempt({ ...target, revision: '2', operation: 'REVOKE' });
+    const rebound = { ...consumer, revision: '2', botRef: target.botRef, checkedAt: now() };
+    expect((await attempt(rebound)).results[0]!.status).toBe('DENIED');
+    const result = await attempt({
+      ...rebound,
+      supersedes: { id: target.id, revision: '2', epoch: retired.results[0]!.epoch },
+    });
+    expect(result.results[0]).toMatchObject({ id: consumer.id, state: 'ACTIVE', epoch: '2' });
+    const delayed = await attempt({ ...target, revision: '500', checkedAt: now() });
+    expect(delayed.results[0]).toMatchObject({ state: 'REVOKED', status: 'SUPERSEDED' });
+    expect(
+      (await attempt({ ...consumer, revision: '3', checkedAt: now() })).results[0]!.state,
+    ).toBe('ACTIVE');
+  });
+  it('commits healthy platforms independently from denied identities and validates input before any mutation', async () => {
+    const other = { kind: 'CHAT' as const, maxId: `${entity.maxId}1` };
+    const healthy = {
+      ...source,
+      entity: other,
+      id: randomUUID(),
+      scopes: allKeys.filter((key) => key.metric === 'AUDIENCE'),
+    };
+    try {
+      const bad = { ...consumer, actorMaxUserId: '777777', revision: '2' };
+      const result = await access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [bad, healthy],
+      });
+      expect(statsAuthorityResultSchema.parse(result).results).toMatchObject([
+        {
+          index: 0,
+          id: consumer.id,
+          epoch: '0',
+          status: 'DENIED',
+          state: 'UNAVAILABLE',
+          errorCode: 'FORBIDDEN',
+        },
+        { index: 1, id: healthy.id, status: 'APPLIED', state: 'ACTIVE' },
+      ]);
+      await expect(
+        access.attest({
+          contractVersion: 1,
+          requestId: randomUUID(),
+          operations: [
+            { ...healthy, revision: '2' },
+            { ...bad, revision: '-1' },
+          ],
+        }),
+      ).rejects.toMatchObject({ response: { error: { code: 'INVALID_REQUEST' } } });
+      const rows = await db.$queryRaw<
+        Array<{ revision: bigint }>
+      >`SELECT revision FROM stats_authorities WHERE id=${healthy.id}::uuid`;
+      expect(rows[0]!.revision).toBe(1n);
+    } finally {
+      await db.$executeRaw`DELETE FROM stats_entities WHERE kind=${other.kind} AND max_id=${other.maxId}`;
+    }
+  });
+  it('resolves only an exact current EXCHANGE scope and preserves an absent identity as null', async () => {
+    const scope = {
+      contractVersion: 1 as const,
+      producerEpoch: epoch,
+      entity,
+      role: consumer.role,
+      actorMaxUserId: consumer.actorMaxUserId,
+      botRef: consumer.botRef,
+      consumer: consumer.consumer,
+      purpose: consumer.purpose,
+    };
+    expect((await access.resolve(scope)).head).toMatchObject({ id: consumer.id, state: 'ACTIVE' });
+    for (const request of [
+      { ...scope, actorMaxUserId: '777777' },
+      { ...scope, botRef: 'other' },
+      { ...scope, purpose: 'PUBLISHED_AGGREGATE' as const },
+      { ...scope, consumer: 'MAXIM' as const },
+      { ...scope, entity: { ...entity, kind: 'CHAT' as const } },
+    ])
+      expect((await access.resolve(request)).head).toBeNull();
+    await expect(access.resolve({ ...scope, producerEpoch: randomUUID() })).rejects.toMatchObject({
+      response: { error: { code: 'RETIRED_PRODUCER_EPOCH' } },
+    });
+  });
+  it('does not fan out retained successor chains on unrelated later changes', async () => {
+    const retired = await access.attest({
+      contractVersion: 1,
+      requestId: randomUUID(),
+      operations: [{ ...consumer, revision: '2', operation: 'REVOKE' }],
+    });
+    const successor = {
+      ...consumer,
+      id: randomUUID(),
+      supersedes: { id: consumer.id, revision: '2', epoch: retired.results[0]!.epoch },
+    };
+    await access.attest({ contractVersion: 1, requestId: randomUUID(), operations: [successor] });
+    await feed.relay();
+    const head = await feed.changes('HEAD');
+    // HEAD starts at the first view of the latest published slot. Consume that
+    // already-published authority slot before testing a subsequent DATA change.
+    const tail = await feed.changes(head.nextCursor);
+    await ingest.ingest(request([audience('1', 77)]));
+    await feed.relay();
+    const changes = await feed.changes(tail.nextCursor);
+    expect(changes.items.some((item) => item.viewId === consumer.id)).toBe(false);
+    expect(
+      changes.items.filter((item) => item.viewId === successor.id && item.action === 'REFRESH'),
+    ).toHaveLength(1);
+  });
+  describe('retained feed history', () => {
+    let backgroundEntityId: string | undefined;
+    let timings: Record<string, number>;
+    beforeEach(() => {
+      backgroundEntityId = undefined;
+      timings = {};
+    });
+    // FLAG: Bulk deferred self-FK validation belongs to fixture teardown. It must
+    // finish before the outer cleanup; it is not part of the five-second feed read.
+    afterEach(async () => {
+      if (!backgroundEntityId) return;
+      const started = performance.now();
+      try {
+        await db.$executeRaw`DELETE FROM stats_entities WHERE id=${backgroundEntityId}::uuid OR (kind=${entity.kind} AND max_id=${entity.maxId})`;
+      } finally {
+        timings.cleanup = Math.round(performance.now() - started);
+        console.info('statistics-feed-phases', JSON.stringify(timings));
+      }
+    }, 15_000);
+    it('bounds feed authority probes with retained tombstones and preserves exact paged revocations', async () => {
+      let phaseStarted = performance.now();
+      const recordPhase = (name: string) => {
+        const finished = performance.now();
+        timings[name] = Math.round(finished - phaseStarted);
+        phaseStarted = finished;
+      };
+      const background = { ...entity, maxId: `${entity.maxId}2` };
+      const [other] = await db.$queryRaw<Array<{ id: string }>>`
+      INSERT INTO stats_entities(kind,max_id) VALUES(${background.kind},${background.maxId}) RETURNING id`;
+      backgroundEntityId = other!.id;
+      await db.$executeRaw`
+        INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,
+          scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at,superseded_by,superseded_at)
+        SELECT gen_random_uuid(),entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,
+          scopes,revision,epoch,producer_epoch,local_access_fence,'REVOKED',now(),now(),id,now()
+        FROM stats_authorities CROSS JOIN generate_series(1,5000) g WHERE id=${consumer.id}::uuid`;
+      await db.$executeRaw`
+        INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,
+          scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
+        SELECT gen_random_uuid(),${other!.id}::uuid,issuer,role,producer,consumer,actor_max_id,bot_ref||g,purpose,
+          scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at
+        FROM stats_authorities CROSS JOIN generate_series(1,5000) g WHERE id=${consumer.id}::uuid`;
+      const [predecessor] = await db.$queryRaw<Array<{ id: string; entity_id: string }>>`
+        SELECT id,entity_id FROM stats_authorities WHERE superseded_by=${consumer.id}::uuid LIMIT 1`;
+      const [existing] = await db.$queryRaw<Array<{ seq: bigint }>>`
+        SELECT COALESCE(max(published_seq),0)::bigint AS seq FROM stats_changes`;
+      const cursorSeq = existing!.seq + 5000n;
+      await db.$executeRaw`
+        INSERT INTO stats_changes(entity_id,entity_revision,cause,published_seq,published_at)
+        SELECT ${other!.id}::uuid,g,'DATA',${existing!.seq}+g,now() FROM generate_series(1,5000) g`;
+      await db.$executeRaw`
+        INSERT INTO stats_changes(entity_id,entity_revision,cause,authority_id,published_seq,published_at)
+        VALUES(${predecessor!.entity_id}::uuid,1,'AUTHORITY',${predecessor!.id}::uuid,${cursorSeq + 1n},now()),
+          (${predecessor!.entity_id}::uuid,2,'DATA',NULL,${cursorSeq + 2n},now())`;
+      await db.$executeRaw`ANALYZE stats_authorities`;
+      await db.$executeRaw`ANALYZE stats_changes`;
+      await db.$executeRaw`ANALYZE stats_entities`;
+      recordPhase('fixture');
+      const cursor = encodeCursor(
+        {
+          type: 'changes',
+          seq: cursorSeq.toString(),
+          view: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+          expires: Date.now() + 60_000,
+        },
+        'a'.repeat(64),
+      );
+      await expect(
+        feed.changes(
+          encodeCursor(
+            {
+              type: 'changes',
+              seq: cursorSeq.toString(),
+              view: '-'.repeat(36),
+              expires: Date.now() + 60_000,
+            },
+            'a'.repeat(64),
+          ),
+        ),
+      ).rejects.toMatchObject({ response: { error: { code: 'INVALID_REQUEST' } } });
+      const query = jest.spyOn(db, '$queryRaw');
+      let page: Awaited<ReturnType<StatsChangesService['changes']>>;
+      let captured: Prisma.Sql;
+      try {
+        page = await feed.changes(cursor, 1);
+        const call = query.mock.calls.find(
+          ([strings]) =>
+            Array.isArray(strings) && strings.join('').includes('SELECT ch.published_seq'),
+        );
+        expect(call).toBeDefined();
+        captured = Prisma.sql(call![0] as TemplateStringsArray, ...call!.slice(1));
+      } finally {
+        query.mockRestore();
+      }
+      type Plan = {
+        'Node Type': string;
+        'Relation Name'?: string;
+        'Index Name'?: string;
+        'Actual Rows': number;
+        'Actual Loops': number;
+        'Rows Removed by Filter'?: number;
+        Plans?: Plan[];
+      };
+      const [explained] = await db.$queryRaw<Array<{ 'QUERY PLAN': Array<{ Plan: Plan }> }>>`
+        EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ${captured!}`;
+      const flatten = (plan: Plan): Plan[] => [plan, ...(plan.Plans ?? []).flatMap(flatten)];
+      const probes = flatten(explained!['QUERY PLAN'][0]!.Plan).filter(
+        (node) => node['Relation Name'] === 'stats_authorities',
+      );
+      expect(
+        probes.some((node) => node['Index Name'] === 'stats_authorities_current_consumers_idx'),
+      ).toBe(true);
+      expect(probes.some((node) => node['Index Name'] === 'stats_authorities_pkey')).toBe(true);
+      expect(
+        probes.reduce(
+          (count, node) =>
+            count +
+            (node['Actual Rows'] + (node['Rows Removed by Filter'] ?? 0)) * node['Actual Loops'],
+          0,
+        ),
+      ).toBeLessThanOrEqual(8);
+      const items = [...page!.items];
+      const positions = new Set<string>();
+      for (let index = 0; ; index++) {
+        const position = decodeCursor<{ seq: string; view: string }>(
+          page!.nextCursor,
+          'a'.repeat(64),
+        );
+        const key = `${position.seq}/${position.view}`;
+        expect(positions.has(key)).toBe(false);
+        positions.add(key);
+        if (!page!.hasMore) break;
+        expect(index).toBeLessThan(4);
+        page = await feed.changes(page!.nextCursor, 1);
+        items.push(...page.items);
+      }
+      expect(items.filter((item) => item.viewId === predecessor!.id)).toEqual([
+        expect.objectContaining({ action: 'REVOKE', authorityId: predecessor!.id }),
+      ]);
+      expect(
+        items.filter((item) => item.viewId === consumer.id && item.action === 'REFRESH'),
+      ).toHaveLength(2);
+      expect(items).toHaveLength(3);
+      recordPhase('boundedProbeAndRevocations');
+      await db.$executeRaw`
+        INSERT INTO stats_authorities(id,entity_id,issuer,role,producer,consumer,actor_max_id,bot_ref,purpose,
+          scopes,revision,epoch,producer_epoch,local_access_fence,state,peer_valid_until,checked_at)
+        SELECT '00000000-0000-0000-0000-000000000000'::uuid,${other!.id}::uuid,issuer,role,producer,consumer,
+          actor_max_id,'nil-uuid-current-head',purpose,scopes,revision,epoch,producer_epoch,local_access_fence,
+          state,peer_valid_until,checked_at FROM stats_authorities WHERE id=${consumer.id}::uuid`;
+      await db.$executeRaw`
+        INSERT INTO stats_changes(entity_id,entity_revision,cause,published_seq,published_at)
+        VALUES(${other!.id}::uuid,5001,'DATA',${cursorSeq + 3n},now())`;
+      recordPhase('paginationFixture');
+      const seen = new Set<string>();
+      let continuation = page!.nextCursor;
+      for (let index = 0; ; index++) {
+        const next = await feed.changes(continuation, 250);
+        for (const item of next.items) {
+          expect(item.action).toBe('REFRESH');
+          expect(seen.has(item.viewId)).toBe(false);
+          seen.add(item.viewId);
+        }
+        if (!next.hasMore) break;
+        expect(index).toBeLessThan(22);
+        continuation = next.nextCursor;
+      }
+      expect(seen.size).toBe(5001);
+      expect(seen.has('00000000-0000-0000-0000-000000000000')).toBe(true);
+      recordPhase('pagination5001');
+    });
+  });
+  it('retries a nested PostgreSQL deadlock once without masking it behind Prisma P2010', async () => {
+    const transaction = jest
+      .spyOn(db, '$transaction')
+      .mockRejectedValueOnce({ code: 'P2010', meta: { code: '40P01' } });
+    try {
+      const result = await access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [{ ...consumer, checkedAt: now() }],
+      });
+      expect(result.results[0]).toMatchObject({ state: 'ACTIVE', status: 'RENEWED' });
+      expect(transaction).toHaveBeenCalledTimes(2);
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+  it('returns temporary storage failure separately while committing an independent platform', async () => {
+    const other = { kind: 'CHAT' as const, maxId: `${entity.maxId}1` };
+    const healthy = {
+      ...source,
+      entity: other,
+      id: randomUUID(),
+      scopes: allKeys.filter((key) => key.metric === 'AUDIENCE'),
+    };
+    const transaction = jest
+      .spyOn(db, '$transaction')
+      .mockRejectedValueOnce({ code: 'P2010', meta: { code: '57014' } });
+    try {
+      const result = await access.attest({
+        contractVersion: 1,
+        requestId: randomUUID(),
+        operations: [consumer, healthy],
+      });
+      expect(statsAuthorityResultSchema.parse(result).results).toMatchObject([
+        { id: consumer.id, status: 'DENIED', state: 'UNAVAILABLE', epoch: '0', errorCode: null },
+        { id: healthy.id, status: 'APPLIED', state: 'ACTIVE' },
+      ]);
+      expect(transaction).toHaveBeenCalledTimes(2);
+    } finally {
+      transaction.mockRestore();
+      await db.$executeRaw`DELETE FROM stats_entities WHERE kind=${other.kind} AND max_id=${other.maxId}`;
+    }
+  });
+  it('serializes readers, source-first renewals and ingestion through the entity lock', async () => {
+    for (let round = 0; round < 6; round++) {
+      const [snapshot, sourceFirst, consumerFirst, recorded] = await Promise.all([
+        summary().catch((error: unknown) => {
+          // A concurrent data revision may invalidate a snapshot, but lock errors must escape.
+          expect(error).toBeInstanceOf(StatsFailure);
+          expect((error as StatsFailure).getResponse()).toMatchObject({
+            error: { code: 'READ_RESTART' },
+          });
+          return null;
+        }),
+        access.attest({
+          contractVersion: 1,
+          requestId: randomUUID(),
+          operations: [
+            { ...source, checkedAt: now() },
+            { ...consumer, checkedAt: now() },
+          ],
+        }),
+        access.attest({
+          contractVersion: 1,
+          requestId: randomUUID(),
+          operations: [
+            { ...consumer, checkedAt: now() },
+            { ...source, checkedAt: now() },
+          ],
+        }),
+        ingest.ingest(request([audience(String(round + 1), round + 1)])),
+      ]);
+      if (snapshot) expect(snapshot.results[0]!.status).toBe('READY');
+      for (const result of [sourceFirst, consumerFirst])
+        expect(result.results.every((item) => item.status === 'RENEWED')).toBe(true);
+      expect(recorded.results[0]!.status).toBe('APPLIED');
+      expect((await summary()).results[0]).toMatchObject({
+        status: 'READY',
+        summary: { audience: { state: 'AVAILABLE', value: { value: round + 1 } } },
+      });
+    }
+  });
   it('keeps validated entity foreign keys aligned with Prisma update and delete actions', async () => {
     const constraints = await db.$queryRaw<
       Array<{ conname: string; confupdtype: string; confdeltype: string; convalidated: boolean }>
@@ -366,17 +935,21 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
         context.consumerAuthority.epoch = '3';
       }
       expect((await summary()).results[0]!.status).toBe('READY');
-      await expect(attest({ ...rebound, botRef: original.botRef })).rejects.toMatchObject({
-        response: { error: { code: 'STALE_LOCAL_FENCE' } },
+      expect((await attest({ ...rebound, botRef: original.botRef })).results[0]).toMatchObject({
+        status: 'DENIED',
+        state: 'UNAVAILABLE',
+        errorCode: 'STALE_LOCAL_FENCE',
       });
       expect((await attest({ ...original, revision: '2' })).results[0]).toMatchObject({
         status: 'SUPERSEDED',
         epoch: '3',
       });
-      await expect(
-        attest({ ...rebound, revision: '4', actorMaxUserId: '999999999' }),
-      ).rejects.toMatchObject({
-        response: { error: { code: 'FORBIDDEN' } },
+      expect(
+        (await attest({ ...rebound, revision: '4', actorMaxUserId: '999999999' })).results[0],
+      ).toMatchObject({
+        status: 'DENIED',
+        state: 'UNAVAILABLE',
+        errorCode: 'FORBIDDEN',
       });
       const final = await db.$queryRaw<Array<{ bot_ref: string; revision: bigint; epoch: bigint }>>`
         SELECT bot_ref,revision,epoch FROM stats_authorities WHERE id=${original.id}::uuid`;
@@ -604,9 +1177,41 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
       status: 'READY',
       summary: { audience: { state: 'AVAILABLE', value: { value: 44 } } },
     });
+    const local = await access.localContext(
+      entity,
+      source.actorMaxUserId,
+      'native-renewal',
+      allKeys,
+    );
+    for (let round = 0; round < 4; round++) {
+      const [renewed, localRenewed, peerRead, localRead] = await Promise.all([
+        renew(),
+        access.localContext(entity, source.actorMaxUserId, 'native-renewal', allKeys),
+        summary(),
+        read.summaries(
+          {
+            contractVersion: 1,
+            contexts: [local],
+            periods: [7],
+            metrics: ['AUDIENCE'],
+            horizons: [0],
+            cursor: null,
+          },
+          'MAXIM',
+        ),
+      ]);
+      expect(renewed.results[0]!.status).toBe('RENEWED');
+      expect(localRenewed.consumerAuthority).toEqual(local.consumerAuthority);
+      for (const result of [peerRead, localRead])
+        expect(result.results[0]).toMatchObject({
+          status: 'READY',
+          summary: { audience: { state: 'AVAILABLE', value: { value: 44 } } },
+        });
+    }
     const grants = () => db.$queryRaw<Array<{ id: string; epoch: bigint }>>`
       SELECT id,epoch FROM stats_authorities WHERE actor_max_id=${source.actorMaxUserId}
-      AND bot_ref='native-renewal' AND entity_id IN(SELECT id FROM stats_entities WHERE max_id=${entity.maxId}) ORDER BY id`;
+      AND bot_ref='native-renewal' AND role='SOURCE' AND consumer='EXCHANGE'
+      AND entity_id IN(SELECT id FROM stats_entities WHERE max_id=${entity.maxId}) ORDER BY id`;
     const original = await grants();
     const update = (data: {
       checkedAt?: Date;

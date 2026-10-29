@@ -1059,11 +1059,13 @@ sync_branch() {
   PRE_PULL_HEAD="$(git rev-parse --verify HEAD)" || return 2
   git fetch origin "$BRANCH"
   require_market_statistics_lock_dispatch "origin/$BRANCH" || return 2
+  maxim_topology_require_statistics_authority_lifecycle "$(git rev-parse "origin/$BRANCH")" || return 2
   maxim_topology_require_eraser_bridge "$(git rev-parse "origin/$BRANCH")" || return 2
   maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse "origin/$BRANCH")" tooling || return 2
 
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
     require_market_statistics_lock_dispatch "refs/heads/$BRANCH" || return 2
+    maxim_topology_require_statistics_authority_lifecycle "$(git rev-parse "refs/heads/$BRANCH")" || return 2
     maxim_topology_require_eraser_bridge "$(git rev-parse "refs/heads/$BRANCH")" || return 2
     maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse "refs/heads/$BRANCH")" tooling || return 2
     git checkout "$BRANCH"
@@ -1639,6 +1641,7 @@ TARGET_HAS_MEDIA_ANALYSIS=0
 TARGET_HAS_OCR_NATIVE_SANDBOX=0
 TARGET_COMMERCIAL_OCR_VERSION=""
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_topology_require_statistics_authority_lifecycle "$TARGET_SHA"
   maxim_topology_require_publisher_secret_files
   maxim_topology_prepare_commercial_ocr_target \
     "$TARGET_SHA" \

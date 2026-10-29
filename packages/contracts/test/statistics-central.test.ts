@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   statsIngestRequestSchema,
   statsAuthorityRequestSchema,
+  statsAuthorityResolveRequestSchema,
+  statsAuthorityResolveResultSchema,
   statsHistoryRowSchema,
 } from '../src/statistics-central-validation.js';
 
@@ -36,6 +38,68 @@ const reach = {
 };
 
 describe('central statistics portable boundary', () => {
+  it('keeps legacy authority bodies compatible while validating exact successor references', () => {
+    const operation = {
+      id: ref.id,
+      revision: '1',
+      operation: 'ATTEST',
+      entity: base.entity,
+      role: 'CONSUMER',
+      actorMaxUserId: '123',
+      botRef: 'synthetic',
+      consumer: 'EXCHANGE',
+      purpose: 'OWNER_ANALYTICS',
+      scopes: [{ metric: 'AUDIENCE', horizon: 0, method: { id: 'AUDIENCE_SNAPSHOT', version: 1 } }],
+      checkedAt: '2026-10-29T12:00:00Z',
+      producerEpoch: ref.id,
+      localAccessFence: 'opaque.123456',
+    };
+    const request = { contractVersion: 1, requestId: ref.id, operations: [operation] };
+    expect(statsAuthorityRequestSchema.parse(request)).toEqual(request);
+    const successor = {
+      ...operation,
+      supersedes: { id: '00000000-0000-4000-8000-000000000002', revision: '3', epoch: '2' },
+    };
+    expect(
+      statsAuthorityRequestSchema.parse({ ...request, operations: [successor] }).operations[0],
+    ).toEqual(successor);
+    for (const supersedes of [
+      { ...successor.supersedes, id: operation.id },
+      { ...successor.supersedes, revision: '0' },
+      { ...successor.supersedes, epoch: '0' },
+      { ...successor.supersedes, wildcard: true },
+    ])
+      expect(
+        statsAuthorityRequestSchema.safeParse({
+          ...request,
+          operations: [{ ...operation, supersedes }],
+        }).success,
+      ).toBe(false);
+    const exactScope = {
+      contractVersion: 1,
+      producerEpoch: ref.id,
+      entity: base.entity,
+      role: 'CONSUMER',
+      actorMaxUserId: '123',
+      botRef: 'synthetic',
+      consumer: 'EXCHANGE',
+      purpose: 'OWNER_ANALYTICS',
+    };
+    expect(statsAuthorityResolveRequestSchema.parse(exactScope)).toEqual(exactScope);
+    expect(
+      statsAuthorityResolveRequestSchema.safeParse({ ...exactScope, actorMaxUserId: '*' }).success,
+    ).toBe(false);
+    expect(statsAuthorityResolveResultSchema.parse({ contractVersion: 1, head: null })).toEqual({
+      contractVersion: 1,
+      head: null,
+    });
+    expect(
+      statsAuthorityResolveResultSchema.safeParse({
+        contractVersion: 1,
+        head: { ...ref, revision: '0', state: 'REVOKED' },
+      }).success,
+    ).toBe(false);
+  });
   it('retains exact decimal sum and microseconds without converting either', () => {
     const result = statsIngestRequestSchema.parse({ ...base, operations: [reach] });
     expect(result).toEqual({ ...base, operations: [reach] });

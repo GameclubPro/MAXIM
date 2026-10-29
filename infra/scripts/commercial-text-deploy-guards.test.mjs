@@ -82,7 +82,7 @@ test('both rollback paths and tooling bootstrap retain v1/v2 pool readers with r
     );
   assert.match(
     readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8'),
-    /maxim_topology_require_night_mode_recovery_reader/u,
+    /maxim_topology_require_statistics_and_night_mode_recovery/u,
   );
   const current = probe('current', true, true);
   assert.equal(current.status, 0, current.stderr);
