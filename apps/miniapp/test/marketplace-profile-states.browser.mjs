@@ -9,8 +9,12 @@ import {
   stopChildProcess,
 } from '../../../scripts/miniapp-local-server.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
-const baseUrl = await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/');
-const server = await ensureMiniappDevServer(baseUrl);
+const baseUrl =
+  process.env.MINIAPP_MARKETPLACE_TEST_BASE_URL ??
+  (await allocateMiniappBaseUrl('http://127.0.0.1:3000/app/'));
+const server = await ensureMiniappDevServer(baseUrl, {
+  reuseServer: process.env.MINIAPP_MARKETPLACE_TEST_REUSE_SERVER === '1',
+});
 const output = await mkdtemp(path.join(tmpdir(), 'maxim-marketplace-states-'));
 console.log(`Marketplace state screenshots: ${output}`);
 const browser = await chromium.launch({ headless: true });
@@ -25,7 +29,7 @@ function fixture() {
     listing: {
       id,
       status: 'PUBLISHED',
-      title: 'Мой канал',
+      title: 'Канал владельца с длинным названием для проверки мобильной рекламной биржи',
       description: 'Описание канала',
       topic: 'Бизнес',
       region: 'Россия',
@@ -72,7 +76,7 @@ function fixture() {
       collectionMetrics: [],
       statisticsConsent: true,
       metadata: {
-        title: 'Мой канал',
+        title: 'Канал владельца с длинным названием для проверки мобильной рекламной биржи',
         description: 'Описание канала',
         imageUrl: null,
         publicUrl: null,
@@ -116,6 +120,8 @@ try {
       let state = fixture(),
         code = 'MARKETPLACE_ACCESS_PENDING',
         status = 503,
+        profileStatus = 200,
+        profileFailure = null,
         isOwner = true,
         entryValidUntil = null,
         policyStatus = 200,
@@ -123,7 +129,8 @@ try {
         forcedPolicyState = null;
       const reads = { entry: 0, profile: 0, policy: 0 };
       const mutations = [],
-        policyMutations = [];
+        policyMutations = [],
+        launches = [];
       const policy = {
         entityId: '-100',
         kind: 'CHANNEL',
@@ -156,6 +163,15 @@ try {
         if (url.origin !== new URL(baseUrl).origin) return route.abort();
         if (url.pathname !== '/app/__marketplace-fixture') return route.continue();
         const requestedPath = url.searchParams.get('path') ?? '';
+        if (requestedPath === '/marketplace/launch') {
+          const launch = route.request().postDataJSON();
+          launches.push(launch);
+          return route.fulfill({
+            json: {
+              url: `${bot}?startapp=${launch.target}_channel_${launch.target === 'connect' ? '-100' : id}`,
+            },
+          });
+        }
         if (requestedPath.includes('/entry?')) {
           reads.entry++;
           if (status !== 200) return route.fulfill({ status, json: { code } });
@@ -203,6 +219,10 @@ try {
             return route.fulfill({ status: 409, json: { code: 'REVISION_CONFLICT' } });
           }
           if ('caption' in body) {
+            if (policyFailure === 'caption-not-committed') {
+              policyFailure = null;
+              return route.fulfill({ status: 503, json: { code: 'RESPONSE_LOST' } });
+            }
             if (body.expectedCaptionRevision !== policy.captionRevision)
               return route.fulfill({ status: 409, json: { code: 'REVISION_CONFLICT' } });
             policy.caption = body.caption;
@@ -234,13 +254,23 @@ try {
           const body = route.request().postDataJSON();
           mutations.push(body);
           if (body.action === 'save') {
+            if (profileFailure === 'save-not-committed') {
+              profileFailure = null;
+              return route.fulfill({ status: 503, json: { code: 'RESPONSE_LOST' } });
+            }
             state.listing = { ...state.listing, ...body.details };
             state.revision++;
+            if (profileFailure === 'unknown-result') {
+              profileFailure = null;
+              return route.fulfill({ status: 503, json: { code: 'RESPONSE_LOST' } });
+            }
           }
           return route.fulfill({ json: state });
         }
         reads.profile++;
         if (!isOwner) return route.fulfill({ status: 403, json: { code: 'ACCESS_DENIED' } });
+        if (profileStatus !== 200)
+          return route.fulfill({ status: profileStatus, json: { code: 'ACCESS_DENIED' } });
         return status === 200
           ? route.fulfill({ json: state })
           : route.fulfill({ status, json: { code } });
@@ -263,35 +293,51 @@ try {
       assert.match(await panel.innerText(), /Не удалось получить профиль/u);
       status = 200;
       await panel.getByRole('button', { name: 'Проверить снова', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Настроить размещения', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Настроить размещения', exact: true }).waitFor();
       assert.doesNotMatch(
         await workspace.innerText(),
         /Дней со статистикой|Период:|Условия не настроены/u,
       );
       assert.equal(await workspace.getByRole('checkbox').count(), 0);
       assert.equal(
-        await workspace.getByRole('button', { name: 'Подключить бота', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Подключить бота', exact: true }).count(),
         0,
       );
+      assert.equal(
+        await workspace.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+        true,
+        'Long platform identity does not overflow the phone',
+      );
       await page.screenshot({ path: path.join(output, `${width}-${theme}-summary.png`) });
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).click();
+      assert.match(
+        await workspace.locator('[data-marketplace-action="primary"]').innerText(),
+        /Посмотреть профиль/u,
+      );
+      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      assert.equal(
+        await workspace.locator('details[open]').count(),
+        0,
+        'Audience history starts collapsed',
+      );
+      await workspace.locator('summary').filter({ hasText: 'История аудитории' }).click();
       assert.match(await workspace.innerText(), /Дней со статистикой: 2/u);
       assert.match(
         await workspace.innerText(),
         /1 окт.*17:00/u,
         'Uses observation timestamp, not synchronization timestamp',
       );
-      await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
-      await workspace.getByLabel('Название', { exact: true }).fill('Мой сохранённый ввод');
+      await workspace
+        .getByRole('textbox', { name: 'Название', exact: true })
+        .fill('Мой сохранённый ввод');
       state.statistics.state = 'DISABLED';
       state.binding.statisticsConsent = false;
       await returnToApp(page);
       await workspace.getByText('Профиль пока недоступен.', { exact: true }).waitFor();
-      await workspace.getByLabel('Название', { exact: true }).fill('Полностью заполненная форма');
+      await workspace
+        .getByRole('textbox', { name: 'Название', exact: true })
+        .fill('Полностью заполненная форма');
       assert.equal(
-        await workspace
-          .getByRole('button', { name: 'Сохранить изменения', exact: true })
-          .isDisabled(),
+        await panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).isDisabled(),
         true,
         'A complete form cannot grant its own access',
       );
@@ -300,11 +346,12 @@ try {
       state.binding.statisticsConsent = true;
       await returnToApp(page);
       await waitUntil(
-        () =>
-          workspace.getByRole('button', { name: 'Сохранить изменения', exact: true }).isEnabled(),
+        () => panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).isEnabled(),
         'Only a successful server recheck can restore saving',
       );
-      await workspace.getByLabel('Название', { exact: true }).fill('Мой сохранённый ввод');
+      await workspace
+        .getByRole('textbox', { name: 'Название', exact: true })
+        .fill('Мой сохранённый ввод');
       state.revision++;
       state.listing.title = 'Изменено на бирже';
       await returnToApp(page);
@@ -312,47 +359,166 @@ try {
         .getByText('Профиль изменился. Ваш ввод сохранён.', { exact: false })
         .waitFor();
       assert.equal(
-        await workspace.getByLabel('Название', { exact: true }).inputValue(),
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).inputValue(),
         'Мой сохранённый ввод',
       );
       assert.equal(
-        await workspace
-          .getByRole('button', { name: 'Сохранить изменения', exact: true })
-          .isDisabled(),
+        await panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).isDisabled(),
         true,
       );
       await workspace
         .getByRole('button', { name: 'Использовать мой вариант', exact: true })
         .click();
-      await workspace.getByRole('button', { name: 'Сохранить изменения', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).click();
+      await panel
+        .getByRole('button', { name: 'Сохранить изменения', exact: true })
+        .waitFor({ state: 'hidden' });
+      assert.equal(
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).inputValue(),
+        'Мой сохранённый ввод',
+      );
       assert.equal(mutations.at(-1).expectedRevision, 2);
       assert.equal(mutations.at(-1).statisticsConsent, undefined);
+      const profileTitle = workspace.getByRole('textbox', { name: 'Название', exact: true });
+      await profileTitle.fill('Черновик при отказе приватного профиля');
+      profileStatus = 403;
+      const entryReadsBeforePrivateDenial = reads.entry;
+      await returnToApp(page);
+      await workspace
+        .getByText(
+          'Не удалось обновить профиль. Показаны прежние данные, изменения остались в форме.',
+          {
+            exact: true,
+          },
+        )
+        .waitFor();
+      assert.ok(
+        reads.entry > entryReadsBeforePrivateDenial,
+        'Public entry remains independently readable',
+      );
+      assert.equal(status, 200);
+      assert.equal(await profileTitle.inputValue(), 'Черновик при отказе приватного профиля');
+      assert.equal(
+        await profileTitle.isEditable(),
+        false,
+        'Private profile denial blocks text editing',
+      );
+      assert.equal(await workspace.getByLabel('Тематика', { exact: true }).isDisabled(), true);
+      assert.equal(
+        await panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).isDisabled(),
+        true,
+      );
+      await page.screenshot({
+        path: path.join(output, `${width}-${theme}-private-profile-denied.png`),
+      });
+      profileStatus = 200;
+      await returnToApp(page);
+      await waitUntil(
+        () => profileTitle.isEditable(),
+        'Authoritative private profile recheck restores editing',
+      );
+      await profileTitle.fill('Мой сохранённый ввод');
       status = 403;
       code = 'ACCESS_DENIED';
       await returnToApp(page);
       await workspace.getByText('Не удалось обновить состояние', { exact: true }).waitFor();
       assert.equal(
-        await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).isDisabled(),
-        true,
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).isEditable(),
+        false,
       );
       assert.equal(
-        await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).isDisabled(),
+        await panel.getByRole('button', { name: 'Скрыть профиль', exact: true }).isDisabled(),
         true,
       );
       status = 200;
       await returnToApp(page);
       await waitUntil(
-        () => workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).isEnabled(),
+        () => workspace.getByRole('textbox', { name: 'Название', exact: true }).isEditable(),
         'Rights recovery must refresh the profile',
       );
+      await profileTitle.fill('Сохранено с потерянным ответом');
+      profileFailure = 'unknown-result';
+      const writesBeforeLostProfile = mutations.length;
+      await panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).click();
+      await workspace
+        .getByText('Профиль изменился. Ваш ввод сохранён.', { exact: false })
+        .waitFor();
       await nativeBack(page);
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
-      await workspace.getByLabel('Название', { exact: true }).fill('Черновик при смене владельца');
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).click();
+      const discardProfileNavigation = page.getByRole('dialog', {
+        name: 'Есть несохранённые изменения',
+        exact: true,
+      });
+      await discardProfileNavigation
+        .getByRole('button', { name: 'Отменить изменения и перейти', exact: true })
+        .click();
+      await waitUntil(
+        () => launches.length === 1,
+        'Discard after a lost profile response permits one external launch',
+      );
+      await returnToApp(page);
+      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      assert.equal(await profileTitle.inputValue(), 'Сохранено с потерянным ответом');
+      assert.equal(
+        mutations.length,
+        writesBeforeLostProfile + 1,
+        'Discard does not retry or roll back an already committed profile',
+      );
+      await profileTitle.fill('Отменённый профиль с неудачной повторной проверкой');
+      profileFailure = 'save-not-committed';
+      const profileReadsBeforeFailure = reads.profile;
+      await panel.getByRole('button', { name: 'Сохранить изменения', exact: true }).click();
+      await waitUntil(
+        async () =>
+          reads.profile > profileReadsBeforeFailure &&
+          (await panel
+            .getByRole('button', { name: 'Сохранить изменения', exact: true })
+            .isEnabled()),
+        'Unconfirmed profile save completes its first authoritative read',
+      );
+      await nativeBack(page);
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).click();
+      await discardProfileNavigation.waitFor();
+      profileStatus = 503;
+      const profileReadsBeforeDiscard = reads.profile;
+      await discardProfileNavigation
+        .getByRole('button', { name: 'Отменить изменения и перейти', exact: true })
+        .click();
+      await waitUntil(
+        () => launches.length === 2 && reads.profile > profileReadsBeforeDiscard,
+        'Discard rereads a profile with an uncertain prior save',
+      );
+      await panel.getByRole('button', { name: 'Повторить', exact: true }).waitFor();
+      assert.equal(
+        await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
+        0,
+        'Failed reread cannot authorize another profile edit',
+      );
+      await page.screenshot({
+        path: path.join(output, `${width}-${theme}-profile-discard-recheck.png`),
+      });
+      profileStatus = 200;
+      await panel.getByRole('button', { name: 'Повторить', exact: true }).click();
+      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await waitUntil(
+        () => profileTitle.isEditable(),
+        'Successful reread restores profile editing after discard',
+      );
+      assert.equal(await profileTitle.inputValue(), 'Сохранено с потерянным ответом');
+      assert.equal(
+        mutations.length,
+        writesBeforeLostProfile + 2,
+        'Discarded profile attempts never trigger another write',
+      );
+      launches.length = 0;
+      await nativeBack(page);
+      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await workspace
+        .getByRole('textbox', { name: 'Название', exact: true })
+        .fill('Черновик при смене владельца');
       isOwner = false;
       await returnToApp(page);
-      const saveAfterRoleChange = workspace.getByRole('button', {
+      const saveAfterRoleChange = panel.getByRole('button', {
         name: 'Сохранить изменения',
         exact: true,
       });
@@ -361,7 +527,7 @@ try {
         'Losing ownership must block writes while preserving the editor',
       );
       assert.equal(
-        await workspace.getByLabel('Название', { exact: true }).inputValue(),
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).inputValue(),
         'Черновик при смене владельца',
       );
       const privateReadsAfterRoleChange = reads.profile;
@@ -377,39 +543,44 @@ try {
         'Lost ownership prevents further private profile reads',
       );
       await nativeBack(page);
-      await page.getByRole('button', { name: 'Продолжить настройку', exact: true }).click();
+      await panel.getByRole('button', { name: 'Продолжить редактирование', exact: true }).click();
       assert.equal(
-        await workspace.getByLabel('Название', { exact: true }).inputValue(),
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).inputValue(),
         'Черновик при смене владельца',
       );
       await nativeBack(page);
-      await page.getByRole('button', { name: 'Не сохранять', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
-      assert.equal(await workspace.getByLabel('Название', { exact: true }).count(), 0);
+      await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+      await page.getByRole('button', { name: 'Выйти без сохранения', exact: true }).click();
+      await page.getByRole('button', { name: 'Открыть снова', exact: true }).click();
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
       assert.equal(
-        await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).count(),
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
         0,
       );
       assert.equal(await panel.locator('.settings-drilldown__close').isEnabled(), true);
       isOwner = true;
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Настроить размещения', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Настроить размещения', exact: true }).waitFor();
       state.listing.status = 'DRAFT';
       state.capabilities.publicState = 'DRAFT';
       state.listing.topic = '';
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Продолжить настройку', exact: true }).click();
-      await workspace.getByLabel('Название', { exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Продолжить настройку', exact: true }).click();
+      await workspace.getByRole('textbox', { name: 'Название', exact: true }).waitFor();
       assert.equal(await workspace.getByLabel('Тематика', { exact: true }).inputValue(), '');
       await nativeBack(page);
-      await workspace.getByRole('button', { name: 'Продолжить настройку', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Продолжить настройку', exact: true }).waitFor();
       state.listing.topic = 'Бизнес';
       state.capabilities.publicState = 'REVIEW';
       await returnToApp(page);
       await workspace.getByText('На проверке', { exact: true }).waitFor();
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).click();
+      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
       assert.equal(
-        await workspace.getByRole('button', { name: 'Опубликовать профиль', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Опубликовать профиль', exact: true }).count(),
         0,
         'Review status must not offer a publish action',
       );
@@ -419,54 +590,63 @@ try {
       state.capabilities.publicState = 'PUBLIC';
       state.capabilities.placementState = 'READY';
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Условия размещений', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Условия размещений', exact: true }).waitFor();
       assert.equal(
-        await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).count(),
         1,
       );
       assert.equal(
-        await workspace.getByRole('button', { name: 'Настроить размещения', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Настроить размещения', exact: true }).count(),
         0,
       );
+      await panel.getByRole('button', { name: 'Условия размещений', exact: true }).click();
+      await waitUntil(() => launches.length === 1, 'Conditions open directly in one action');
+      assert.deepEqual(
+        launches[0],
+        { target: 'manage', kind: 'CHANNEL', entityId: '-100', listingId: id },
+        'Conditions target the exact selected platform editor',
+      );
+      launches.length = 0;
+      await returnToApp(page);
       const beforeExpiryReads = reads.profile;
       state.binding.validUntil = new Date(Date.now() + 600).toISOString();
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Проверить доступ', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Проверить доступ', exact: true }).waitFor();
       assert.ok(
         reads.profile >= beforeExpiryReads + 2,
         'Explicit expiry refreshes access without waiting for focus or polling',
       );
       assert.equal(
-        await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).count(),
         0,
         'Expired access cannot keep a cached public action active',
       );
       state.binding.validUntil = new Date(Date.now() + 300_000).toISOString();
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
       state.capabilities.publicState = 'HIDDEN';
       state.listing.status = 'PAUSED';
       await returnToApp(page);
       await waitUntil(
         async () =>
-          (await workspace
-            .getByRole('button', { name: 'Посмотреть профиль', exact: true })
-            .count()) === 0,
+          (await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).count()) ===
+          0,
         'READY must not override hidden public state',
       );
-      await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await workspace.getByRole('textbox', { name: 'Название', exact: true }).waitFor();
       assert.equal(
-        await workspace.getByLabel('Название', { exact: true }).count(),
-        0,
-        'Hidden profile opens details before editing',
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).isEditable(),
+        true,
+        'Hidden profile opens the editor directly without publishing',
       );
+      assert.equal(state.listing.status, 'PAUSED');
       await nativeBack(page);
       state.capabilities.publicState = 'PUBLIC';
       state.listing.status = 'PUBLISHED';
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
-      await workspace.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
       const toggle = workspace.getByRole('checkbox', {
         name: 'В публикациях Публика',
         exact: true,
@@ -478,22 +658,96 @@ try {
       });
       await caption.fill('Реклама здесь');
       policyFailure = 'unknown-result';
-      await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+      await panel.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
       await waitUntil(
         async () =>
           policy.captionRevision === 1 &&
-          !(await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).count()),
+          !(await panel.getByRole('button', { name: 'Сохранить текст', exact: true }).count()),
         'Lost caption response must reconcile without a second write',
       );
       assert.equal(policyMutations.length, 1);
       await caption.fill('Разместить рекламу');
-      await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+      await panel.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
       await waitUntil(
         async () =>
           policy.captionRevision === 2 &&
-          !(await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).count()),
+          !(await panel.getByRole('button', { name: 'Сохранить текст', exact: true }).count()),
         'A new caption must use the reconciled revision',
       );
+      await caption.fill('Неподтверждённый черновик');
+      policyFailure = 'caption-not-committed';
+      await panel.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+      await workspace
+        .getByText('Сохранение не подтверждено. Проверьте настройки и повторите.', { exact: true })
+        .waitFor();
+      assert.equal(
+        await caption.isDisabled(),
+        true,
+        'Unconfirmed text remains fenced before explicit discard',
+      );
+      await nativeBack(page);
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).click();
+      const discardNavigation = page.getByRole('dialog', {
+        name: 'Есть несохранённые изменения',
+        exact: true,
+      });
+      await discardNavigation.waitFor();
+      assert.equal(launches.length, 0, 'An unresolved draft blocks external launch');
+      await discardNavigation
+        .getByRole('button', { name: 'Отменить изменения и перейти', exact: true })
+        .click();
+      await waitUntil(() => launches.length === 1, 'Explicit discard permits exactly one launch');
+      await returnToApp(page);
+      await panel.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
+      await caption.waitFor();
+      assert.equal(await caption.inputValue(), 'Разместить рекламу');
+      assert.equal(
+        await caption.isEnabled(),
+        true,
+        'Explicitly discarded failed caption cannot keep the next editor locked',
+      );
+      assert.equal(
+        await panel.getByRole('button', { name: 'Повторить сохранение', exact: true }).count(),
+        0,
+        'Discard cannot resurrect an old failed caption attempt',
+      );
+      await caption.fill('Черновик с недоступной повторной проверкой');
+      policyFailure = 'caption-not-committed';
+      await panel.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+      await workspace
+        .getByText('Сохранение не подтверждено. Проверьте настройки и повторите.', { exact: true })
+        .waitFor();
+      await nativeBack(page);
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).click();
+      await discardNavigation.waitFor();
+      policyStatus = 503;
+      const beforeDiscardReads = reads.policy;
+      await discardNavigation
+        .getByRole('button', { name: 'Отменить изменения и перейти', exact: true })
+        .click();
+      await waitUntil(
+        () => launches.length === 2 && reads.policy > beforeDiscardReads,
+        'Discard rereads an uncertain caption before a new edit',
+      );
+      await panel.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
+      await caption.waitFor();
+      assert.equal(
+        await caption.isDisabled(),
+        true,
+        'Failed reread cannot authorize a new caption revision',
+      );
+      assert.equal(
+        await panel.getByRole('button', { name: 'Повторить сохранение', exact: true }).count(),
+        0,
+        'A discarded attempt never becomes a retry after a failed reread',
+      );
+      policyStatus = 200;
+      await panel.getByRole('button', { name: 'Проверить настройки', exact: true }).click();
+      await waitUntil(
+        () => caption.isEnabled(),
+        'A successful authoritative reread restores caption editing',
+      );
+      assert.equal(await caption.inputValue(), 'Разместить рекламу');
       policyMutations.length = 0;
       policyFailure = 'unknown-result';
       const beforeUnknownReads = reads.policy;
@@ -515,7 +769,7 @@ try {
       assert.equal(policy.contexts[0].enabled, true);
       forcedPolicyState = 'CONFIRM_REQUIRED';
       await returnToApp(page);
-      const confirmation = workspace.getByRole('button', {
+      const confirmation = panel.getByRole('button', {
         name: 'Подтвердить включение',
         exact: true,
       });
@@ -574,7 +828,7 @@ try {
       status = 503;
       code = 'SERVICE_UNAVAILABLE';
       await returnToApp(page);
-      const retryProfile = workspace.getByRole('button', {
+      const retryProfile = panel.getByRole('button', {
         name: 'Проверить профиль',
         exact: true,
       });
@@ -628,7 +882,7 @@ try {
       policy.contexts[0].enabled = true;
       policyStatus = 403;
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Проверить настройки', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Проверить настройки', exact: true }).waitFor();
       assert.equal(
         await toggle.isDisabled(),
         true,
@@ -641,12 +895,15 @@ try {
       isOwner = false;
       const ownerReads = reads.profile;
       await page.reload();
-      await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
       assert.equal(
-        await workspace.getByRole('button', { name: 'Настройки профиля', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
         0,
       );
-      assert.equal(await workspace.getByLabel('Название', { exact: true }).count(), 0);
+      assert.equal(
+        await workspace.getByRole('textbox', { name: 'Название', exact: true }).count(),
+        0,
+      );
       assert.equal(
         reads.profile,
         ownerReads,
@@ -658,20 +915,19 @@ try {
       await waitUntil(
         async () =>
           reads.entry >= beforeEntryExpiryReads + 2 &&
-          (await workspace
-            .getByRole('button', { name: 'Посмотреть профиль', exact: true })
-            .count()) === 0,
+          (await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).count()) ===
+            0,
         'Entry expiry must refresh and remove the cached public action for another administrator',
       );
       entryValidUntil = null;
       await returnToApp(page);
-      await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
-      await workspace.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Кнопка в сообщениях', exact: true }).click();
       await toggle.waitFor();
       assert.equal(await toggle.isChecked(), true);
       await page.screenshot({ path: path.join(output, `${width}-${theme}-policy.png`) });
       await nativeBack(page);
-      await workspace.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
+      await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
       await nativeBack(page);
       await page.getByRole('button', { name: 'Открыть снова', exact: true }).waitFor();
       const beforeClose = { ...reads };

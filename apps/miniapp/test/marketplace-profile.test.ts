@@ -312,29 +312,57 @@ test('legacy policy replies retain presentation but never revive revoked rights 
   assert.equal(marketplaceProfileView(merged).canAppend, false);
 });
 
-test('compact owner overview chooses one honest action before placement shortcuts', async () => {
+test('owner overview keeps public viewing separate from placement setup and conditions', async () => {
   const { marketplaceProfileOverview } = await import('../src/lib/marketplace-profile-view');
   const api = createPreviewApiTransport({ search: '?marketplacePublished=1&profile=publisher' });
   const state = marketplaceProfileStateSchema.parse(
     await api.request('/marketplace/entities/CHANNEL/preview-channel/profile?profile=publisher'),
   );
   const caps = state.capabilities!;
+  caps.placementState = 'SETUP_REQUIRED';
+  assert.equal(
+    marketplaceProfileOverview(state).primary?.kind,
+    'listing',
+    'A published profile remains the primary destination while placements need setup',
+  );
   caps.placementState = 'READY';
   let overview = marketplaceProfileOverview(state);
-  assert.equal(overview.status, 'Опубликован');
+  assert.equal(overview.status, 'Профиль опубликован');
   assert.equal(overview.primary?.kind, 'listing');
   assert.equal(overview.primary?.label, 'Посмотреть профиль');
-  assert.equal(overview.secondary?.kind, 'manage');
+  assert.equal(overview.conditionsAction?.kind, 'manage');
+  assert.equal(overview.conditionsAction?.label, 'Условия размещений');
+  assert.equal(overview.placementAction, null);
   assert.equal(overview.placementNote, null, 'Readiness is not proof of commercial terms');
 
   caps.placementState = 'SETUP_REQUIRED';
   overview = marketplaceProfileOverview(state);
-  assert.equal(overview.primary?.kind, 'manage');
-  assert.equal(overview.placementNote, 'Нужно завершить настройку');
-  assert.equal(overview.secondary?.kind, 'listing');
+  assert.equal(overview.primary?.kind, 'listing');
+  assert.equal(overview.placementNote, 'Требуется настройка размещений');
+  assert.equal(overview.placementAction?.kind, 'manage');
+  assert.equal(
+    overview.conditionsAction,
+    null,
+    'Setup and conditions do not duplicate one destination',
+  );
 
   caps.placementState = 'BOT_REQUIRED';
-  assert.equal(marketplaceProfileOverview(state).primary?.kind, 'connect');
+  overview = marketplaceProfileOverview(state);
+  assert.equal(overview.primary?.kind, 'listing');
+  assert.equal(overview.placementNote, 'Размещения через Биржик не подключены');
+  assert.equal(overview.placementAction?.kind, 'connect');
+  assert.equal(overview.conditionsAction?.kind, 'manage');
+
+  caps.connectUrl = null;
+  overview = marketplaceProfileOverview(state);
+  assert.equal(overview.primary?.kind, 'listing');
+  assert.equal(overview.placementAction, null, 'An unavailable connection URL is not invented');
+
+  caps.placementState = 'UNAVAILABLE';
+  overview = marketplaceProfileOverview(state);
+  assert.equal(overview.primary?.kind, 'listing');
+  assert.equal(overview.placementNote, 'Размещения пока недоступны');
+  assert.equal(overview.conditionsAction?.kind, 'manage');
   caps.placementState = 'READY';
   caps.publicState = 'HIDDEN';
   state.listing!.status = 'PAUSED';
@@ -344,12 +372,12 @@ test('compact owner overview chooses one honest action before placement shortcut
     overview.primary,
     {
       kind: 'profile',
-      label: 'Настройки профиля',
-      editor: false,
+      label: 'Изменить профиль',
     },
-    'A hidden profile opens settings without silently entering its editor',
+    'A hidden profile opens editable fields without publishing',
   );
-  assert.equal(overview.secondary, null);
+  assert.equal(overview.placementAction, null);
+  assert.equal(overview.conditionsAction, null);
   assert.equal(overview.showProfileSettings, false, 'The main profile action is not duplicated');
 
   caps.publicState = 'REVIEW';
@@ -369,7 +397,6 @@ test('compact owner overview chooses one honest action before placement shortcut
     {
       kind: 'profile',
       label: 'Продолжить настройку',
-      editor: true,
     },
     'An incomplete draft leads directly to editable fields',
   );
@@ -393,10 +420,12 @@ test('expired owner access never presents current visibility or permits profile 
   assert.equal(expired.canPublish, false);
   assert.equal(expired.canPause, false);
   assert.equal(marketplaceProfileOverview(state).primary?.kind, 'refresh');
-  assert.equal(marketplaceProfileOverview(state).secondary, null);
+  assert.equal(marketplaceProfileOverview(state).placementAction, null);
+  assert.equal(marketplaceProfileOverview(state).conditionsAction, null);
 
   state.binding.validUntil = null;
   assert.equal(marketplaceProfileView(state).active, true, 'Preserve missing-expiry compatibility');
   assert.equal(marketplaceProfileOverview(state, false).primary?.kind, 'refresh');
-  assert.equal(marketplaceProfileOverview(state, false).secondary, null);
+  assert.equal(marketplaceProfileOverview(state, false).placementAction, null);
+  assert.equal(marketplaceProfileOverview(state, false).conditionsAction, null);
 });

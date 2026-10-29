@@ -64,7 +64,7 @@ export function marketplaceProfileView(state: MarketplaceProfileState, fresh = t
 }
 
 type MarketplaceOverviewAction =
-  | { kind: 'profile'; label: string; editor: boolean }
+  | { kind: 'profile'; label: string }
   | { kind: 'publish' | 'refresh'; label: string }
   | { kind: 'connect' | 'manage' | 'listing'; label: string; url: string };
 
@@ -75,7 +75,8 @@ export function marketplaceProfileOverview(state: MarketplaceProfileState, fresh
   let status = view.title;
   let placementNote: string | null = null;
   let primary: MarketplaceOverviewAction | null = null;
-  let secondary: Extract<MarketplaceOverviewAction, { url: string }> | null = null;
+  let placementAction: Extract<MarketplaceOverviewAction, { url: string }> | null = null;
+  let conditionsAction: Extract<MarketplaceOverviewAction, { url: string }> | null = null;
   const publicAction =
     view.publicNow && listing?.publicUrl
       ? { kind: 'listing' as const, label: 'Посмотреть профиль', url: listing.publicUrl }
@@ -89,7 +90,7 @@ export function marketplaceProfileOverview(state: MarketplaceProfileState, fresh
     primary = { kind: 'refresh', label: 'Проверить доступ' };
   } else if (!listing) {
     status = 'Профиля пока нет';
-    if (view.canEdit) primary = { kind: 'profile', label: 'Создать профиль', editor: true };
+    if (view.canEdit) primary = { kind: 'profile', label: 'Создать профиль' };
   } else if (!marketplaceProfileAvailable(state) || view.publicState === 'ACCESS_REQUIRED') {
     status = 'Профиль пока недоступен';
     primary = { kind: 'refresh', label: 'Проверить доступ' };
@@ -97,39 +98,36 @@ export function marketplaceProfileOverview(state: MarketplaceProfileState, fresh
     status = 'На проверке';
   } else if (view.publicState === 'HIDDEN') {
     status = 'Скрыт';
-    if (view.canEdit) primary = { kind: 'profile', label: 'Настройки профиля', editor: false };
+    if (view.canEdit) primary = { kind: 'profile', label: 'Изменить профиль' };
   } else if (view.publicState === 'DRAFT') {
     status = 'Черновик';
     if (!listing.title.trim() || !listing.topic || !listing.region) {
-      if (view.canEdit) primary = { kind: 'profile', label: 'Продолжить настройку', editor: true };
+      if (view.canEdit) primary = { kind: 'profile', label: 'Продолжить настройку' };
     } else if (view.canPublish) primary = { kind: 'publish', label: 'Опубликовать профиль' };
   } else if (view.publicNow) {
-    status = 'Опубликован';
+    status = 'Профиль опубликован';
+    primary = publicAction;
     if (view.placement === 'BOT_REQUIRED') {
-      placementNote = 'Бот не подключён';
+      placementNote = 'Размещения через Биржик не подключены';
       if (caps?.connectUrl)
-        primary = { kind: 'connect', label: 'Подключить бота', url: caps.connectUrl };
+        placementAction = { kind: 'connect', label: 'Подключить бота', url: caps.connectUrl };
     } else if (view.placement === 'SETUP_REQUIRED') {
-      placementNote = 'Нужно завершить настройку';
+      placementNote = 'Требуется настройка размещений';
       if (caps?.manageUrl)
-        primary = { kind: 'manage', label: 'Настроить размещения', url: caps.manageUrl };
-    } else if (view.placement === 'READY') {
-      primary = publicAction;
-      if (caps?.manageUrl)
-        secondary = { kind: 'manage', label: 'Условия размещений', url: caps.manageUrl };
-    } else {
+        placementAction = { kind: 'manage', label: 'Настроить размещения', url: caps.manageUrl };
+    } else if (view.placement !== 'READY') {
       placementNote = 'Размещения пока недоступны';
-      if (caps?.manageUrl)
-        primary = { kind: 'manage', label: 'Условия размещений', url: caps.manageUrl };
     }
-    if (primary?.kind !== 'listing') secondary = publicAction;
+    if (caps?.manageUrl && placementAction?.kind !== 'manage')
+      conditionsAction = { kind: 'manage', label: 'Условия размещений', url: caps.manageUrl };
   }
 
   return {
     status,
     placementNote,
     primary,
-    secondary,
+    placementAction,
+    conditionsAction,
     showProfileSettings: !!listing && view.canEdit && primary?.kind !== 'profile',
   };
 }

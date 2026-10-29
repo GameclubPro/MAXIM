@@ -3991,6 +3991,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ) : null}
         <MarketplaceProfileCard
           api={api}
+          entityTitle={resolvedTitle}
+          entityAvatarUrl={channelHeader ? (channelHeader.avatarUrl ?? null) : routeAvatarUrl}
           entityId={chatId ?? ''}
           entityType="channel"
           profile="moderation"
