@@ -188,6 +188,12 @@ jobs:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: node --test --test-concurrency=1 infra/scripts/outcome-cohort-online.native.test.mjs infra/scripts/outcome-cohort-historical.native.test.mjs
+      - name: Selected Publisher target cancellation with native PostgreSQL
+        if: matrix.shard == 'compatibility'
+        env:
+          MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
+          TZ: UTC
+        run: node --test --test-concurrency=1 infra/scripts/publisher-cancel-selected-targets.native.test.mjs
       - name: Quarantine proof bounds with native PostgreSQL
         if: matrix.shard == 'compatibility'
         env:
