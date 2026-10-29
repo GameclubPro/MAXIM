@@ -10,6 +10,8 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import {
   updateMessageRetentionSchema,
+  messageRetentionSummarySchema,
+  type MessageRetentionSummary,
   type MessageRetentionState,
 } from '@maxim/contracts/settings';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -38,6 +40,15 @@ export class AdminMessageRetentionService {
     await this.authorize(chatId, user);
     if (await this.useEraser(chatId)) return this.requireEraser().read(chatId);
     return this.snapshot(chatId);
+  }
+
+  async summary(chatId: string): Promise<MessageRetentionSummary> {
+    // FLAG: The settings home reads saved authority without starting an onboarding flow.
+    return messageRetentionSummarySchema.parse(
+      this.eraser && (await this.eraser.owns(chatId))
+        ? await this.eraser.read(chatId)
+        : await this.store.summary(chatId),
+    );
   }
 
   async update(

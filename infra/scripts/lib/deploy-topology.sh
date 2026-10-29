@@ -2494,6 +2494,11 @@ maxim_topology_require_eraser_connection_requests() {
   node infra/scripts/assert-eraser-source.mjs "$source_sha" --connection-requests "$component"
 }
 
+# FLAG: The scoped SEND reader floor persists after flags are disabled or chats unbound.
+maxim_topology_require_karavan_marketplaces() {
+  node infra/scripts/assert-karavan-marketplace-source.mjs "$1"
+}
+
 # FLAG: Token cooldown state belongs only to Lastik; API image rollback does not read it.
 maxim_topology_require_eraser_rate_limit_reader() {
   local source_sha="$1" component="${2:-all}"

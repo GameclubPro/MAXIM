@@ -27,7 +27,7 @@ remain separate and must not be refreshed without fetching those pages again.
 | Channels         | Post action, quick buttons, comments in the application, suggestion intake and limits                                                                                                                         |
 | Communities      | Network composition, scoped settings application and per-target outcomes                                                                                                                                      |
 | Publisher        | Separate connection, posts, recipients, media, schedules and repeat, timezone, after-publication actions, delivery outcomes, MAX import, auto-replies, chat comments, VK review and automation, notifications |
-| Integrations     | Karavan storefront, pilot marketplace profile and advertising placement in Svyazka                                                                                                                            |
+| Integrations     | Karavan storefront, chat-store setup and private publication choice, pilot marketplace profile and advertising placement in Svyazka                                                                            |
 | Support          | Administrator incident evidence, participant advertisement redirection, operator handoff and unavailable live account state                                                                                   |
 
 The automated inventory comparison covers every section in
@@ -54,6 +54,9 @@ prove every possible question or every implementation field has been evaluated.
 - Lastik's partial counts are lower bounds. Unknown deletion outcomes and a last completed scan
   do not establish successful deletion or complete history coverage. Its optional newer diagnostic
   labels are reviewed separately against their recorded source revision.
+- Karavan chat-store connections retain one setup operation after uncertain outcomes. A saved
+  storefront choice does not publish a message; legacy `$` behavior and connected-store behavior
+  remain separate, and new module visibility depends on integration availability.
 
 ## Updating and validating
 

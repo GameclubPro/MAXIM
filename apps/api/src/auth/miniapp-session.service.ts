@@ -193,6 +193,24 @@ export class MiniappSessionService implements OnModuleDestroy {
     await this.runRedisCommand(redis.del(this.buildKey(this.hash(sessionToken))));
   }
 
+  /** FLAG: Check a previously authenticated principal without retaining its bearer token. */
+  async isPrincipalActive(
+    keyHash: string,
+    userId: string,
+    launchBotId: string | null,
+  ): Promise<boolean> {
+    if (!/^[a-f0-9]{64}$/u.test(keyHash)) return false;
+    const redis = await this.getReadyRedis();
+    const serialized = await this.runRedisCommand(redis.get(this.buildKey(keyHash)));
+    const record = serialized ? this.parseRecord(serialized) : null;
+    return (
+      !!record &&
+      record.expiresAt > Date.now() &&
+      record.user.userId === userId &&
+      (record.user.launchBotId ?? null) === launchBotId
+    );
+  }
+
   async destroyResolved(
     sessionToken: string | undefined,
     session: ResolvedMiniappSession,

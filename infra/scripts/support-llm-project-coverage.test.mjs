@@ -71,6 +71,18 @@ test('poll and giveaway limits and controls are grounded in the product contract
 
 const missingModuleCases = [
   ['Что вообще умеет Майор, какие есть модули?', 'project-modules'],
+  [
+    'Я админ. Как создать один магазин Каравана на несколько моих чатов?',
+    'karavan-chat-marketplace',
+  ],
+  [
+    'Караван: подключение магазина не подтвердилось. Создавать второй магазин?',
+    'karavan-setup-recovery',
+  ],
+  [
+    'В Караване выбор витрины сохранён, но $ ничего не опубликовал. Что делать?',
+    'karavan-storefront-publishing',
+  ],
   ['Ластик: «Ожидают, не менее 1000» — это точное число?', 'lastik-diagnostics'],
   [
     'У Ластика «Результат не подтверждён». Значит, сообщение точно не удалено?',
@@ -202,4 +214,14 @@ test('module context does not replace an independent question or the support rol
     'Ластик должен хранить сообщения не менее 48 часов. Как это настроить?',
   ])
     assert.ok(!ids(text).includes('lastik-diagnostics'), text);
+  assert.ok(
+    !ids('Караван: подключение магазина не подтвердилось. Создавать второй магазин?').includes(
+      'karavan-chat-marketplace',
+    ),
+  );
+  const createAndRecover = ids(
+    'Я админ. Как создать магазин Каравана и что делать при частичном подключении чатов?',
+  );
+  assert.ok(createAndRecover.includes('karavan-chat-marketplace'));
+  assert.ok(createAndRecover.includes('karavan-setup-recovery'));
 });

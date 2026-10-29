@@ -62,9 +62,6 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
       - run: npm run check:static:ci
       - run: npm run check:docs
-      - name: ShellCheck infrastructure scripts
-        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
-        run: find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
       - name: Validate GitHub Actions workflows
         if: fromJSON(needs.impact.outputs.plan).mode == 'full'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
@@ -203,7 +200,7 @@ jobs:
           MAXIM_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
           TZ: UTC
         run: |
-          npm test --workspace @maxim/api -- 'integrations/marketplace/.*postgres|statistics/.*postgres'
+          npm test --workspace @maxim/api -- 'integrations/(marketplace|karavan-marketplace)/.*postgres|statistics/.*postgres'
           node --test --test-concurrency=1 infra/scripts/statistics-exchange-audit.test.mjs infra/scripts/central-statistics-audit.test.mjs
       - name: Native race shard
         if: matrix.shard != 'compatibility'

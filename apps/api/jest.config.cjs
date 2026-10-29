@@ -40,6 +40,8 @@ module.exports = {
     '^@maxim/contracts/participant-details$':
       '<rootDir>/../../packages/contracts/src/participant-details.ts',
     '^@maxim/contracts/giveaway$': '<rootDir>/../../packages/contracts/src/giveaway.ts',
+    '^@maxim/contracts/karavan-marketplace$':
+      '<rootDir>/../../packages/contracts/src/karavan-marketplace.ts',
     '^@maxim/contracts/karavan-storefront$':
       '<rootDir>/../../packages/contracts/src/karavan-storefront.ts',
     '^@maxim/contracts/managed-entities$':

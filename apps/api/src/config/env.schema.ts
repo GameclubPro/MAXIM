@@ -698,6 +698,14 @@ const envSchema = z.object({
   VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
   VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
+  KARAVAN_MARKETPLACE_ENABLED: envBoolean(false),
+  KARAVAN_MARKETPLACE_AUTHORITY_TOKEN: z.string().min(32).optional(),
+  KARAVAN_MARKETPLACE_COMMAND_TOKEN: z.string().min(32).optional(),
+  KARAVAN_MARKETPLACE_API_BASE_URL: z.string().url().optional(),
+  KARAVAN_SELLER_BOT_USERNAME: z
+    .string()
+    .regex(/^[A-Za-z0-9_]{3,100}$/u)
+    .optional(),
   KARAVAN_STOREFRONT_RELAY_ENABLED: envBoolean(false),
   STATISTICS_EXCHANGE_V3_ENABLED: envBoolean(false),
   STATISTICS_CENTRAL_ENABLED: envBoolean(false),
@@ -937,6 +945,35 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
     );
   }
 
+  if (parsed.data.KARAVAN_MARKETPLACE_ENABLED) {
+    const required = [
+      'KARAVAN_MARKETPLACE_AUTHORITY_TOKEN',
+      'KARAVAN_MARKETPLACE_COMMAND_TOKEN',
+      'KARAVAN_MARKETPLACE_API_BASE_URL',
+      'KARAVAN_SELLER_BOT_USERNAME',
+    ] as const;
+    const missing = required.filter((key) => !parsed.data[key]);
+    if (missing.length)
+      throw new Error(
+        `Environment validation failed: KARAVAN_MARKETPLACE_ENABLED requires ${missing.join(', ')}`,
+      );
+    const url = new URL(parsed.data.KARAVAN_MARKETPLACE_API_BASE_URL!);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
+      throw new Error(
+        'Environment validation failed: KARAVAN_MARKETPLACE_API_BASE_URL must be an HTTPS origin without credentials, query or fragment',
+      );
+    if (
+      parsed.data.KARAVAN_MARKETPLACE_AUTHORITY_TOKEN ===
+        parsed.data.KARAVAN_MARKETPLACE_COMMAND_TOKEN ||
+      [
+        parsed.data.KARAVAN_MARKETPLACE_AUTHORITY_TOKEN,
+        parsed.data.KARAVAN_MARKETPLACE_COMMAND_TOKEN,
+      ].includes(parsed.data.KARAVAN_INTEGRATION_TOKEN)
+    )
+      throw new Error(
+        'Environment validation failed: Karavan marketplace secrets must be independent',
+      );
+  }
   if (parsed.data.KARAVAN_STOREFRONT_RELAY_ENABLED) {
     const missingKeys = [
       parsed.data.KARAVAN_API_BASE_URL ? null : 'KARAVAN_API_BASE_URL',

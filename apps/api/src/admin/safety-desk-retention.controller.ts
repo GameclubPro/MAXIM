@@ -13,8 +13,8 @@ export class SafetyDeskRetentionController {
   }
 
   @Get(':chatId/preview')
-  preview(@Param('chatId') chatId: string) {
-    return this.retention.preview(chatId);
+  preview(@Param('chatId') chatId: string, @Query('after') after?: unknown) {
+    return this.retention.preview(chatId, after);
   }
 
   @Post(':chatId/retry')

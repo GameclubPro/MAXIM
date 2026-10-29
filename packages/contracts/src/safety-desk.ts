@@ -39,6 +39,10 @@ import {
   messageRetentionSummarySchema,
 } from './message-retention-summary.js';
 import { VK_PARSING_MAX_VIDEOS } from './vk-parsing-common.js';
+import {
+  messageRetentionCoverageSchema,
+  messageRetentionProgressSchema,
+} from './message-retention.js';
 
 export {
   safetyDeskWebhookStatusSchema,
@@ -653,6 +657,36 @@ export const safetyDeskRetentionDiagnosticsSchema = z.object({
   awaitingHistoricalProtection: z.boolean(),
 });
 
+export const safetyDeskRetentionConnectionRequestSchema = z.object({
+  status: z.enum(['pending', 'expired', 'cancelled', 'activated']),
+  operationId: z.string().uuid(),
+  actorUserId: z.string().min(1),
+  policyRevision: z.number().int().nonnegative(),
+  expiresAt: z.string().datetime(),
+  nextAttemptAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime(),
+  lastError: z
+    .enum([
+      'bot_removed',
+      'eraser_rights_missing',
+      'membership_unknown',
+      'actor_rights_missing',
+      'queue_race',
+      'queue_unavailable',
+      'connection_proof_stale',
+      'connection_guard_changed',
+      'connection_check_failed',
+      'ERASER_CONNECTION_STOPPED',
+      'transport_unknown',
+      'malformed_response',
+      'unknown',
+    ])
+    .nullable()
+    .catch('unknown'),
+});
+
+const retentionSourceSchema = z.enum(['eraser', 'legacy']);
+
 export const safetyDeskRetentionRuntimeItemSchema = z.object({
   chatId: z.string().min(1),
   chatTitle: z.string(),
@@ -665,6 +699,18 @@ export const safetyDeskRetentionRuntimeItemSchema = z.object({
   skippedCount: z.number().int().nonnegative(),
   status: messageRetentionSummarySchema.shape.status,
   oldestDueAt: z.string().datetime().nullable(),
+  source: retentionSourceSchema.optional(),
+  sourceStatus: z.literal('available').optional(),
+  progress: messageRetentionProgressSchema.optional(),
+  coverage: messageRetentionCoverageSchema.optional(),
+  connectionRequest: safetyDeskRetentionConnectionRequestSchema.nullable().optional(),
+  confirmationCounts: z
+    .object({
+      historicalUnknown: z.number().int().nonnegative(),
+      deleteAcknowledged: z.number().int().nonnegative(),
+      removalReceipt: z.number().int().nonnegative(),
+    })
+    .optional(),
   nextRunAt: z.string().datetime().nullable(),
   hasTerminalReview: z.boolean(),
   hasUnresolvedReceipt: z.boolean(),
@@ -678,10 +724,86 @@ export const safetyDeskRetentionRuntimeItemSchema = z.object({
 });
 export type SafetyDeskRetentionRuntimeItem = z.infer<typeof safetyDeskRetentionRuntimeItemSchema>;
 
+const retentionWorkerHealthSchema = z.object({
+  healthy: z.boolean(),
+  ready: z.boolean(),
+  running: z.boolean(),
+  sampledAt: z.string().datetime().nullable(),
+  occupiedSlots: z.number().int().nonnegative(),
+  oldestOccupiedAt: z.string().datetime().nullable(),
+  lastCompletedAt: z.string().datetime().nullable(),
+  lastErrorAt: z.string().datetime().nullable(),
+  lastErrorCode: z
+    .enum(['worker_error', 'job_failed', 'job_stalled', 'worker_closed', 'unknown'])
+    .nullable()
+    .catch('unknown'),
+  progressOverdue: z.boolean(),
+});
+
+export const safetyDeskRetentionTransportMetricsSchema = z.object({
+  scope: z.literal('process'),
+  since: z.string().datetime(),
+  observedAt: z.string().datetime(),
+  requests: z
+    .array(
+      z.object({
+        purpose: z.enum([
+          'bot_rights',
+          'actor_rights',
+          'pin',
+          'live_scan',
+          'history_scan',
+          'safety_rights',
+          'safety_scan',
+          'delete',
+          'presence',
+          'identity',
+          'subscriptions',
+        ]),
+        attempts: z.number().int().nonnegative(),
+        responses: z.number().int().nonnegative(),
+        httpSuccesses: z.number().int().nonnegative(),
+        rateLimited: z.number().int().nonnegative(),
+        transportErrors: z.number().int().nonnegative(),
+      }),
+    )
+    .max(11),
+  cooldownDeferrals: z.number().int().nonnegative(),
+  admissionUnavailable: z.number().int().nonnegative(),
+  guardRejected: z.number().int().nonnegative(),
+  deleteAcknowledged: z.number().int().nonnegative(),
+  observedCooldownUntil: z.string().datetime().nullable(),
+});
+
 export const safetyDeskRetentionRuntimeResponseSchema = z.object({
   generatedAt: z.string().datetime(),
   mode: z.enum(['off', 'shadow', 'canary', 'on']),
   nextAfter: z.string().min(1).nullable(),
+  incomplete: z.boolean().optional(),
+  transportMetrics: safetyDeskRetentionTransportMetricsSchema.optional(),
+  cooldown: z.object({ durableUntil: z.string().datetime().nullable() }).optional(),
+  health: z
+    .object({
+      schedulerLastSuccessfulAt: z.string().datetime().nullable(),
+      schedulerHealthy: z.boolean(),
+      connectionSchedulerLastSuccessfulAt: z.string().datetime().nullable().optional(),
+      connectionSchedulerHealthy: z.boolean().optional(),
+      workers: z
+        .object({ cleanup: retentionWorkerHealthSchema, connection: retentionWorkerHealthSchema })
+        .optional(),
+    })
+    .optional(),
+  unavailableSources: z
+    .array(
+      z.object({
+        chatId: z.string().min(1),
+        chatTitle: z.string(),
+        source: retentionSourceSchema,
+        reason: z.enum(['unavailable', 'not_initialized', 'invalid_response']),
+      }),
+    )
+    .max(50)
+    .optional(),
   quotas: z
     .array(
       z.object({
@@ -717,6 +839,10 @@ export const safetyDeskRetentionPreviewResponseSchema = z.object({
   chatId: z.string().min(1),
   revision: z.number().int().nonnegative(),
   activationId: z.string().min(1),
+  source: retentionSourceSchema.optional(),
+  sourceStatus: z.literal('available').optional(),
+  nextAfter: z.string().min(1).nullable().optional(),
+  incomplete: z.boolean().optional(),
   items: z.array(safetyDeskRetentionPreviewItemSchema).max(20),
 });
 export type SafetyDeskRetentionPreviewResponse = z.infer<

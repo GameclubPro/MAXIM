@@ -397,6 +397,7 @@ process.exit(result.status ?? 1);
         SET search_path = ${namespace}, pg_catalog;
         CREATE TABLE webhook_events (id text);
         CREATE TABLE moderation_events (id text);
+        CREATE TABLE audit_logs (id text, payload jsonb);
         CREATE TABLE chat_settings (
           id text, anti_duplicate_enabled bool, duplicate_photo_enabled bool,
           duplicate_detection_preset text, duplicate_photo_match_preset text,
@@ -480,6 +481,13 @@ process.exit(result.status ?? 1);
       actualWrapper = runNativeWrapper(true);
       assert.equal(actualWrapper.status, 0, actualWrapper.stderr);
       assert.ok(Array.isArray(JSON.parse(actualWrapper.stdout)));
+      for (const grant of ['SELECT', 'SELECT (payload)']) {
+        await client.query(`GRANT ${grant} ON audit_logs TO ${role}`);
+        assert.equal(await ready(), 'false', 'raw audit data is outside the projection grants');
+        assertWrapperRejected();
+        await client.query(`REVOKE ${grant} ON audit_logs FROM ${role}`);
+        assert.equal(runNativeWrapper().status, 0);
+      }
       for (const [args, marker] of [
         [['queue'], 'MAXIM_POSTGRES_QUEUE_AUDIT_INDEX_MISSING'],
         [['monitor-signals', '60'], 'MAXIM_POSTGRES_MONITOR_AUDIT_INDEX_MISSING'],

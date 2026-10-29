@@ -50,6 +50,55 @@ function setup() {
 }
 
 describe('chat retention settings boundary', () => {
+  it('reads a persisted owner summary independently of the execution flag', async () => {
+    const { prisma, access, capabilities, store } = setup();
+    const remote: jest.Mocked<Pick<EraserControlService, 'owns' | 'read'>> = {
+      owns: jest.fn().mockResolvedValue(true),
+      read: jest
+        .fn()
+        .mockResolvedValue({ enabled: true, hours: 168, revision: 9, status: 'running' }),
+    };
+    const service = new AdminMessageRetentionService(
+      prisma as never,
+      access as never,
+      capabilities as never,
+      store as never,
+      new ConfigService({ ERASER_ENABLED: false }),
+      remote as unknown as EraserControlService,
+    );
+    await expect(service.summary('-1')).resolves.toEqual({
+      enabled: true,
+      hours: 168,
+      revision: 9,
+      status: 'running',
+    });
+    expect(prisma.messageRetentionPolicy.findUnique).not.toHaveBeenCalled();
+    remote.read.mockRejectedValue(new Error('unavailable'));
+    await expect(service.summary('-1')).rejects.toThrow('unavailable');
+    expect(prisma.messageRetentionPolicy.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('keeps the settings home on an unowned legacy source while onboarding is enabled', async () => {
+    const { prisma, access, capabilities, store } = setup();
+    const summary = { enabled: true, hours: 24 as const, revision: 3, status: 'running' as const };
+    const legacy = { ...store, summary: jest.fn().mockResolvedValue(summary) };
+    const remote: jest.Mocked<Pick<EraserControlService, 'owns' | 'read'>> = {
+      owns: jest.fn().mockResolvedValue(false),
+      read: jest.fn(),
+    };
+    const service = new AdminMessageRetentionService(
+      prisma as never,
+      access as never,
+      capabilities as never,
+      legacy as never,
+      new ConfigService({ ERASER_ENABLED: true }),
+      remote as unknown as EraserControlService,
+    );
+    await expect(service.summary('-1')).resolves.toEqual(summary);
+    expect(legacy.summary).toHaveBeenCalledWith('-1');
+    expect(remote.read).not.toHaveBeenCalled();
+  });
+
   it('does not send weekly policies to the retired legacy executor', async () => {
     const { service, prisma } = setup();
     await expect(

@@ -1,6 +1,7 @@
 import type { Config } from './config.js';
 import { HttpAdmissionDeferred, HttpLimiter } from './limiter.js';
 import { record, parseMessage, type Message } from './types.js';
+import { HttpTelemetry, type HttpPurpose, type TransportMetrics } from './telemetry.js';
 
 export class MaxError extends Error {
   constructor(
@@ -13,6 +14,7 @@ export class MaxError extends Error {
   }
 }
 export type MaxTransport = {
+  metrics?(): TransportMetrics;
   rights(chatId: string, before?: () => Promise<void>, purpose?: 'safety'): Promise<void>;
   actorRights(chatId: string, actorUserId: string, before?: () => Promise<void>): Promise<void>;
   pin(chatId: string): Promise<string | null>;
@@ -25,7 +27,11 @@ export class MaxClient implements MaxTransport {
     private readonly config: Config,
     private readonly limiter: Pick<HttpLimiter, 'acquire' | 'cooldown'>,
     private readonly http: typeof fetch = fetch,
+    private readonly telemetry = new HttpTelemetry(),
   ) {}
+  metrics(): TransportMetrics {
+    return this.telemetry.snapshot();
+  }
   private async request(
     method: string,
     path: string,
@@ -34,28 +40,44 @@ export class MaxClient implements MaxTransport {
       before?: () => Promise<void>;
       body?: unknown;
       purpose?: 'safety';
-    } = {},
+      metric: HttpPurpose;
+    },
   ): Promise<Record<string, unknown>> {
     try {
       await this.limiter.acquire(options.chatDelete, undefined, options.purpose);
     } catch (error) {
-      if (error instanceof HttpAdmissionDeferred)
+      if (error instanceof HttpAdmissionDeferred) {
+        this.telemetry.admission('cooldown', error.retryAfterMs);
         throw new MaxError(429, 'rate_limit_cooldown', false, error.retryAfterMs);
+      }
+      this.telemetry.admission('unavailable');
       throw error;
     }
-    await options.before?.();
+    try {
+      await options.before?.();
+    } catch (error) {
+      this.telemetry.admission('guard');
+      throw error;
+    }
+    const target = new URL(path, this.config.apiBaseUrl);
+    const request: RequestInit = {
+      method,
+      headers: { Authorization: this.config.botToken, 'Content-Type': 'application/json' },
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      signal: AbortSignal.timeout(5000),
+      redirect: 'error',
+    };
     let response: Response;
     try {
-      response = await this.http(new URL(path, this.config.apiBaseUrl), {
-        method,
-        headers: { Authorization: this.config.botToken, 'Content-Type': 'application/json' },
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-        signal: AbortSignal.timeout(5000),
-        redirect: 'error',
-      });
+      // FLAG: Count actual transport only after admission and the final effect guard.
+      // A completed HTTP response alone never counts as a confirmed DELETE.
+      this.telemetry.attempt(options.metric);
+      response = await this.http(target, request);
     } catch {
+      this.telemetry.transportError(options.metric);
       throw new MaxError(0, 'transport_unknown', method === 'DELETE');
     }
+    this.telemetry.response(options.metric, response.status);
     let body: Record<string, unknown> | null = null;
     try {
       body = record(await response.json());
@@ -75,6 +97,7 @@ export class MaxClient implements MaxTransport {
             ? Math.max(1000, Date.parse(retry) - Date.now())
             : 1000;
       if (response.status === 429) {
+        this.telemetry.cooldown(Number.isFinite(retryAfterMs) ? retryAfterMs : 1000);
         try {
           await this.limiter.cooldown(Number.isFinite(retryAfterMs) ? retryAfterMs : 1000);
         } catch {
@@ -96,6 +119,7 @@ export class MaxClient implements MaxTransport {
     const member = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/members/me`, {
       before,
       purpose,
+      metric: purpose === 'safety' ? 'safety_rights' : 'bot_rights',
     });
     const role = String(member.role ?? member.status ?? '').toLowerCase();
     const owner =
@@ -133,7 +157,7 @@ export class MaxClient implements MaxTransport {
     const result = await this.request(
       'GET',
       `/chats/${encodeURIComponent(chatId)}/members?${query}`,
-      { before },
+      { before, metric: 'actor_rights' },
     );
     if (!Array.isArray(result.members) || result.members.length !== 1)
       throw new MaxError(0, 'actor_membership_unknown', false);
@@ -166,7 +190,9 @@ export class MaxClient implements MaxTransport {
   }
 
   async pin(chatId: string): Promise<string | null> {
-    const result = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/pin`);
+    const result = await this.request('GET', `/chats/${encodeURIComponent(chatId)}/pin`, {
+      metric: 'pin',
+    });
     // FLAG: MAX permits an omitted message; only the exact empty envelope confirms no pin.
     if (result.message === null || Object.keys(result).length === 0) return null;
     const row = record(result.message),
@@ -188,7 +214,11 @@ export class MaxClient implements MaxTransport {
       from: String(upperMs),
       ...(lowerMs === undefined ? {} : { to: String(lowerMs) }),
     });
-    const result = await this.request('GET', `/messages?${query}`, { purpose });
+    const result = await this.request('GET', `/messages?${query}`, {
+      purpose,
+      metric:
+        purpose === 'safety' ? 'safety_scan' : lowerMs === undefined ? 'history_scan' : 'live_scan',
+    });
     if (!Array.isArray(result.messages) || result.messages.length > 100)
       throw new MaxError(0, 'history_unknown', false);
     const items = result.messages.map((row) => parseMessage(row, chatId));
@@ -208,13 +238,16 @@ export class MaxClient implements MaxTransport {
     const result = await this.request(
       'DELETE',
       `/messages?${new URLSearchParams({ message_id: messageId })}`,
-      { chatDelete: chatId, before },
+      { chatDelete: chatId, before, metric: 'delete' },
     );
     if (result.success !== true) throw new MaxError(200, 'delete_unconfirmed', true);
+    this.telemetry.acknowledgeDelete();
   }
   async presence(chatId: string, messageId: string): Promise<'present' | 'unknown'> {
     try {
-      const result = await this.request('GET', `/messages/${encodeURIComponent(messageId)}`);
+      const result = await this.request('GET', `/messages/${encodeURIComponent(messageId)}`, {
+        metric: 'presence',
+      });
       const message = parseMessage(result, chatId) ?? parseMessage(result.message, chatId);
       return message?.id === messageId ? 'present' : 'unknown';
     } catch (error) {
@@ -225,10 +258,10 @@ export class MaxClient implements MaxTransport {
   }
   async subscribe(): Promise<void> {
     if (!this.config.webhookUrl) return;
-    const identity = await this.request('GET', '/me');
+    const identity = await this.request('GET', '/me', { metric: 'identity' });
     if (String(identity.user_id) !== this.config.botId || identity.is_bot !== true)
       throw new Error('Configured Eraser bot identity does not match its token');
-    const subscriptions = await this.request('GET', '/subscriptions');
+    const subscriptions = await this.request('GET', '/subscriptions', { metric: 'subscriptions' });
     const list = subscriptions.subscriptions;
     if (!Array.isArray(list)) throw new Error('MAX subscriptions response unknown');
     if (
@@ -239,6 +272,7 @@ export class MaxClient implements MaxTransport {
     )
       throw new Error('Conflicting Eraser webhook subscription');
     const result = await this.request('POST', '/subscriptions', {
+      metric: 'subscriptions',
       body: {
         url: this.config.webhookUrl,
         secret: this.config.webhookSecret,
@@ -252,7 +286,7 @@ export class MaxClient implements MaxTransport {
       },
     });
     if (result.success !== true) throw new Error('MAX webhook subscription unconfirmed');
-    const confirmed = await this.request('GET', '/subscriptions');
+    const confirmed = await this.request('GET', '/subscriptions', { metric: 'subscriptions' });
     if (
       !Array.isArray(confirmed.subscriptions) ||
       confirmed.subscriptions.length !== 1 ||

@@ -1578,6 +1578,18 @@ function semanticFacts(text, state) {
   if (test(/ночн/iu) && test(/публик/iu)) add('bots', 60);
   if (test(/комментари/iu) && !publ)
     add(test(/max|нативн/iu) ? 'max-native-channel-comments' : 'channel-settings', 100);
+  if (test(/караван|интернет.?витрин|магазин.{0,12}чат|витрин.{0,20}(?:доллар|\$)/iu)) {
+    add('karavan-storefront', 110);
+    const setupRecovery = test(/не подтверд|неизвестн|частичн|неопредел[её]н|продолжить подключ/iu);
+    if (setupRecovery) add('karavan-setup-recovery', 145);
+    if (
+      (!setupRecovery || test(/(?:как|хочу|нужно).{0,15}создать/iu)) &&
+      test(/подключ|созда|черновик|правил|общ.{0,12}магазин|один.{0,12}магазин/iu)
+    )
+      add('karavan-chat-marketplace', 135);
+    if (test(/\$|публикац|ссылк|выбор|выбра|выбрат|витрин.{0,15}нескольк/iu))
+      add('karavan-storefront-publishing', 130);
+  }
   if (test(/настрой|област|нескольк.{0,12}чат|во всех.{0,12}(?:чат|групп|сообществ)/iu))
     add('settings', 65);
   if (
