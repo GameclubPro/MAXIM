@@ -41,6 +41,11 @@ the saved deadline again; it cannot renew the processing window. A parked stale 
 returns without business execution. A started, completed, leased, ambiguous or independently
 claimed successor does not qualify for parking.
 
+Reconciliation also checks the PostgreSQL wall clock in the locked receipt UPDATE, after
+completion-proof reads. If those reads cross the original deadline, the journal becomes
+`EXPIRED` in the same transaction and the receipt stays `QUARANTINED`; no stale queue handoff
+is created. The final business-start deadline check remains required after a valid release.
+
 The scope follows the existing dependency: chat ordering for pending timeouts, exact semantic
 identity for terminal FAILED owners. Other chats and nonordered
 events retain independent capacity; administrative HTTP/mini app operations remain available.
@@ -136,6 +141,11 @@ SQL/wall deadlines, memory/temp limits, private error handling and exact-backend
 unchanged. The session fixes `search_path` to `pg_catalog, public, pg_temp` before admission so
 inherited schema order cannot change the inspected relations. The mode is excluded from `all`
 and accepts no SQL, path, range or receipt identity.
+
+The separate `webhook-recovery-key-cohort` audit requires the exact supported public
+`WebhookStatus` label set, independent of enum insertion order. Immutable migrations append
+`QUEUED` after `FAILED`; do not reorder or rewrite migrations to satisfy a diagnostic guard.
+Unknown/missing labels and shadow-schema types must still fail admission.
 
 Before materialization or JSON comparisons, accept only uncompressed `command_result` values
 within 32 KiB. Compressed or larger values remain explicitly uninspected; no JSON is unpacked
