@@ -1,3 +1,4 @@
+import type { KaravanMarketplaceResolverService } from '../integrations/karavan-marketplace/karavan-marketplace-resolver.service';
 import { UnrecoverableError } from 'bullmq';
 import { buildNightModeTransitionScheduleFingerprint } from '../moderation/night-mode-transition-generation.util';
 import {
@@ -65,7 +66,9 @@ function createSendAutoDeleteJob(): MaxActionJob {
   } as MaxActionJob;
 }
 
-function createLegacyHoldFixture() {
+function createLegacyHoldFixture(
+  karavan?: Pick<KaravanMarketplaceResolverService, 'assertDispatch'>,
+) {
   const holds = {
     isMessageHeld: jest.fn().mockResolvedValue(false),
     isMemberHeld: jest.fn().mockResolvedValue(false),
@@ -110,6 +113,7 @@ function createLegacyHoldFixture() {
     undefined,
     undefined,
     holds as never,
+    karavan as never,
   );
   const job: MaxActionJob = {
     actionType: 'SEND_MESSAGE',
@@ -124,6 +128,50 @@ function createLegacyHoldFixture() {
 }
 
 describe('MaxActionDispatchService', () => {
+  it.each(['metadata', 'source-tag'])(
+    'rechecks retirement for an old queued relay identified by %s',
+    async (kind) => {
+      const guard = { assertDispatch: jest.fn().mockRejectedValue(new Error('Legacy retired')) };
+      const f = createLegacyHoldFixture(guard);
+      await expect(
+        f.service.execute({
+          ...f.job,
+          ...(kind === 'metadata'
+            ? { ledgerContext: { karavanStorefrontRelay: { variant: 'directory' } } }
+            : { sourceTag: 'karavan_storefront_relay' }),
+        }),
+      ).rejects.toThrow('Legacy retired');
+      expect(guard.assertDispatch).toHaveBeenCalled();
+      expect(f.effect).not.toHaveBeenCalled();
+    },
+  );
+  it('runs persisted Karavan scope validation at the final queued SEND_MESSAGE boundary', async () => {
+    const guard = {
+      assertDispatch: jest.fn().mockRejectedValue(new Error('Synthetic listing revoked')),
+    };
+    const f = createLegacyHoldFixture(guard);
+    const job = {
+      ...f.job,
+      ledgerContext: { karavanMarketplacePublication: { marketplaceId: 'synthetic' } },
+    };
+    await expect(f.service.execute(job)).rejects.toThrow('Synthetic listing revoked');
+    expect(guard.assertDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ ledgerContext: job.ledgerContext }),
+      'fixture-bot',
+    );
+    expect(f.effect).not.toHaveBeenCalled();
+  });
+  it('rejects a scoped queued send when its mandatory marketplace guard is absent', async () => {
+    const f = createLegacyHoldFixture();
+    await expect(
+      f.service.execute({
+        ...f.job,
+        ledgerContext: { karavanMarketplacePublication: { marketplaceId: 'synthetic' } },
+      }),
+    ).rejects.toThrow('Karavan marketplace dispatch guard unavailable');
+    expect(f.effect).not.toHaveBeenCalled();
+  });
+
   it.each(['SEND_MESSAGE', 'DELETE_MESSAGE', 'BAN_MEMBER', 'KICK_MEMBER'] as const)(
     'denies an exact permanently held %s job before preparing another attempt',
     async (actionType) => {

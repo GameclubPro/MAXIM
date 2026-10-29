@@ -167,25 +167,52 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     return { manifest, rows };
   }
   async function remoteFixture(): Promise<ExchangeStatisticsPage> {
-    const own = await nativeAll();
-    const data = own.rows.find((row) => row.data.metric === 'AUDIENCE')!.data;
+    const asOf = new Date();
+    const from = new Date(asOf);
+    from.setUTCHours(0, 0, 0, 0);
+    // FLAG: Peer fixtures retain a full day of margin when latency advances through UTC midnight.
+    // Native export expiry is tested separately; fixture creation must not page an expiring export.
+    from.setUTCDate(from.getUTCDate() - 88);
     const rows: ExchangeMeasurement[] = canonicalExchangeMeasurements([
       {
         origin: 'EXCHANGE',
         method: 'utc-buckets-v1',
         revision: 1,
-        data: { ...data, metric: 'AUDIENCE', value: 777 },
+        data: {
+          metric: 'AUDIENCE',
+          bucket: asOf.toISOString().slice(0, 10) + 'T00:00:00.000Z',
+          observedAt: asOf.toISOString(),
+          value: 777,
+        },
       },
     ]);
     const manifest = exchangeManifestSchema.parse({
-      ...own.manifest,
+      version: 2,
+      grantId,
+      grantRevision: 1,
       generationId: randomUUID(),
       bindingId,
+      entityId,
+      kind: 'CHANNEL',
       origin: 'EXCHANGE',
       producerRevision: 1,
+      method: 'utc-buckets-v1',
+      from: from.toISOString(),
+      to: asOf.toISOString(),
+      asOf: asOf.toISOString(),
       rowCount: rows.length,
       sha256: exchangeMeasurementsHash(rows),
-      metrics: own.manifest.metrics.filter((metric) => metric.metric === 'AUDIENCE'),
+      complete: true,
+      horizonToleranceSeconds: 900,
+      metrics: [
+        {
+          metric: 'AUDIENCE',
+          complete: true,
+          checkedAt: asOf.toISOString(),
+          nextExpectedAt: new Date(asOf.getTime() + 300_000).toISOString(),
+          error: false,
+        },
+      ],
     });
     return { manifest, rows, nextCursor: null };
   }
@@ -1506,7 +1533,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     );
   });
   async function pagedFixture(count = 1600) {
-    const own = await nativeAll();
+    const own = await remoteFixture();
     const from = Date.parse(own.manifest.from);
     const rows: ExchangeMeasurement[] = Array.from({ length: count }, (_, i) =>
       exchangeMeasurementSchema.parse({
@@ -1532,7 +1559,7 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
         producerRevision: 1,
         rowCount: rows.length,
         sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex'),
-        metrics: own.manifest.metrics.filter((m) => m.metric === 'PUBLICATION_HOUR'),
+        metrics: own.manifest.metrics.map((m) => ({ ...m, metric: 'PUBLICATION_HOUR' })),
       }),
     };
   }
@@ -1570,8 +1597,8 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     async (latency) => {
       await grants.put(grantId, input());
       const fixture = await pagedFixture(2000);
-      const own = await nativeAll();
-      const days = Array.from({ length: 90 }, (_, i) =>
+      const own = fixture;
+      const days = Array.from({ length: 89 }, (_, i) =>
         new Date(Date.parse(own.manifest.from) + i * 86400000).toISOString(),
       );
       for (const day of days) {
@@ -1618,11 +1645,13 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
             }),
           );
       }
-      // 2450 semantically distinct rows fit the real 90-day metric contract: thirteen pages.
+      // 2445 distinct rows span 89 retained days and still require thirteen pages.
       fixture.rows.reverse();
       fixture.manifest = exchangeManifestSchema.parse({
         ...fixture.manifest,
-        metrics: own.manifest.metrics,
+        metrics: (['AUDIENCE', 'MEMBERSHIP', 'REACH', 'PUBLICATION_HOUR'] as const).map(
+          (metric) => ({ ...own.manifest.metrics[0]!, metric }),
+        ),
         rowCount: fixture.rows.length,
         sha256: createHash('sha256').update(JSON.stringify(fixture.rows)).digest('hex'),
       });
@@ -1704,6 +1733,24 @@ postgres('statistics exchange PostgreSQL consent and immutable observations', ()
     );
     expect((await replacement.pull(grantId, 1)).completedEntities).toBe(1);
     expect(requests).toEqual([0, 200, 400, 600, 800, 1000, 1200, 1400, 1400]);
+  });
+  it('rejects an expired immutable export while peer fixtures retain midnight headroom', async () => {
+    await grants.put(grantId, input());
+    const fixture = await remoteFixture();
+    const cutoff = Date.parse(exchangeRetentionFrom());
+    expect(Date.parse(fixture.manifest.from)).toBeGreaterThan(cutoff);
+    const native = await nativeAll();
+    const expiredFrom = new Date(cutoff - 86400_000).toISOString();
+    await db.$executeRaw`UPDATE statistics_exchange_generations
+      SET manifest=jsonb_set(manifest,'{from}',to_jsonb(${expiredFrom}::text))
+      WHERE id=${native.manifest.generationId}::uuid`;
+    await expect(
+      statistics.page(grantId, {
+        entityId,
+        kind: 'CHANNEL',
+        generationId: native.manifest.generationId,
+      }),
+    ).rejects.toThrow('Выгрузка вышла за срок хранения');
   });
   it('keeps READY durable across a deadline yield and finalizes with zero additional page reads', async () => {
     await grants.put(grantId, input());

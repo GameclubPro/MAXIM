@@ -88,6 +88,21 @@ test('resolves chat activity route from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/chat/-68085832859751/events');
 });
 
+test('returns to the exact chat storefront module without accepting external or channel targets', () => {
+  const route = '/chat/-9007199254740993/settings?focus=storefront';
+  assignWindow(`https://major-maksimov.ru/app/?startapp=${encodeRouteStartParam(route)}`);
+  assert.equal(resolveLaunchRoute(''), route);
+  for (const invalid of [
+    'https://elsewhere.example/chat/-1/settings?focus=storefront',
+    '/channel/-1/settings?focus=storefront',
+    '/chat/-1/settings?focus=storefront&returnUrl=https://elsewhere.example',
+    '/chat/-1/settings?focus=storefront&focus=rules',
+  ]) {
+    assignWindow(`https://major-maksimov.ru/app/?startapp=${encodeRouteStartParam(invalid)}`);
+    assert.equal(resolveLaunchRoute(''), null);
+  }
+});
+
 test('resolves the Publisher auto-replies workspace from a route startapp payload', () => {
   assignWindow(
     `https://major-maksimov.ru/app/?startapp=${encodeURIComponent(

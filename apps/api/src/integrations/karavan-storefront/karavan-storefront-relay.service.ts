@@ -1,3 +1,7 @@
+import {
+  KaravanMarketplaceResolverService,
+  type KaravanScopedPublication,
+} from '../karavan-marketplace/karavan-marketplace-resolver.service';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
@@ -53,7 +57,9 @@ const lookupResponseSchema = z.object({
 });
 
 type LookupResponse = z.infer<typeof lookupResponseSchema>;
-type LookupStore = NonNullable<LookupResponse['store']>;
+type LookupStore = Omit<NonNullable<LookupResponse['store']>, 'sellerAccountId'> & {
+  sellerAccountId: string | null;
+};
 
 type CacheEntry = {
   expiresAtMs: number;
@@ -105,6 +111,7 @@ export class KaravanStorefrontRelayService {
     @Optional() private readonly configService?: ConfigService,
     @Optional()
     private readonly authorizationService?: KaravanStorefrontAuthorizationService,
+    @Optional() private readonly marketplaceResolver?: KaravanMarketplaceResolverService,
   ) {
     this.enabled = this.readBooleanConfig('KARAVAN_STOREFRONT_RELAY_ENABLED', false);
     this.apiBaseUrl = this.normalizeBaseUrl(
@@ -186,12 +193,27 @@ export class KaravanStorefrontRelayService {
       // from a fresh storefront lookup. Concurrent messages from the same seller
       // still share one in-flight request.
       const storefrontOwnerUserId = this.resolveStorefrontOwnerUserId(context);
-      const store = await this.lookupStorefront(storefrontOwnerUserId, { fresh: true });
-      if (store === undefined) {
-        return 'failed';
-      }
-      if (!store && trigger !== 'bare') {
-        return 'noop';
+      let scopedPublication: KaravanScopedPublication | null = null;
+      let store: LookupStore | null | undefined;
+      if (await this.marketplaceResolver?.shouldUseScopedRelay(context.chatId)) {
+        if (!this.marketplaceResolver || !context.botId) return 'failed';
+        const resolved = await this.marketplaceResolver.resolve({
+          chatId: context.chatId,
+          actorMaxUserId: context.senderId,
+          subjectMaxUserId: storefrontOwnerUserId,
+          sourceMessageId: context.messageId!,
+          botId: context.botId,
+        });
+        scopedPublication = resolved.publication;
+        if (!scopedPublication) return 'noop';
+        const scopedStore =
+          resolved.result.status === 'published' ? resolved.result.stores[0] : null;
+        store = scopedStore ? { ...scopedStore, sellerAccountId: null } : null;
+        if (!store && trigger !== 'bare') return 'noop';
+      } else {
+        store = await this.lookupStorefront(storefrontOwnerUserId, { fresh: true });
+        if (store === undefined) return 'failed';
+        if (!store && trigger !== 'bare') return 'noop';
       }
 
       const idempotencyKey = this.buildRelayIdempotencyKey(context.chatId, context.messageId!);
@@ -202,14 +224,30 @@ export class KaravanStorefrontRelayService {
         store,
         idempotencyKey,
         variant,
+        scopedPublication,
       });
       await this.maxClient.sendMessage(
         context.chatId,
         texts.karavanStorefrontMessageText,
-        store
-          ? this.buildStorefrontMessageOptions(context.messageId!, store.url, texts)
-          : this.buildDirectoryMessageOptions(context.messageId!, texts),
-        this.buildDispatchOptions({ context, store, idempotencyKey, variant }),
+        scopedPublication
+          ? {
+              messageLink: { type: 'reply', mid: context.messageId! },
+              buttons: [
+                [
+                  {
+                    type: 'link',
+                    text: store
+                      ? texts.karavanStorefrontOpenButtonText
+                      : texts.karavanStorefrontCatalogButtonText,
+                    url: scopedPublication.url,
+                  },
+                ],
+              ],
+            }
+          : store
+            ? this.buildStorefrontMessageOptions(context.messageId!, store.url, texts)
+            : this.buildDirectoryMessageOptions(context.messageId!, texts),
+        this.buildDispatchOptions({ context, store, idempotencyKey, variant, scopedPublication }),
       );
       keepClaim = true;
 
@@ -342,7 +380,12 @@ export class KaravanStorefrontRelayService {
   }
 
   private isConfigured(): boolean {
-    return this.enabled && Boolean(this.apiBaseUrl && this.integrationToken);
+    return (
+      this.enabled &&
+      (this.readBooleanConfig('KARAVAN_MARKETPLACE_ENABLED', false)
+        ? Boolean(this.marketplaceResolver)
+        : Boolean(this.apiBaseUrl && this.integrationToken))
+    );
   }
 
   private isEligibleContext(context: RelayContext): boolean {
@@ -641,13 +684,26 @@ export class KaravanStorefrontRelayService {
     store: LookupStore | null;
     idempotencyKey: string;
     variant: StorefrontRelayVariant;
+    scopedPublication?: KaravanScopedPublication | null;
   }): MaxActionDispatchOptions {
     return {
       idempotencyKey: params.idempotencyKey,
+      ...(params.scopedPublication
+        ? {
+            botId: params.scopedPublication.botId,
+            routing: {
+              purpose: 'send_message' as const,
+              requiredBotId: params.scopedPublication.botId,
+            },
+          }
+        : {}),
       trafficClass: 'interactive',
       actionHealthLane: 'interactive',
       sourceTag: MAX_API_SOURCE_TAGS.KARAVAN_STOREFRONT_RELAY,
       ledgerContext: {
+        ...(params.scopedPublication
+          ? { karavanMarketplacePublication: params.scopedPublication }
+          : {}),
         karavanStorefrontRelay: {
           sourceMessageId: params.context.messageId ?? null,
           actorUserId: params.context.senderId,
@@ -667,13 +723,15 @@ export class KaravanStorefrontRelayService {
     store: LookupStore | null;
     idempotencyKey: string;
     variant: StorefrontRelayVariant;
+    scopedPublication?: KaravanScopedPublication | null;
   }): Promise<{ id: string; payload: Prisma.InputJsonObject }> {
     const payload: Prisma.InputJsonObject = {
       messageText: resolveKaravanStorefrontTexts(params.context.storefrontTexts)
         .karavanStorefrontMessageText,
       sourceMessageId: params.context.messageId ?? null,
       companionMessageId: null,
-      publishedUrl: null,
+      publishedUrl: params.scopedPublication?.url ?? null,
+      ...(params.scopedPublication ? { marketplacePublication: params.scopedPublication } : {}),
       deliveryStatus: 'pending',
       idempotencyKey: params.idempotencyKey,
       requestedBotId: params.context.botId ?? null,

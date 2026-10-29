@@ -692,7 +692,8 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
         },
       });
     }
-    const observed = new Date(Date.now() - 60_000);
+    const observed = new Date(`${day()}T00:00:00Z`);
+    observed.setUTCMinutes(-1);
     await db.managedEntityAudienceObservation.create({
       data: {
         chatId: entity.maxId,
@@ -702,18 +703,18 @@ native('central statistics PostgreSQL atomicity, authority and bounded reads', (
         source: 'native',
       },
     });
-    const older = audience('1', 99);
-    if (older.method.id === 'AUDIENCE_SNAPSHOT')
-      older.value = { value: 99, observedAt: new Date(observed.getTime() - 1000).toISOString() };
+    const olderAt = new Date(observed.getTime() - 1000).toISOString();
+    const older = audience('1', 99, olderAt.slice(0, 10));
+    if (older.method.id === 'AUDIENCE_SNAPSHOT') older.value = { value: 99, observedAt: olderAt };
     await ingest.ingest(request([older]));
     expect(
       (
         await read.localAudienceCurrent([entity, entity], source.actorMaxUserId, new Date())
       ).rows.map((row) => row.value),
     ).toEqual([41]);
-    const newest = audience('2', 0);
-    if (newest.method.id === 'AUDIENCE_SNAPSHOT')
-      newest.value = { value: 0, observedAt: new Date(observed.getTime() + 1000).toISOString() };
+    const newestAt = new Date(observed.getTime() + 1000).toISOString();
+    const newest = audience('2', 0, newestAt.slice(0, 10));
+    if (newest.method.id === 'AUDIENCE_SNAPSHOT') newest.value = { value: 0, observedAt: newestAt };
     await ingest.ingest(request([newest]));
     let arrivals = 0;
     let release!: () => void;

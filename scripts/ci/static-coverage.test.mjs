@@ -128,6 +128,22 @@ test('inventory parser rejects shell wrappers, skip flags and unsupported globs'
   }
 });
 
+test('Static runs mandatory ShellCheck once through the infrastructure owner', () => {
+  const steps = parse(workflow).jobs.static.steps;
+  assert.equal(
+    steps.filter((step) => typeof step.run === 'string' && /shellcheck/u.test(step.run)).length,
+    0,
+    'The workflow must not repeat ShellCheck already owned by check:infra',
+  );
+  assert.equal(steps.filter((step) => step.run === 'npm run check:infra').length, 1);
+  const infra = read('infra/scripts/check-infra.sh');
+  assert.match(infra, /if command -v shellcheck >/u);
+  assert.match(infra, /find infra\/scripts -type f -name '\*\.sh' -print0 \| xargs -0 shellcheck/u);
+  assert.match(infra, /npx --yes --package=shellcheck@4\.1\.0 -- shellcheck/u);
+  assert.match(infra, /shellcheck is required for infrastructure validation\.[\s\S]*?exit 1/u);
+  assert.doesNotMatch(infra, /shellcheck[^\n]*\|\|\s*(?:true|:)/u);
+});
+
 test('Static keeps its budget, core checks and infrastructure coverage for full plans', () => {
   const job = jobBody('static');
   assert.match(job, /^ {4}name: Static$/mu);
@@ -150,7 +166,6 @@ test('Static keeps its budget, core checks and infrastructure coverage for full 
     'Native Redis must be available before the infrastructure race fixtures',
   );
   const infrastructure = new Set([
-    "find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck",
     'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
     redisSetup.run,
     'npm run check:infra',
@@ -170,7 +185,6 @@ test('Static keeps its budget, core checks and infrastructure coverage for full 
     'npm audit --omit=dev --audit-level=high',
     'npm run check:static:ci',
     'npm run check:docs',
-    "find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck",
     'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7',
     '|',
     'npm run check:infra',
