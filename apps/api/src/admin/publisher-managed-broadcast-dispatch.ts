@@ -34,6 +34,10 @@ import { PUBLICATION_DELIVERY_ROUTE_QUARANTINED_ERROR_CODE } from './publication
 
 import { preparePendingPublicationContext } from './publication-target-preparation';
 import {
+  PUBLISHER_TARGET_CANCELED,
+  untouchedPublicationTargetDeliveryWhere,
+} from './publication-target-cancellation';
+import {
   resolvePublicationExecutionIntent,
   type PublisherDeliveryAuthority,
 } from './publication-execution-authority';
@@ -133,7 +137,7 @@ export class PublisherManagedBroadcastDispatch {
       if (route.entityType !== authority.entityType) {
         throw new PublisherDeliveryDeferredError('bot_not_connected');
       }
-      if (await this.requiresLegacyActorAuthority(authority, requiredBotId)) {
+      if (await this.requiresLegacyActorAuthority(authority, requiredBotId, chatId)) {
         await this.assertActorAdminAccess({
           targetChatIds: [chatId],
           actorUserId: authority.actorUserId,
@@ -161,6 +165,7 @@ export class PublisherManagedBroadcastDispatch {
   private async requiresLegacyActorAuthority(
     authority: PublisherDeliveryAuthority,
     requiredBotId: string,
+    chatId: string,
   ): Promise<boolean> {
     if (authority.kind === 'legacy_actor') return true;
     if (!authority.occurrenceId || !authority.contentRevisionId)
@@ -178,7 +183,20 @@ export class PublisherManagedBroadcastDispatch {
         retryExpiresAt: true,
         dispatchBlockerCode: true,
         dispatchBlockedAt: true,
-        publication: { select: { lifecycle: true, dispatchProfile: true, requiredBotId: true } },
+        publication: {
+          select: {
+            lifecycle: true,
+            dispatchProfile: true,
+            requiredBotId: true,
+            targets: {
+              where: {
+                targetChatId: chatId,
+                entityType: authority.entityType === 'channel' ? 'CHANNEL' : 'CHAT',
+              },
+              select: { canceledAt: true },
+            },
+          },
+        },
         schedule: { select: { status: true, revision: true } },
       },
     });
@@ -197,6 +215,11 @@ export class PublisherManagedBroadcastDispatch {
       occurrence.schedule.revision !== occurrence.scheduleRevision
     )
       throw new PublisherDeliveryDeferredError(PUBLISHER_RUNTIME_BLOCKER);
+    // FLAG: Legacy envelopes can predate saved targets. Only a durable cancellation
+    // stops their accepted recipient; the intent and author fences below still apply.
+    if (occurrence.publication.targets.some((target) => target.canceledAt)) {
+      throw new PublisherDeliveryDeferredError(PUBLISHER_TARGET_CANCELED);
+    }
     const intent = resolvePublicationExecutionIntent(occurrence);
     if (intent.kind === 'invalid')
       throw new PublisherDeliveryDeferredError(PUBLISHER_RUNTIME_BLOCKER);
@@ -330,6 +353,20 @@ export class PublisherManagedBroadcastDispatch {
           : PUBLISHER_RUNTIME_BLOCKER;
       const blockedAt = new Date();
       const retryAt = new Date(blockedAt.getTime() + PUBLISHER_BLOCKED_RETRY_MS);
+      if (blockerCode === PUBLISHER_TARGET_CANCELED) {
+        // FLAG: A materializer may have loaded its audience before cancellation.
+        // Retire only that late untouched recipient; attempted effects keep their fences.
+        const canceled = await this.context.prisma.managedBroadcastDelivery.updateMany({
+          where: { id: delivery.id, ...untouchedPublicationTargetDeliveryWhere() },
+          data: { status: ManagedBroadcastDeliveryStatus.CANCELED },
+        });
+        if (canceled.count === 1) {
+          await this.context.prisma.managedBroadcastCalendarReservation.deleteMany({
+            where: { broadcastId: row.id, occurrenceIndex: 1, targetChatId: delivery.targetChatId },
+          });
+        }
+        return retryAt;
+      }
       await this.context.prisma.managedBroadcastDelivery.updateMany({
         where: {
           id: delivery.id,

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
+import { mkdir } from 'node:fs/promises';
 import {
   allocateMiniappBaseUrl,
   ensureMiniappDevServer,
@@ -13,7 +14,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.route('**/publication-actions-test', (route) =>
+  await page.route('**/publication-actions-test*', (route) =>
     route.fulfill({
       contentType: 'text/html',
       body: `<html><body><div id="root"></div><script type="module">
@@ -148,6 +149,54 @@ try {
   const resolve = await next();
   assert.deepEqual(resolve.request().postDataJSON(), ambiguousBody);
   await settle(resolve);
+  for (const [width, height] of [
+    [390, 844],
+    [412, 915],
+  ]) {
+    await page.setViewportSize({ width, height });
+    for (const theme of ['light', 'dark']) {
+      await page.goto(`${base}publication-actions-test?partial=1`);
+      await page.evaluate(
+        (value) => document.documentElement.setAttribute('data-max-theme', value),
+        theme,
+      );
+      await open('Действия: Пост прежнего администратора');
+      await page
+        .getByRole('dialog')
+        .getByRole('button', { name: 'Отменить отправки', exact: true })
+        .click();
+      const dialog = page.getByRole('dialog');
+      assert.match(await dialog.innerText(), /Отменить отправки в ваших чатах и каналах/);
+      assert.match(await dialog.innerText(), /остальных чатах и каналах продолжатся/);
+      await dialog.evaluate((element) =>
+        Promise.all(
+          element.getAnimations({ subtree: true }).map((animation) => animation.finished),
+        ),
+      );
+      const rect = await dialog.boundingBox();
+      assert.ok(
+        rect &&
+          rect.x >= 0 &&
+          rect.x + rect.width <= width + 1 &&
+          rect.y >= 0 &&
+          rect.y + rect.height <= height + 1,
+        JSON.stringify({ width, height, rect }),
+      );
+      if (process.env.PUBLICATION_ACTION_SCREENSHOTS) {
+        await mkdir(process.env.PUBLICATION_ACTION_SCREENSHOTS, { recursive: true });
+        await page.screenshot({
+          path: `${process.env.PUBLICATION_ACTION_SCREENSHOTS}/cancel-${width}-${theme}.png`,
+        });
+      }
+      await confirm();
+      const scoped = await next();
+      assert.ok(scoped.request().url().endsWith('/cancel'));
+      await settle(scoped);
+    }
+  }
+  console.log(
+    'PASS: partial administrators can cancel from the post menu with the exact scope visible on mobile in both themes',
+  );
   assert.equal((await read()).ambiguous, false);
   assert.deepEqual(errors, []);
   console.log(

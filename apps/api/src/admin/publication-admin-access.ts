@@ -1,4 +1,8 @@
-import { Prisma, PublicationDispatchProfile } from '../prisma/prisma-client';
+import {
+  Prisma,
+  PublicationDispatchProfile,
+  type PublicationLifecycle,
+} from '../prisma/prisma-client';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 
 export type PublicationAdminScope = Readonly<{ actorUserId: string; publisherBotId: string }>;
@@ -67,6 +71,45 @@ export function publicationAdminTargetSql(scope: PublicationAdminScope): Prisma.
       AND access_edge."user_role" IN ('ADMIN'::"ManagedEntityAccessRole", 'OWNER'::"ManagedEntityAccessRole")
     LIMIT 1 OFFSET 0
   )`;
+}
+
+export function publicationAdminLifecycleWhere(
+  scope: PublicationAdminScope | undefined,
+  lifecycle: PublicationLifecycle[],
+): Prisma.PublicationWhereInput {
+  if (!scope) return { lifecycle: { in: lifecycle } };
+  const canceled = {
+    targets: {
+      some: publicationAdminTargetWhere(scope),
+      none: { ...publicationAdminTargetWhere(scope), canceledAt: null },
+    },
+  } satisfies Prisma.PublicationWhereInput;
+  return {
+    OR: [
+      { lifecycle: { in: lifecycle }, NOT: canceled },
+      ...(lifecycle.includes('CANCELED') ? [canceled] : []),
+    ],
+  };
+}
+
+export function publicationAdminListWhere(
+  scope: PublicationAdminScope | undefined,
+  lifecycle: PublicationLifecycle[],
+  filters: Prisma.PublicationWhereInput[],
+): Prisma.PublicationWhereInput {
+  if (!scope)
+    return { lifecycle: { in: lifecycle }, ...(filters.length > 0 ? { AND: filters } : {}) };
+  return { AND: [publicationAdminLifecycleWhere(scope, lifecycle), ...filters] };
+}
+
+export function publicationAdminLifecycleSql(scope?: PublicationAdminScope): Prisma.Sql {
+  return scope
+    ? Prisma.sql`CASE WHEN EXISTS (SELECT 1 FROM "publication_targets" AS target
+      WHERE target."publication_id" = publication."id" AND ${publicationAdminTargetSql(scope)})
+    AND NOT EXISTS (SELECT 1 FROM "publication_targets" AS target
+      WHERE target."publication_id" = publication."id" AND target."canceled_at" IS NULL AND ${publicationAdminTargetSql(scope)})
+    THEN 'CANCELED'::"PublicationLifecycle" ELSE publication."lifecycle" END`
+    : Prisma.sql`publication."lifecycle"`;
 }
 
 export function publicationAdminReadSql(scope: PublicationAdminScope): Prisma.Sql {

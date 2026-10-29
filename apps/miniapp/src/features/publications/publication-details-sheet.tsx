@@ -821,9 +821,11 @@ export function PublicationDetailsSheet({
             >
               <IconoirSprite variant="iconoir" icon="Xmark" aria-hidden />
               <span>
-                {actionCapabilities.hasFutureSends
-                  ? 'Отменить будущие отправки'
-                  : 'Отменить публикацию'}
+                {publication.access?.canManageAllTargets === false
+                  ? 'Отменить отправки'
+                  : actionCapabilities.hasFutureSends
+                    ? 'Отменить будущие отправки'
+                    : 'Отменить публикацию'}
               </span>
             </button>
           ) : null}

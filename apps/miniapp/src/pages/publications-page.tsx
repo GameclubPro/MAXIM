@@ -57,6 +57,7 @@ import {
   getPublicationActionCapabilities,
   getPublicationActionableDelivery,
   getPublicationEditActionLabel,
+  getPublicationCancelActionLabel,
   getPublicationExplicitSlotsLimitFeedback,
   getPublicationFeedStatusLabel,
   getPublicationPrimaryActionLabel,
@@ -1040,9 +1041,7 @@ export function PublicationsPage({
         canDuplicate={isPublisherProfile}
         canCancel={actionCapabilities.canCancel}
         editLabel={getPublicationEditActionLabel(actionCapabilities.editScope)}
-        cancelLabel={
-          actionCapabilities.hasFutureSends ? 'Отменить будущие отправки' : 'Отменить публикацию'
-        }
+        cancelLabel={getPublicationCancelActionLabel(publication)}
         onEdit={() => openPublicationEditor(publication, 'edit')}
         onPause={() => setActionTarget({ publication, action: 'pause' })}
         onResume={() => setActionTarget({ publication, action: 'resume' })}

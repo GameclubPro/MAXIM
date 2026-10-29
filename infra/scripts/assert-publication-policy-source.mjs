@@ -71,7 +71,9 @@ export const PUBLICATION_POLICY_SOURCE_CHECKS = [
     'apps/api/src/admin/publisher-managed-broadcast-dispatch.ts',
     [
       'await this.assertDeliveryReady(delivery.targetChatId, requiredBotId, authority)',
-      'await this.requiresLegacyActorAuthority(authority, requiredBotId)',
+      'await this.requiresLegacyActorAuthority(authority, requiredBotId, chatId)',
+      'occurrence.publication.targets.some((target) => target.canceledAt)',
+      'throw new PublisherDeliveryDeferredError(PUBLISHER_TARGET_CANCELED)',
       'resolvePublicationExecutionIntent(occurrence)',
       'occurrence.contentRevisionId !== authority.contentRevisionId',
       'occurrence.schedule.revision !== occurrence.scheduleRevision',
@@ -86,6 +88,10 @@ export const PUBLICATION_POLICY_SOURCE_CHECKS = [
       "return { kind: 'invalid' }",
       "return { kind: 'entity', deadlineAt }",
     ],
+  ],
+  [
+    'apps/api/src/admin/publication-publisher-routing.service.ts',
+    ['publication.targets.filter((target) => !target.canceledAt)'],
   ],
   [
     'apps/api/src/admin/admin-managed-broadcast-runtime.ts',
