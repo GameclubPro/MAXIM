@@ -119,6 +119,51 @@ dispatching/uncertain journal refuses installation. Additive holds survive that 
 reconcile the exact journal before continuing, without deleting holds or blindly
 repeating an uncertain operation. The Lastik bot token never enters these clients.
 
+## Reading diagnostics without changing execution
+
+Saved chat ownership selects the diagnostic source even when availability is disabled.
+An unavailable owned source is reported separately; it never becomes a legacy snapshot,
+zero counters or an empty review. Settings reads use the saved policy and bootstrap only
+an explicitly uninitialized policy. Read availability does not authorize execution or writes.
+
+The closed fleet page contains at most 50 chat identities, including unavailable sources.
+Review pages contain at most 20 records and carry an opaque continuation tied to the
+source, chat, policy revision and activation. Keep the cursor unchanged. A changed identity
+requires a fresh page; a manual retry still uses the exact journal timestamp and attempt
+count, and its returned snapshot starts at the first page. Missing completeness metadata
+from an older runtime means unknown completeness, not an empty or fully checked ledger.
+
+Pending, due-and-retry-ready, and uncertain counts are separate bounded observations.
+A capped count is a lower bound. Eligibility does not bypass the final rights, pins or
+protection checks. Fresh dispatches are in progress; dispatches whose persisted confirmation
+deadline has expired join uncertain journals. `oldestUnknownAt` is the earliest currently
+recorded uncertainty time (expired dispatch deadline or uncertain journal update), not
+message creation or original dispatch time. Old automatic polling may have refreshed
+historic timestamps, so this age can understate the original uncertainty. Unknown DELETE
+results receive no automatic recheck or retry. Protected history and incomplete coverage
+are reported independently of a known execution stop. `lastCompletedAt` records the last
+completed safety scan; a gap prevents treating that timestamp as current full coverage.
+
+The public “Больше нет в чате” counter remains the combined confirmed total. Closed
+`confirmationCounts` splits it by the first recorded confirmation: positive DELETE reply,
+authenticated removal notification, or the historical total without a known source.
+A removal notification does not identify an external actor. A later acknowledgement or
+notification cannot count the same message again. Process HTTP metrics have a separate
+scope and start timestamp: actual successful DELETE replies may overlap notification-first
+confirmations and must not be added to the public total. HTTP 2xx alone is not a valid
+DELETE acknowledgement. Network HTTP 429, local cooldown deferrals, failed admission and
+rejected final guards are distinct observations. Durable MAX cooldown and process health
+remain separate from these counters; missing old telemetry is unknown, not zero.
+
+The owner panel shows the full connection request lifecycle, including activation,
+initiator, policy revision, expiry, next connection attempt and an allowlisted error.
+Public connection states remain pending, expired or cancelled; activation is represented
+by the saved enabled policy. Neither surface exposes lease tokens or raw upstream errors.
+
+The expanded diagnostics retain the lazy-loaded retention panel and add no browser dependency.
+The measured complete Safety Desk build is 457.0 KiB raw / 127.8 KiB gzip JavaScript; its
+reviewed feature budget is 459 / 129 KiB. CSS and budget tolerance remain unchanged.
+
 ## Due scheduling and control scans
 
 Migration `0006-due-scheduling.sql` stores future arrivals in hourly rows with a
@@ -165,10 +210,10 @@ chats, one rights read plus one page per chat already requires at least 40,000 s
 (11 hours 6 minutes 40 seconds) at one request/second. Extra pages, retries and other
 delays extend that time. The durable `last_live_completed_at` records actual completed
 control windows; a missing timestamp means no recorded completion. Ordinary due work,
-partial pages and blocked windows do not refresh it. This timestamp is not yet exposed
-by the runtime diagnostics response, so that response's existing fields cannot prove
-control-scan coverage. Retained gaps outside a completed window remain separate from
-its completion time.
+partial pages and blocked windows do not refresh it. Diagnostics expose it as
+`coverage.lastCompletedAt`, with a separate `coverage.gap` flag. Retained gaps outside
+a completed window remain separate from its completion time; the timestamp alone
+cannot prove current full coverage.
 
 ## Acceptance and rollback
 

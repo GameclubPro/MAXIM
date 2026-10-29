@@ -12,6 +12,8 @@ const browser = await chromium.launch();
 function chat(chatId = 'chat/1', overrides = {}) {
   return {
     chatId,
+    source: 'eraser',
+    sourceStatus: 'available',
     chatTitle: 'Рабочий чат',
     enabled: true,
     hours: 24,
@@ -34,6 +36,10 @@ function preview(chatId = 'chat/1', overrides = {}) {
     chatId,
     revision: 7,
     activationId: 'activation-1',
+    source: 'eraser',
+    sourceStatus: 'available',
+    nextAfter: null,
+    incomplete: false,
     items: [
       {
         messageId: 'message/1',
@@ -122,6 +128,8 @@ async function fixture(viewport = { width: 1440, height: 900 }) {
   const state = {
     rows: [chat(), chat('chat-2', { chatTitle: 'Отключённый чат', enabled: false, status: 'off' })],
     nextAfter: null,
+    unavailableSources: [],
+    incomplete: false,
     runtimeStatus: 200,
     previewStatus: 200,
     postStatus: 200,
@@ -155,6 +163,11 @@ async function fixture(viewport = { width: 1440, height: 900 }) {
               generatedAt: date,
               mode: 'on',
               nextAfter: state.nextAfter,
+              incomplete: state.incomplete,
+              unavailableSources: state.unavailableSources,
+              transportMetrics: state.transportMetrics,
+              health: state.health,
+              cooldown: state.cooldown,
               quotas: [{ shard: 0, pendingCount: 4, cap: 100 }],
               items: state.rows,
             }
@@ -203,10 +216,11 @@ async function fixture(viewport = { width: 1440, height: 900 }) {
     }
     if (url.pathname.endsWith('/retry')) {
       state.posts.push({ path: url.pathname, body: request.postDataJSON() });
+      const chatId = decodeURIComponent(url.pathname.split('/').at(-2));
       if (state.postGate) await state.postGate;
       if (state.losePost) return route.abort('failed');
       return respond(
-        state.postStatus === 200 ? state.postData : { message: 'Версия изменилась' },
+        state.postStatus === 200 ? { ...state.postData, chatId } : { message: 'Версия изменилась' },
         state.postStatus,
       );
     }
@@ -453,7 +467,7 @@ try {
     state.rows = [];
     state.nextAfter = null;
     await page.getByRole('button', { name: 'Далее', exact: true }).click();
-    await page.getByText('Чатов с настройкой очистки пока нет.', { exact: true }).waitFor();
+    await page.getByText('На этой странице чатов нет.', { exact: true }).waitFor();
     assert.equal(
       state.requests.includes(
         '/api/v1/safety-desk/runtime/retention?after=cursor%2Fchat%3Fnext%3D1',
@@ -795,6 +809,241 @@ try {
     await context.close();
     process.stdout.write(
       'PASS page refresh discards late preview and stale retry uses current permission\n',
+    );
+  }
+  {
+    const { context, page, state, errors } = await fixture();
+    const firstCursor = 'opaque/+?source=eraser';
+    const previewPath = '/api/v1/safety-desk/runtime/retention/chat%2F1/preview';
+    const lastPreviewRequest = () =>
+      state.requests.filter((path) => path.split('?')[0] === previewPath).at(-1);
+    state.previewData = preview('chat/1', { nextAfter: firstCursor, incomplete: true });
+    await openRetention(page);
+    await openPreview(page);
+    state.previewStatus = 503;
+    await page.getByRole('button', { name: 'Следующие сообщения', exact: true }).click();
+    await page.getByText('Диагностика недоступна', { exact: true }).waitFor();
+    assert.equal(lastPreviewRequest(), `${previewPath}?after=${encodeURIComponent(firstCursor)}`);
+    state.previewStatus = 200;
+    state.previewData = preview('chat/1', {
+      items: [{ ...preview().items[0], messageId: 'second-page' }],
+    });
+    await page.getByRole('button', { name: 'Обновить диагностику', exact: true }).click();
+    await page.getByText('Сообщение second-page', { exact: true }).waitFor();
+    assert.equal(lastPreviewRequest(), `${previewPath}?after=${encodeURIComponent(firstCursor)}`);
+    assert.equal(
+      await page.getByRole('button', { name: 'Предыдущие сообщения', exact: true }).isDisabled(),
+      false,
+    );
+    state.previewStatus = 503;
+    await page.getByRole('button', { name: 'Предыдущие сообщения', exact: true }).click();
+    await page.getByText('Диагностика недоступна', { exact: true }).waitFor();
+    state.previewStatus = 200;
+    state.previewData = preview('chat/1', { nextAfter: firstCursor, incomplete: true });
+    await page.getByRole('button', { name: 'Обновить диагностику', exact: true }).click();
+    await page.getByText('Сообщение message/1', { exact: true }).waitFor();
+    assert.equal(lastPreviewRequest(), previewPath);
+    assert.equal(
+      await page.getByRole('button', { name: 'Предыдущие сообщения', exact: true }).isDisabled(),
+      true,
+    );
+    state.previewData = preview('chat/1', {
+      items: [{ ...preview().items[0], messageId: 'second-page' }],
+    });
+    await page.getByRole('button', { name: 'Следующие сообщения', exact: true }).click();
+    await page.getByText('Сообщение second-page', { exact: true }).waitFor();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Вернуть в очередь', exact: true }).click();
+    await page.getByText('Сообщений, требующих проверки, нет.', { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: 'Предыдущие сообщения', exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(state.posts[0].body.messageId, 'second-page');
+    assert.deepEqual(errors, []);
+    await context.close();
+    process.stdout.write(
+      'PASS review opaque pagination, failed page retry and POST first-page reset\n',
+    );
+  }
+  {
+    const { context, page, state } = await fixture();
+    state.incomplete = true;
+    state.unavailableSources = [
+      { chatId: '-99', chatTitle: 'Недоступный чат', source: 'eraser', reason: 'unavailable' },
+    ];
+    state.previewData = preview('chat/1', {
+      items: [],
+      incomplete: undefined,
+      nextAfter: undefined,
+      source: undefined,
+      sourceStatus: undefined,
+    });
+    await openRetention(page);
+    await page.getByText('Источник недоступен', { exact: true }).waitFor();
+    const unavailableRow = page.getByRole('row').filter({ hasText: 'Недоступный чат' });
+    assert.equal(await unavailableRow.getByRole('button').count(), 0);
+    assert.ok((await unavailableRow.innerText()).includes('Счётчики неизвестны'));
+    await openPreview(page);
+    await page.getByText('На этой странице сообщений нет.', { exact: true }).waitFor();
+    assert.equal(
+      await page.getByText('Сообщений, требующих проверки, нет.', { exact: true }).count(),
+      0,
+    );
+    assert.ok(
+      (
+        await page.getByRole('region', { name: 'Диагностика очистки', exact: true }).innerText()
+      ).includes('Полнота списка неизвестна'),
+    );
+    state.previewData = preview('chat/1', { source: 'legacy' });
+    await page.getByRole('button', { name: 'Обновить диагностику', exact: true }).click();
+    await page
+      .getByText('Источник или настройки очистки изменились. Обновите список чатов.', {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: 'Вернуть в очередь', exact: true }).count(),
+      0,
+    );
+    await context.close();
+    process.stdout.write(
+      'PASS unavailable source, unknown old completeness and changed source fail closed\n',
+    );
+  }
+  {
+    const { context, page, state } = await fixture();
+    state.previewData = preview('chat/1', { nextAfter: 'bound-policy-cursor', incomplete: true });
+    await openRetention(page);
+    await openPreview(page);
+    state.previewStatus = 503;
+    await page.getByRole('button', { name: 'Следующие сообщения', exact: true }).click();
+    await page.getByText('Диагностика недоступна', { exact: true }).waitFor();
+    state.previewStatus = 200;
+    state.previewData = preview('chat/1', { revision: 8 });
+    await page.getByRole('button', { name: 'Обновить диагностику', exact: true }).click();
+    await page
+      .getByText('Источник или настройки очистки изменились. Обновите список чатов.', {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(
+      await page.getByRole('button', { name: 'Вернуть в очередь', exact: true }).count(),
+      0,
+    );
+    await context.close();
+    process.stdout.write(
+      'PASS failed review page retains policy identity and rejects a changed policy\n',
+    );
+  }
+  {
+    const { context, page, state, errors } = await fixture({ width: 1440, height: 1000 });
+    state.rows[0] = chat('chat/1', {
+      status: 'running',
+      progress: {
+        pendingCountComplete: true,
+        eligibleCount: 2,
+        eligibleCountComplete: true,
+        oldestEligibleDueAt: date,
+        unknownCount: 201,
+        unknownCountComplete: false,
+        oldestUnknownAt: date,
+      },
+      coverage: {
+        lastCompletedAt: date,
+        gap: true,
+        protectedHistory: true,
+        executionStopped: false,
+      },
+      confirmationCounts: { historicalUnknown: 14, deleteAcknowledged: 4, removalReceipt: 2 },
+      connectionRequest: {
+        status: 'activated',
+        operationId: '4fe21b95-d545-4d62-b1ba-3d4eb747fd69',
+        actorUserId: '123',
+        policyRevision: 7,
+        expiresAt: date,
+        nextAttemptAt: date,
+        updatedAt: date,
+        lastError: null,
+      },
+    });
+    const worker = {
+      healthy: false,
+      ready: true,
+      running: false,
+      sampledAt: date,
+      occupiedSlots: 0,
+      oldestOccupiedAt: null,
+      lastCompletedAt: null,
+      lastErrorAt: date,
+      lastErrorCode: 'worker_closed',
+      progressOverdue: false,
+    };
+    state.health = {
+      schedulerHealthy: false,
+      schedulerLastSuccessfulAt: date,
+      workers: { cleanup: worker, connection: { ...worker, healthy: true, running: true } },
+    };
+    state.cooldown = { durableUntil: date };
+    state.transportMetrics = {
+      scope: 'process',
+      since: date,
+      observedAt: date,
+      requests: [
+        'bot_rights',
+        'actor_rights',
+        'pin',
+        'live_scan',
+        'history_scan',
+        'safety_rights',
+        'safety_scan',
+        'delete',
+        'presence',
+        'identity',
+        'subscriptions',
+      ].map((purpose) => ({
+        purpose,
+        attempts: 4,
+        responses: 3,
+        httpSuccesses: 2,
+        rateLimited: 1,
+        transportErrors: 1,
+      })),
+      cooldownDeferrals: 3,
+      admissionUnavailable: 2,
+      guardRejected: 1,
+      deleteAcknowledged: 2,
+      observedCooldownUntil: date,
+    };
+    await openRetention(page);
+    await page.getByText('Исполнитель очистки недоступен.', { exact: true }).waitFor();
+    await page.getByText('По ответу удаления: 4', { exact: true }).waitFor();
+    await page.getByText('По уведомлению: 2', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Выполнение очистки недоступно', { exact: true }).count(), 0);
+    assert.equal(
+      await page.getByText('Результат не подтверждён: не менее 201', { exact: true }).count(),
+      1,
+    );
+    await page.getByText('Работа исполнителя и обращения к MAX', { exact: true }).click();
+    await page.getByText(/Положительных ответов удаления: 2/u).waitFor();
+    assert.equal(
+      await page.getByRole('columnheader', { name: 'HTTP 429', exact: true }).count(),
+      1,
+    );
+    await openPreview(page);
+    await page
+      .getByText('Запрос подключения: Очистка включена по запросу', { exact: true })
+      .click();
+    await page.getByText('Инициатор: 123 · ревизия 7', { exact: true }).waitFor();
+    assert.equal(await page.getByText(/Следующая проверка подключения/u).count(), 0);
+    await page.screenshot({
+      path: join(output, 'retention-complete-diagnostics.png'),
+      fullPage: true,
+    });
+    assert.deepEqual(errors, []);
+    await context.close();
+    process.stdout.write(
+      'PASS complete bounded diagnostics, first-confirmation sources and process HTTP evidence remain separate\n',
     );
   }
   for (const width of [1440, 1024, 900, 768, 390, 320]) {

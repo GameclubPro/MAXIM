@@ -38,6 +38,8 @@ export function useRetentionDesk({
   const [preview, setPreview] = useState<SafetyDeskRetentionPreviewResponse | null>(null);
   const [pageAfter, setPageAfter] = useState<string | null>(null);
   const [trail, setTrail] = useState<Array<string | null>>([]);
+  const [previewPageAfter, setPreviewPageAfter] = useState<string | null>(null);
+  const [previewTrail, setPreviewTrail] = useState<Array<string | null>>([]);
   const [loading, setLoading] = useState(true);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
@@ -47,6 +49,11 @@ export function useRetentionDesk({
   const previewSequence = useRef(0);
   const currentPage = useRef<RetentionPage>({ after: null, trail: [] });
   const requestedPage = useRef<RetentionPage>({ after: null, trail: [] });
+  const requestedPreviewPage = useRef<RetentionPage>({ after: null, trail: [] });
+  const previewIdentity = useRef<Pick<
+    SafetyDeskRetentionPreviewResponse,
+    'chatId' | 'source' | 'revision' | 'activationId'
+  > | null>(null);
   const mutationActive = useRef(false);
   const active = useRef(false);
   const mutationSequence = useRef(0);
@@ -80,6 +87,10 @@ export function useRetentionDesk({
       setPageError('');
       setSelected(null);
       setPreview(null);
+      setPreviewPageAfter(null);
+      setPreviewTrail([]);
+      requestedPreviewPage.current = { after: null, trail: [] };
+      previewIdentity.current = null;
       setPreviewNotice('');
       setPreviewLoading(false);
       try {
@@ -111,8 +122,14 @@ export function useRetentionDesk({
     };
   }, [loadPage, refreshToken]);
 
-  async function loadPreview(item: SafetyDeskRetentionRuntimeItem) {
+  async function loadPreviewPage(
+    item: SafetyDeskRetentionRuntimeItem,
+    after: string | null,
+    nextTrail: Array<string | null>,
+  ) {
     if (!active.current || mutationActive.current) return;
+    const previous = previewIdentity.current;
+    requestedPreviewPage.current = { after, trail: nextTrail };
     const sequence = ++previewSequence.current;
     currentRecord.current = { selected: item, preview: null };
     setSelected(item);
@@ -120,9 +137,27 @@ export function useRetentionDesk({
     setPreviewNotice('');
     setPreviewLoading(true);
     try {
-      const response = await safetyDeskApiClient.fetchRetentionPreview(item.chatId, accessCode);
+      const response = await safetyDeskApiClient.fetchRetentionPreview(
+        item.chatId,
+        accessCode,
+        after,
+      );
       if (sequence === previewSequence.current) {
+        if (
+          response.chatId !== item.chatId ||
+          (item.source && response.source && item.source !== response.source) ||
+          (after &&
+            previous &&
+            (previous.revision !== response.revision ||
+              previous.activationId !== response.activationId ||
+              previous.source !== response.source))
+        ) {
+          throw new Error('Источник или настройки очистки изменились. Обновите список чатов.');
+        }
         currentRecord.current.preview = response;
+        previewIdentity.current = response;
+        setPreviewPageAfter(after);
+        setPreviewTrail(nextTrail);
         setPreview(response);
       }
     } catch (error) {
@@ -130,6 +165,30 @@ export function useRetentionDesk({
     } finally {
       if (sequence === previewSequence.current) setPreviewLoading(false);
     }
+  }
+
+  async function loadPreview(item: SafetyDeskRetentionRuntimeItem) {
+    if (!active.current || mutationActive.current) return;
+    previewIdentity.current = null;
+    setPreviewPageAfter(null);
+    setPreviewTrail([]);
+    await loadPreviewPage(item, null, []);
+  }
+
+  async function refreshPreview() {
+    if (!selected) return;
+    const request = requestedPreviewPage.current;
+    await loadPreviewPage(selected, request.after, request.trail);
+  }
+
+  async function nextPreviewPage() {
+    if (!selected || !preview?.nextAfter || previewLoading) return;
+    await loadPreviewPage(selected, preview.nextAfter, [...previewTrail, previewPageAfter]);
+  }
+
+  async function previousPreviewPage() {
+    if (!selected || !previewTrail.length || previewLoading) return;
+    await loadPreviewPage(selected, previewTrail.at(-1) ?? null, previewTrail.slice(0, -1));
   }
 
   async function retry(item: SafetyDeskRetentionPreviewItem) {
@@ -143,6 +202,7 @@ export function useRetentionDesk({
     const request = buildRetentionRetryRequest(record.preview, currentItem);
     if (!request || record.preview.chatId !== record.selected.chatId) return;
     const chatId = record.selected.chatId;
+    const source = record.preview.source;
     if (
       !window.confirm(
         `Вернуть сообщение ${item.messageId} в очередь очистки? Сервер повторно проверит срок, права и состояние. Удаление необратимо.`,
@@ -150,6 +210,11 @@ export function useRetentionDesk({
     )
       return;
     mutationActive.current = true;
+    // FLAG: retry responses and reconciliation reads are first-page snapshots, never a later cursor.
+    requestedPreviewPage.current = { after: null, trail: [] };
+    previewIdentity.current = null;
+    setPreviewPageAfter(null);
+    setPreviewTrail([]);
     const sequence = ++mutationSequence.current;
     const isCurrent = () => active.current && sequence === mutationSequence.current;
     onBusyChange(true);
@@ -158,7 +223,10 @@ export function useRetentionDesk({
     try {
       const response = await safetyDeskApiClient.retryRetention(chatId, request, accessCode);
       if (!isCurrent()) return;
+      if (response.chatId !== chatId || (source && response.source !== source))
+        throw new Error('Источник диагностики изменился. Обновите список чатов.');
       currentRecord.current.preview = response;
+      previewIdentity.current = response;
       setPreview(response);
       setPreviewNotice('Сообщение возвращено в очередь. Результат проверит фоновая очистка.');
     } catch (error) {
@@ -174,7 +242,10 @@ export function useRetentionDesk({
       try {
         const response = await safetyDeskApiClient.fetchRetentionPreview(chatId, accessCode);
         if (!isCurrent()) return;
+        if (response.chatId !== chatId || (source && response.source !== source))
+          throw new Error('Источник диагностики изменился. Обновите список чатов.');
         currentRecord.current.preview = response;
+        previewIdentity.current = response;
         setPreview(response);
         if (error instanceof AdminApiError && error.status === 409) {
           setPreviewNotice(
@@ -220,6 +291,8 @@ export function useRetentionDesk({
     runtime,
     selected,
     preview,
+    previewPageAfter,
+    previewTrail,
     pageAfter,
     trail,
     loading,
@@ -230,6 +303,9 @@ export function useRetentionDesk({
     loadPage,
     retryPage,
     loadPreview,
+    refreshPreview,
+    nextPreviewPage,
+    previousPreviewPage,
     retry,
     nextPage,
     previousPage,

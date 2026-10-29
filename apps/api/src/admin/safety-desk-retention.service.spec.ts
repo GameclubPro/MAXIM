@@ -1,10 +1,16 @@
 import { SafetyDeskRetentionService } from './safety-desk-retention.service';
 import type { SafetyDeskRetentionRuntimeResponse } from '@maxim/contracts/safety-desk';
 import type { EraserControlService } from '../message-retention/eraser-control.service';
+import type { LegacyRuntimeBatch, RetentionRuntimePageRow } from './safety-desk-retention-queries';
 import type { PrismaService } from '../prisma/prisma.service';
 
 function setup() {
+  const query: jest.MockedFunction<PrismaService['$queryRaw']> = jest
+    .fn()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ diagnostics: [], quotas: [] } satisfies LegacyRuntimeBatch]);
   const prisma = {
+    $queryRaw: query,
     messageRetentionPolicy: {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue(null),
@@ -75,12 +81,15 @@ describe('closed retention operator boundary', () => {
         })),
       }),
     };
-    const chat: jest.Mocked<Pick<PrismaService['chat'], 'findMany'>> = {
-      findMany: jest.fn().mockResolvedValue([{ id: '-123', title: 'Чат' }]),
-    };
     const { prisma, store, capabilities } = setup();
+    prisma.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([
+        { chatId: '-123', chatTitle: 'Чат', source: 'eraser' } satisfies RetentionRuntimePageRow,
+      ])
+      .mockResolvedValueOnce([{ diagnostics: [], quotas: [] } satisfies LegacyRuntimeBatch]);
     const service = new SafetyDeskRetentionService(
-      { ...prisma, chat } as unknown as PrismaService,
+      prisma as unknown as PrismaService,
       store as never,
       capabilities as never,
       eraser as unknown as EraserControlService,
@@ -95,33 +104,90 @@ describe('closed retention operator boundary', () => {
       diagnostics: { ...runtime.items[0]!.diagnostics, lastError: 'unknown' },
     });
     expect(JSON.stringify(result)).not.toContain('private-upstream-detail');
-    expect(eraser.request).toHaveBeenCalledWith('/runtime');
-    expect(chat.findMany).toHaveBeenCalledWith({
-      where: { id: { in: ['-123'] } },
-      select: { id: true, title: true },
-      take: 50,
-    });
-    expect(prisma.messageRetentionPolicy.findMany).not.toHaveBeenCalled();
+    expect(eraser.request).toHaveBeenCalledWith('/runtime?chatIds=-123');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
-  it('uses bounded keyset policy paging and exactly 32 quota slots', async () => {
+  it('forwards opaque Lastik review cursors and exact microsecond retry versions', async () => {
+    const { prisma, store, capabilities, body } = setup();
+    const preview = {
+      chatId: '-1',
+      revision: 5,
+      activationId: 'activation',
+      source: 'eraser',
+      sourceStatus: 'available',
+      items: [],
+      nextAfter: null,
+    };
+    const eraser: jest.Mocked<Pick<EraserControlService, 'enabled' | 'owns' | 'request'>> = {
+      enabled: false,
+      owns: jest.fn().mockResolvedValue(true),
+      request: jest.fn().mockResolvedValue(preview),
+    };
+    const service = new SafetyDeskRetentionService(
+      prisma as unknown as PrismaService,
+      store as never,
+      capabilities as never,
+      eraser as unknown as EraserControlService,
+    );
+    const cursor = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        source: 'eraser',
+        chatId: '-1',
+        revision: 5,
+        activationId: 'activation',
+        messageId: 'mid',
+      }),
+    ).toString('base64url');
+    await service.preview('-1', cursor);
+    expect(eraser.request).toHaveBeenCalledWith(`/chats/-1/review?after=${cursor}`);
+    await service.retry('-1', 'operator', {
+      ...body,
+      expectedIntentUpdatedAt: '2026-10-29T10:01:02.123456Z',
+    });
+    expect(eraser.request).toHaveBeenLastCalledWith(
+      '/chats/-1/retry',
+      'POST',
+      expect.objectContaining({
+        expectedIntentUpdatedAt: '2026-10-29T10:01:02.123456Z',
+        actorUserId: 'operator',
+      }),
+    );
+    expect(store.reopenTerminalCandidate).not.toHaveBeenCalled();
+  });
+
+  it('keeps unowned legacy retries on their saved source even with the Lastik flag enabled', async () => {
+    const { prisma, store, capabilities, body } = setup();
+    const eraser: jest.Mocked<Pick<EraserControlService, 'enabled' | 'owns' | 'request'>> = {
+      enabled: true,
+      owns: jest.fn().mockResolvedValue(false),
+      request: jest.fn(),
+    };
+    const service = new SafetyDeskRetentionService(
+      prisma as unknown as PrismaService,
+      store as never,
+      capabilities as never,
+      eraser as unknown as EraserControlService,
+    );
+    jest
+      .spyOn(service, 'preview')
+      .mockResolvedValue({ chatId: '-1', revision: 5, activationId: 'activation', items: [] });
+    await service.retry('-1', 'operator', body);
+    expect(store.reopenTerminalCandidate).toHaveBeenCalledTimes(1);
+    expect(eraser.request).not.toHaveBeenCalled();
+  });
+
+  it('uses two bounded queries for an empty legacy page', async () => {
     const { service, prisma } = setup();
     await expect(service.runtime('-123')).resolves.toMatchObject({
       items: [],
       nextAfter: null,
       mode: 'off',
     });
-    expect(prisma.messageRetentionPolicy.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { chatId: { gt: '-123' } },
-        take: 51,
-        orderBy: { chatId: 'asc' },
-      }),
-    );
-    expect(prisma.messageRetentionQuota.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 32 }),
-    );
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
+
   it('refuses invalid identifiers and unknown input before reads or access probes', async () => {
     const { service, store, capabilities, body, prisma } = setup();
     await expect(service.runtime('bad')).rejects.toMatchObject({ status: 400 });

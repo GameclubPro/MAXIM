@@ -8,6 +8,7 @@ import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { resolvePhotoDuplicateRuntimePolicy } from '../moderation/photo-duplicate/photo-duplicate.runtime';
 import { UPDATE_SETTINGS_AUDIT_PAYLOAD_MAX_SERIALIZED_BYTES } from './admin-chat-settings';
 import { AdminSettingsService } from './admin-settings.service';
+import type { AdminMessageRetentionService } from './admin-message-retention.service';
 import { BotCapabilityRequiredException } from './bot-capability-required.error';
 import { extractSqlText } from './admin-service-test-support';
 
@@ -222,6 +223,7 @@ function createService(
     resolvedRulesUrl?: string | null;
     nightModeTransitionScheduler?: { reconcileChats: jest.Mock };
     reportsAvailable?: boolean;
+    retention?: Pick<AdminMessageRetentionService, 'summary'>;
   } = {},
 ) {
   const legacyAdminService = {
@@ -501,6 +503,7 @@ function createService(
     } as never,
     undefined,
     { available: () => options.reportsAvailable ?? false } as never,
+    options.retention as AdminMessageRetentionService | undefined,
   );
 
   return {
@@ -522,6 +525,28 @@ function createService(
 }
 
 describe('AdminSettingsService chat rules', () => {
+  it('uses the authoritative weekly retention summary on the settings home', async () => {
+    const summary = { enabled: true, hours: 168 as const, revision: 9, status: 'running' as const };
+    const retention: jest.Mocked<Pick<AdminMessageRetentionService, 'summary'>> = {
+      summary: jest.fn().mockResolvedValue(summary),
+    };
+    const { service } = createService({ retention });
+    expect(await service.getChatSettingsScreen('chat-1', user as never)).toMatchObject({
+      messageRetention: summary,
+    });
+    expect(retention.summary).toHaveBeenCalledWith('chat-1');
+  });
+
+  it('omits an unavailable authoritative summary instead of a legacy fallback', async () => {
+    const retention: jest.Mocked<Pick<AdminMessageRetentionService, 'summary'>> = {
+      summary: jest.fn().mockRejectedValue(new Error('source unavailable')),
+    };
+    const { service } = createService({ retention });
+    expect(
+      (await service.getChatSettingsScreen('chat-1', user as never)).messageRetention,
+    ).toBeUndefined();
+  });
+
   it.each([false, true])(
     'exposes server report availability %s without changing stored opt-in',
     async (available) => {

@@ -4,6 +4,7 @@ import type { Config } from './config.js';
 import { MaxError, type MaxTransport } from './max.js';
 import { Store, CHAT_BUFFER, HOUSEKEEPING_INTERVAL_MS } from './store.js';
 import { ServiceError, type Lane } from './types.js';
+import { ProgressLog } from './progress-log.js';
 
 export const MAX_WAKEUPS = 64;
 export const MAX_SAFETY_WAKEUPS = 2;
@@ -67,6 +68,7 @@ export class CleanupRuntime {
   private lastConnectionSchedulerAt: number | null = null;
   private readonly cleanupObservation = workerObservation();
   private readonly connectionObservation = workerObservation();
+  private readonly progressLog = new ProgressLog();
   constructor(
     private readonly store: Store,
     private readonly max: MaxTransport,
@@ -110,8 +112,10 @@ export class CleanupRuntime {
     );
     this.observeWorker(this.connectionWorker, this.connectionObservation, 'connection');
     this.timer = setInterval(() => {
-      void this.tick().catch(() => {});
-      void this.tickConnections().catch(() => {});
+      void this.tick().catch(() => this.progressLog.failure('cleanup_scheduler_failed'));
+      void this.tickConnections().catch(() =>
+        this.progressLog.failure('connection_scheduler_failed'),
+      );
     }, 1000);
   }
   private observeWorker<Name extends 'visit' | 'connect'>(
@@ -350,6 +354,7 @@ export class CleanupRuntime {
       this.lastSchedulerAt = Date.now();
     } finally {
       this.running = false;
+      if (!this.stopping) this.progressLog.progress(this.health(), this.max.metrics?.());
     }
   }
   async visit(wakeup: Wakeup): Promise<void> {

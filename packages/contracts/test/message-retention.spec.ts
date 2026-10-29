@@ -58,6 +58,8 @@ describe('message retention contracts', () => {
       oldestDueAt: null,
     };
     expect(messageRetentionStateSchema.parse(state)).toEqual(state);
+    expect(messageRetentionStateSchema.parse(state)).not.toHaveProperty('progress');
+    expect(messageRetentionStateSchema.parse(state)).not.toHaveProperty('coverage');
     expect(messageRetentionStateSchema.safeParse({ ...state, pendingCount: -1 }).success).toBe(
       false,
     );
@@ -75,6 +77,12 @@ describe('message retention contracts', () => {
       messageRetentionStateSchema.safeParse({
         ...state,
         connectionRequest: { status: 'pending', expiresAt: 'later' },
+      }).success,
+    ).toBe(false);
+    expect(
+      messageRetentionStateSchema.safeParse({
+        ...state,
+        connectionRequest: { status: 'activated', expiresAt: '2026-10-26T16:00:00.000Z' },
       }).success,
     ).toBe(false);
   });
