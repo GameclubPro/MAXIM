@@ -5,8 +5,9 @@ import { migrate } from '../../src/migrate.ts';
 import { Store } from '../../src/store.ts';
 
 // This child belongs to one native API test. Its schema and HTTP server are isolated;
-// private store URLs arrive only through the public wrapper's inherited environment.
-const databaseUrl = process.env.MAXIM_TEST_POSTGRES_URL;
+// private store URLs arrive through the API native CI lane or the public local wrapper.
+const databaseUrl =
+  process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL ?? process.env.MAXIM_TEST_POSTGRES_URL;
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL;
 if (!databaseUrl || !redisUrl || !process.send)
   throw new Error('Use the public native-store wrapper and an IPC child');
