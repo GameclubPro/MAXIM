@@ -431,6 +431,12 @@ try {
                 await page.evaluate(() => window.__karavanOpened[0]),
                 /startapp=m_synthetic-shop$/u,
               );
+              const beforeReturn = await page.evaluate(() => window.__karavanRequests.length);
+              await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+              await page.waitForFunction(
+                (before) => window.__karavanRequests.length > before,
+                beforeReturn,
+              );
             }
           }
           if (['draft', 'draft_empty', 'paused'].includes(scenario)) {

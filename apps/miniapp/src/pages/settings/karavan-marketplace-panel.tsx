@@ -518,8 +518,12 @@ export default function KaravanMarketplacePanel({
               <button
                 type="button"
                 onClick={() => {
-                  if (!openKaravanStorefront(module.buyerUrl!))
+                  if (!openKaravanStorefront(module.buyerUrl!)) {
                     setNotice('Откройте магазин из MAX.');
+                  } else {
+                    returningFromShop.current = true;
+                    setNotice(null);
+                  }
                 }}
               >
                 Открыть магазин
