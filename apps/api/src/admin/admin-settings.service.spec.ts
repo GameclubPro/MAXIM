@@ -2915,6 +2915,11 @@ describe('AdminSettingsService chat rules', () => {
       'chat-1',
       'Пишите по теме.',
       {
+        marketplacePublication: {
+          entityId: 'chat-1',
+          purpose: 'MODERATION_NOTICE',
+          module: 'RULES',
+        },
         textFormat: 'markdown',
         buttons: [[{ type: 'link', text: 'Подробнее', url: 'https://example.com/rules' }]],
       },

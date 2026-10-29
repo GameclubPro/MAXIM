@@ -1,3 +1,8 @@
+import {
+  MARKETPLACE_BUTTON_DEFAULT_CAPTION,
+  marketplaceButtonCaptionSchema,
+  type MarketplaceButtonModule,
+} from '@maxim/contracts/marketplace-integration';
 import type { MaxMessageButton, MaxSendMessageOptions } from './max-client.service';
 import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout';
 
@@ -5,6 +10,7 @@ import { normalizeMaxInlineKeyboardButtons } from './max-inline-keyboard-layout'
 export type MarketplacePublicationIntent = {
   purpose: 'PUBLICATION' | 'VK_IMPORT' | 'APPROVED_SUGGESTION' | 'GREETING' | 'MODERATION_NOTICE';
   entityId: string;
+  module?: MarketplaceButtonModule;
 };
 
 export function withMarketplacePost(
@@ -19,8 +25,41 @@ export function withMarketplaceModerationMessage(
   options: MaxSendMessageOptions | null | undefined,
   entityId: string,
   purpose: 'GREETING' | 'MODERATION_NOTICE',
+  module?: MarketplaceButtonModule,
 ): MaxSendMessageOptions {
-  return { ...options, marketplacePublication: { purpose, entityId } };
+  const selectedModule = module ?? options?.marketplacePublication?.module;
+  return {
+    ...options,
+    marketplacePublication: {
+      purpose,
+      entityId,
+      ...(selectedModule ? { module: selectedModule } : {}),
+    },
+  };
+}
+
+export function marketplaceModuleForRule(rule: string): MarketplaceButtonModule {
+  if (rule === 'LINK_BLOCKED') return 'LINKS';
+  if (rule === 'PROFANITY') return 'PROFANITY';
+  if (rule === 'COMMERCIAL_AD') return 'COMMERCIAL';
+  if (rule === 'PHONE_NUMBER_BLOCKED') return 'PHONE_NUMBERS';
+  if (rule === 'MESSAGE_BLOCKED_WORD' || rule === 'MESSAGE_BLOCKED_DOMAIN') return 'STOP_WORDS';
+  if (
+    [
+      'MESSAGE_RATE_LIMIT',
+      'MESSAGE_TOO_LONG',
+      'MESSAGE_COUNT_LIMIT',
+      'PHOTO_BLOCKED',
+      'VIDEO_BLOCKED',
+      'FILE_BLOCKED',
+      'VOICE_BLOCKED',
+      'FORWARDED_MESSAGE_BLOCKED',
+      'PHOTO_RATE_LIMIT',
+      'STICKER_RATE_LIMIT',
+    ].includes(rule)
+  )
+    return 'MESSAGE_LIMITS';
+  return 'OTHER_MODERATION';
 }
 
 export function isMarketplacePublicationTarget(
@@ -60,6 +99,7 @@ function canonicalLink(raw: string): string | null {
 export function appendMarketplacePublicationButton(
   options: MaxSendMessageOptions,
   url: string,
+  caption = MARKETPLACE_BUTTON_DEFAULT_CAPTION,
 ): {
   options: MaxSendMessageOptions;
   outcome: 'ADDED' | 'DUPLICATE' | 'KEYBOARD_FULL' | 'INVALID_LINK';
@@ -79,7 +119,7 @@ export function appendMarketplacePublicationButton(
     return { options, outcome: 'DUPLICATE' };
   const rows: MaxMessageButton[][] = [
     ...original.map((row) => row.map((button) => ({ ...button }))),
-    [{ type: 'link', text: 'Профиль в Биржике', url: identity }],
+    [{ type: 'link', text: marketplaceButtonCaptionSchema.parse(caption), url: identity }],
   ];
   let trimmed = false;
   normalizeMaxInlineKeyboardButtons(rows, {
@@ -96,6 +136,7 @@ export function appendMarketplacePublicationButton(
 export function appendMarketplaceEditableAttachments(
   attachments: readonly Record<string, unknown>[],
   url: string,
+  caption = MARKETPLACE_BUTTON_DEFAULT_CAPTION,
 ): {
   attachments: readonly Record<string, unknown>[];
   outcome: 'ADDED' | 'DUPLICATE' | 'KEYBOARD_FULL' | 'INVALID_LINK';
@@ -129,7 +170,7 @@ export function appendMarketplaceEditableAttachments(
     return { attachments, outcome: 'DUPLICATE' };
   const buttons: unknown[] = [
     ...existing,
-    [{ type: 'link', text: 'Профиль в Биржике', url: identity }],
+    [{ type: 'link', text: marketplaceButtonCaptionSchema.parse(caption), url: identity }],
   ];
   let trimmed = false;
   normalizeMaxInlineKeyboardButtons(buttons, {

@@ -30,6 +30,12 @@ export default function MarketplaceEntryWorkspace({
   onScreenChange: (screen: MarketplaceScreen, opener?: HTMLElement) => void;
 }) {
   const { api, entityId, entityType, profile } = props;
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [policyDirty, setPolicyDirty] = useState(false);
+  useEffect(
+    () => onDirtyChange(profileDirty || policyDirty),
+    [profileDirty, policyDirty, onDirtyChange],
+  );
   const [profileBusy, setProfileBusy] = useState(false);
   const [policyBusy, setPolicyBusy] = useState(false);
   const [linkError, setLinkError] = useState(false);
@@ -184,7 +190,7 @@ export default function MarketplaceEntryWorkspace({
               screen={screen === 'profile' ? 'profile' : 'overview'}
               onOpenProfile={(opener) => onScreenChange('profile', opener)}
               onBusyChange={setProfileBusy}
-              onDirtyChange={onDirtyChange}
+              onDirtyChange={setProfileDirty}
             />
           </div>
         )}
@@ -264,6 +270,7 @@ export default function MarketplaceEntryWorkspace({
             onRecheckProfile={entryUnavailableReason ? recheckEntry : undefined}
             recheckingProfile={query.isFetching}
             onBusyChange={setPolicyBusy}
+            onDirtyChange={setPolicyDirty}
           />
         </div>
       )}

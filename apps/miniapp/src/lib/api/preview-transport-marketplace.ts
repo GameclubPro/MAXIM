@@ -1,6 +1,8 @@
 import {
   marketplaceProfileMutationSchema,
   marketplaceButtonPolicyMutationSchema,
+  marketplaceButtonModules,
+  MARKETPLACE_BUTTON_DEFAULT_CAPTION,
   type MarketplaceButtonPolicyState,
   type MarketplaceProfileState,
 } from '@maxim/contracts/marketplace-integration';
@@ -9,6 +11,7 @@ import type { PreviewState } from './preview-transport-state';
 
 const profiles = new WeakMap<PreviewState, Map<string, MarketplaceProfileState>>();
 const requests = new WeakMap<PreviewState, Map<string, MarketplaceProfileState>>();
+const captions = new WeakMap<PreviewState, Map<string, { caption: string; revision: number }>>();
 const policies = new WeakMap<PreviewState, Map<string, MarketplaceButtonPolicyState>>();
 const policyRequests = new WeakMap<
   PreviewState,
@@ -196,20 +199,39 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
         kind,
         profile,
         revision: 0,
+        caption: MARKETPLACE_BUTTON_DEFAULT_CAPTION,
+        captionRevision: 0,
         contexts: contexts.map((context) => ({
           context,
           enabled: false,
           effective: false,
           status: 'OFF',
           enabledAt: null,
+          partial: false,
+          modules: marketplaceButtonModules[context].map((module) => ({
+            module,
+            enabled: false,
+            effective: false,
+            needsConfirmation: false,
+          })),
         })),
         buttonDiagnostic: null,
       };
       byEntity.set(key, policy);
     }
     const visible = present().capabilities?.publicState === 'PUBLIC';
+    const captionKey = `${kind}:${current.entityId}`;
+    const commonCaptions =
+      captions.get(state) ?? new Map<string, { caption: string; revision: number }>();
+    captions.set(state, commonCaptions);
     const policyView = () => {
+      const common = commonCaptions.get(captionKey);
+      policy.caption = common?.caption ?? MARKETPLACE_BUTTON_DEFAULT_CAPTION;
+      policy.captionRevision = common?.revision ?? 0;
       for (const context of policy.contexts) {
+        for (const module of context.modules) module.effective = module.enabled && visible;
+        context.enabled = context.modules.some((module) => module.enabled);
+        context.partial = context.enabled && context.modules.some((module) => !module.enabled);
         context.effective = context.enabled && visible;
         context.status = !context.enabled ? 'OFF' : visible ? 'READY' : 'PROFILE_UNAVAILABLE';
       }
@@ -229,14 +251,24 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
       if (previous.fingerprint !== fingerprint) throw new Error('Запрос уже использован');
       return structuredClone(previous.state);
     }
-    if (input.expectedRevision !== policy.revision)
-      throw new Error('Настройки изменились. Обновите данные.');
-    const context = policy.contexts.find((item) => item.context === input.context);
-    if (!context) throw new Error('Это место показа недоступно');
-    if (input.enabled && !visible) throw new Error('Сначала опубликуйте профиль');
-    context.enabled = input.enabled;
-    context.enabledAt = input.enabled ? state.clock.now().toISOString() : null;
-    policy.revision++;
+    if ('caption' in input) {
+      if (input.expectedCaptionRevision !== (commonCaptions.get(captionKey)?.revision ?? 0))
+        throw new Error('Текст изменился. Обновите данные.');
+      commonCaptions.set(captionKey, {
+        caption: input.caption,
+        revision: input.expectedCaptionRevision + 1,
+      });
+    } else {
+      if (input.expectedRevision !== policy.revision)
+        throw new Error('Настройки изменились. Обновите данные.');
+      const context = policy.contexts.find((item) => item.context === input.context);
+      if (!context) throw new Error('Это место показа недоступно');
+      if (input.enabled && !visible) throw new Error('Сначала опубликуйте профиль');
+      for (const module of context.modules)
+        if (!input.module || module.module === input.module) module.enabled = input.enabled;
+      context.enabledAt = input.enabled ? state.clock.now().toISOString() : null;
+      policy.revision++;
+    }
     const result = policyView();
     saved.set(requestKey, { fingerprint, state: result });
     return result;
