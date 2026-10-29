@@ -194,7 +194,10 @@ test('age deferral never replaces a rejected retry or pin deadline across 24 to 
   assert.deepEqual(await store.nextCandidates('-1'), []);
 });
 
-test('future ingestion during a live page preserves its generation and only whole covered minutes clear', async () => {
+test('future ingestion during a live page preserves its generation and only whole covered minutes clear', async (t) => {
+  // FLAG: Keep the partial minute stable across database reads and visit finalization.
+  const now = Math.floor(Date.now() / 60_000) * 60_000 + 30_000;
+  t.mock.method(Date, 'now', () => now);
   await enable();
   const reserved = await wake();
   const cutoff = Date.now() - 24 * HOUR;
