@@ -1,8 +1,32 @@
-import { describeWebhookExecutionFailure } from './webhook-execution-diagnostic';
+import {
+  describeWebhookExecutionFailure,
+  logWebhookExecutionFailure,
+  webhookDiagnosticReference,
+} from './webhook-execution-diagnostic';
 import { recordDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
 import { recordModerationGuardFailure } from './moderation-guard-failure-diagnostic';
 
 describe('webhook execution diagnostics', () => {
+  it('correlates failure and settlement without exporting identifiers or source errors', () => {
+    const warn = jest.fn();
+    const id = 'private-receipt-identity';
+    const error = Object.assign(new Error('private source text and secret'), {
+      code: 'ECONNRESET',
+    });
+    logWebhookExecutionFailure({ warn }, 'handler', error, 'rule-engine', id);
+    const fields = warn.mock.calls[0][0];
+    expect(fields).toMatchObject({
+      stage: 'handler',
+      errorCode: 'ECONNRESET',
+      eventRef: webhookDiagnosticReference(id),
+    });
+    expect(fields.eventRef).toMatch(/^[a-f0-9]{24}$/u);
+    expect(fields.eventRef).not.toBe(webhookDiagnosticReference('different-receipt'));
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private|secret/u);
+    for (const value of [null, undefined, {}, '', 'x'.repeat(129)])
+      expect(webhookDiagnosticReference(value)).toBeNull();
+  });
+
   it('retains the first guard boundary and only its closed proof classification', () => {
     const error = Object.freeze({ response: { status: 404 }, private: 'secret' });
     recordModerationGuardFailure(error, 'duplicate_sanction_final');

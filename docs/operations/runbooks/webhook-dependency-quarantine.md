@@ -27,6 +27,38 @@ Parking stops admitting further transactions after its 500 ms dispatch budget, w
 cancelling an in-flight transaction. Mirror discovery rotates at most 64 exact heads and has
 a 250 ms pool admission / 500 ms SQL budget. Failed discovery retains the existing fences.
 
+## Rejected handler isolation
+
+The operator decision of 29 October is to prevent one failed operation from indefinitely
+holding new independent messages, while retaining its replay prohibition and original cause.
+An awaited handler that actually rejected has ended. Its current process can atomically
+persist terminal `FAILED`, retain the first error and clear its exact business lease, using
+the original committed start snapshot and claim-before-receipt locks. It does not schedule
+another whole-handler attempt, claim successful moderation or settle uncertain MAX effects.
+Other messages follow ordinary ordering and source checks; semantic copies remain isolated.
+
+Failure persistence retries only the same database finalization once for a recognized
+storage failure, within the original lease budget. A lost COMMIT acknowledgement requires
+the exact retained failure/owner/source readback. Receipt conflicts roll back lease release;
+completed, held, cancelled and quarantined work retains its state. A stale queue delivery
+cannot replace an ordinary terminal error with the pending canonical-start marker.
+
+The existing certified `COMMAND_NOTICE_PENDING` handoff is a separate continuation: a
+process-local proof is published only after its original guarded transaction commits, and
+failure settlement compares the exact saved journal. Only that already authorized unattempted
+notice keeps its scheduling. Neither a stored kind string nor an attempted/ambiguous SEND
+grants this exception; the notice worker still checks its current authority and deadline.
+
+This rule cannot retrospectively prove that a crashed historical handler ended. Live detached
+timeouts, missing completion evidence and existing pending barriers keep their original
+recovery boundaries. They require a separately proved continuation or exact authorized recovery.
+
+Structured execution and failure-settlement logs share `eventRef`, a bounded receipt hash.
+The first log retains the stage, allowlisted error/HTTP code and known source location;
+settlement reports its outcome, continuation and the remaining unknown effects. Original
+receipt errors are preserved. Raw error text, source messages, credentials and chat/user IDs
+are not diagnostic labels. These are service logs, never bot replies in user groups.
+
 ## State and recovery
 
 | Journal state | Receipt scheduling                 | Meaning                                                                                                               |
