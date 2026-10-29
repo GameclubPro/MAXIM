@@ -90,3 +90,51 @@ destination is configured by this helper.
 The receipt check uses bounded metadata reads and never contacts PostgreSQL, Redis,
 MAX or S3. A valid historic receipt does not prove current object availability.
 Do not enable timers merely because a dump file exists or an upload returned HTTP 200.
+
+## Independent Lastik profile
+
+Use `MAXIM_BACKUP_PROFILE=eraser` with the same producer, replication, restore,
+health and timer installer. The default remains `maxim`; other profile names fail
+closed. Select the profile per invocation, not in the shared environment file.
+The profile fixes the service/user/database to `eraser-postgres`/`eraser`/`eraser`,
+appends `/eraser` to the configured backup root, restore root and remote prefix,
+and uses only `eraser_*.dump` archives and `maxim-eraser-postgres-*` systemd units.
+Do not append the suffix to the base configuration a second time. The readiness
+watchdog checks both the shared API and Lastik's live worker health. Both profiles
+keep the same protected deploy lock and capacity floors.
+
+Lastik units require the tracked `postgres-backup-profile.sh` capability file in
+`ExecStartPre`. A checkout rollback predating profile support must fail each service,
+including freshness health, before an old script can silently select the main database.
+Keep this file with all profile-aware scripts; do not replace this failure with a
+systemd condition that reports a successful skip. An image-only rollback leaves the
+compatible host tooling in place.
+
+The eraser restore verifies exact migration names and digests plus critical tables
+and indexes, in a network-isolated disposable PostgreSQL container. Its receipt
+contains `profile=eraser`, the schema digest and
+`verification=isolated_restore_and_eraser_schema`. Main-database receipts never
+satisfy Lastik's health gate. A schema restore does not prove application replay
+safety, current remote-object availability or recovery from the independent copy.
+
+Install the eraser units with both timer switches left off. After a guarded manual
+backup, full encrypted remote readback and isolated restore have succeeded, run
+`maxim-eraser-postgres-backup-health.service`. Only then enable this profile's timers
+with the existing installer switches. Lastik defaults to daily 01:20 backup and
+Sunday 02:30 restore (server timezone, the same jitter as the main profile).
+Inspect actual sibling schedules and durations before enabling them. A skipped
+locked run is not a fresh backup. The main profile's timer state is independent.
+
+The local rehearsal is reproducible without MAX access:
+
+```bash
+node scripts/agent/with-test-stores.mjs -- \
+  node --import tsx --test apps/eraser/test/recovery.stores.ts
+```
+
+It dumps and restores an isolated synthetic database, preserves unknown dispatch
+identities, protections, future scheduling and durable Retry-After, then reconstructs
+work in a fresh Redis namespace using a fake MAX transport. It cannot authorize
+deletions after restoring an old production snapshot: stop execution, retain the
+newer effect journals and reconcile the snapshot gap before admitting any effect.
+Never bring a recovery worker online merely because schema checks passed.

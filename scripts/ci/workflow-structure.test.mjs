@@ -174,6 +174,7 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
     compatibility.map((step) => step.name),
     [
       'Outcome cohort online migrations with native PostgreSQL',
+      'Selected Publisher target cancellation with native PostgreSQL',
       'Quarantine proof bounds with native PostgreSQL',
       'Shared statistics with native PostgreSQL',
       'Check traffic policy revision and activation guards',
@@ -181,6 +182,15 @@ test('isolates every native shard and keeps all compatibility checks blocking', 
       'Retention admission and receipt recovery with PostgreSQL',
       'Conservative moderation rollup compatibility with PostgreSQL',
     ],
+  );
+  const cancellation = compatibility.find(
+    (step) => step.name === 'Selected Publisher target cancellation with native PostgreSQL',
+  );
+  assert.equal(cancellation.env.MAXIM_TEST_POSTGRES_URL, '${{ env.DATABASE_URL }}');
+  assert.equal(cancellation.env.TZ, 'UTC');
+  assert.equal(
+    cancellation.run,
+    'node --test --test-concurrency=1 infra/scripts/publisher-cancel-selected-targets.native.test.mjs',
   );
   for (const step of postgres.steps) {
     assert.equal(step['continue-on-error'], undefined);

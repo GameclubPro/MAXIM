@@ -203,7 +203,43 @@ try {
         assert.equal(await preview.getAttribute('aria-expanded'), 'false');
         await preview.click();
         assert.equal(await preview.getAttribute('aria-expanded'), 'true');
-        await workspace.getByText('Профиль в Биржике', { exact: true }).waitFor();
+        await workspace.getByText('Заказать рекламу', { exact: true }).waitFor();
+        const caption = workspace.getByRole('textbox', {
+          name: 'Текст рекламной кнопки',
+          exact: true,
+        });
+        assert.equal(await caption.inputValue(), 'Заказать рекламу');
+        await caption.fill('Реклама на площадке');
+        await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+        await workspace.getByText('Реклама на площадке', { exact: true }).waitFor();
+        await page.waitForFunction(
+          () =>
+            ![...document.querySelectorAll('button')].some(
+              (node) => node.textContent.trim() === 'Сохранить текст',
+            ),
+        );
+        if (kind === 'chat' && profile === 'moderation') {
+          await workspace.getByRole('button', { name: 'По модулям', exact: true }).click();
+          const duplicates = workspace.getByRole('checkbox', { name: 'Антидубли', exact: true });
+          assert.equal(await duplicates.isChecked(), true);
+          await duplicates.click();
+          await workspace.getByText('Включено 11 из 12', { exact: true }).waitFor();
+          assert.equal(await toggle.getAttribute('aria-checked'), 'mixed');
+          await workspace.getByRole('button', { name: 'Выключить все', exact: true }).click();
+          await page.waitForFunction(
+            () => !document.querySelector('.marketplace-button-policy__modules input:checked'),
+          );
+          await duplicates.click();
+          await workspace.getByText('Включено 1 из 12', { exact: true }).waitFor();
+          await toggle.click();
+          await page.waitForFunction(
+            () =>
+              document.querySelectorAll('.marketplace-button-policy__modules input:checked')
+                .length === 12,
+          );
+          await workspace.getByRole('button', { name: 'По модулям', exact: true }).click();
+        }
+
         await toggle.scrollIntoViewIfNeeded();
         assert.equal(
           await panel.evaluate((element) => {

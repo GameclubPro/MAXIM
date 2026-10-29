@@ -89,12 +89,12 @@ and OCR/photo acceptance demonstrates latency improvement without lost deadlines
 in allowed actions. Redis pacing correctness alone does not satisfy that capacity gate.
 
 The effective comparison window is at most 48 hours, including legacy settings above that
-ceiling. Replay uses the same resolver and v3 absolute-expiry history script. Snapshot policy
+ceiling. Replay uses the same resolver and v4 absolute-expiry history script. Snapshot policy
 normalization clamps only safe-integer legacy windows before parsing and
 does not mutate the source corpus. Replay therefore evaluates the current 48-hour policy;
 it does not establish whether a historical seven-day action was permissible. Historical binding
 parsing can still recognize seven-day metadata, but fresh action guards revoke all pre-v3
-proofs, including exact-only and IMAGE. v3 starts with a fresh baseline; never import v2 reset,
+proofs, including exact-only and IMAGE. v4 starts with a fresh baseline and preserves v3 negative reset/removal evidence; never import v2 reset,
 removal or group records into it or delete BullMQ/authority state to accelerate memory recovery.
 Group/count and message/qualification use their own window plus eleven-minute proof grace;
 lifecycle/reset/removal are bounded by 48h11m. Grace is retention only, never action authority.

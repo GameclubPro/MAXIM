@@ -779,6 +779,44 @@ describe('message duplicate final delete guard', () => {
     expect(s.history.qualify).not.toHaveBeenCalled();
   });
 
+  it('rejects revoked history before unavailable MAX reads during initial qualification', async () => {
+    const s = setup();
+    s.history.stillMatches.mockResolvedValue(false);
+    s.max.getChatMemberAccess.mockRejectedValue(new Error('MAX unavailable'));
+    await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
+      code: 'message_duplicate_history_changed',
+    });
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    expect(s.originalLookup).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(s.history.qualify).not.toHaveBeenCalled();
+  });
+
+  it('preserves unavailable history as retryable without consulting MAX', async () => {
+    const s = setup();
+    const failure = new Error('Redis unavailable');
+    s.history.stillMatches.mockRejectedValue(failure);
+    await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toBe(failure);
+    expect(s.max.getChatMemberAccess).not.toHaveBeenCalled();
+    expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    expect(s.history.qualify).not.toHaveBeenCalled();
+  });
+
+  it('rechecks history revoked during external qualification reads before reserving a stage', async () => {
+    const s = setup();
+    s.max.getExactMessageRow.mockImplementation(async () => {
+      s.history.stillMatches.mockResolvedValue(false);
+      return (duplicateUpdate('m2', s.binding.eventTimestampMs).raw as { message: unknown })
+        .message;
+    });
+    await expect(s.service.qualify({ ...s.params, binding: s.binding })).rejects.toMatchObject({
+      code: 'message_duplicate_history_changed',
+    });
+    expect(s.max.getExactMessageRow).toHaveBeenCalled();
+    expect(s.history.qualify).not.toHaveBeenCalled();
+  });
+
   it('does not reserve a stage after revocation or policy changes during qualification', async () => {
     for (const change of ['authorization', 'settings', 'history']) {
       const s = setup();

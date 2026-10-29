@@ -11,6 +11,8 @@ import {
   PublicationScheduleMode,
   PublicationScheduleStatus,
   type Prisma,
+  type Publication,
+  type PublicationTarget,
 } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { AdminManagedBroadcastPublicationVerification } from './admin-managed-broadcast-publication-verification';
@@ -4119,6 +4121,9 @@ describe('AdminManagedBroadcastRuntime publication execution guard', () => {
                 lifecycle: 'ACTIVE',
                 dispatchProfile: 'PUBLIK_V1',
                 requiredBotId: 'publisher-bot',
+                targets: [{ canceledAt: null }],
+              } satisfies Pick<Publication, 'lifecycle' | 'dispatchProfile' | 'requiredBotId'> & {
+                targets: Pick<PublicationTarget, 'canceledAt'>[];
               },
               schedule: { status: 'ACTIVE', revision: 1 },
             }),

@@ -1,6 +1,7 @@
 import { DUPLICATE_WINDOW_MAX_SEC } from '@maxim/contracts/settings';
 
-export const MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v3';
+export const MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION = 'v4';
+export const MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION = 'v3';
 // FLAG: Ten-minute action authority and one-minute accepted future skew fit inside the
 // retention grace. Stored proof outlives its window without extending action authority.
 export const MESSAGE_DUPLICATE_HISTORY_GRACE_MS = 11 * 60_000;
@@ -13,7 +14,9 @@ export const MESSAGE_DUPLICATE_HISTORY_RETENTION_MS =
 export const MESSAGE_DUPLICATE_WINDOW_SCRIPT = `
 local p = cjson.decode(ARGV[1])
 local prefix = KEYS[1] .. '${MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION}:'
-local resetPrefix = prefix
+-- FLAG: New positive history discards incorrect envelope publication clocks. Existing
+-- removal/reset evidence remains authoritative, including future-dated old incarnations.
+local resetPrefix = KEYS[1] .. '${MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION}:'
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 if now > p.deadline then return cjson.encode({ kind = 'deadline_exceeded' }) end
@@ -21,7 +24,8 @@ local retentionMs = ${MESSAGE_DUPLICATE_HISTORY_RETENTION_MS}
 local graceMs = ${MESSAGE_DUPLICATE_HISTORY_GRACE_MS}
 if p.windowMs then p.windowMs = math.min(p.windowMs, ${DUPLICATE_WINDOW_MAX_SEC * 1000}) end
 local function read(key)
-  local raw = redis.call('GET', prefix .. key)
+  local namespace = string.sub(key, 1, 8) == 'removed:' and resetPrefix or prefix
+  local raw = redis.call('GET', namespace .. key)
   if raw then return cjson.decode(raw) end
   return nil
 end
@@ -41,7 +45,8 @@ local function write(key, value, expiresAt, preserveExpiry)
     local previousExpiry = redis.call('PEXPIRETIME', prefix .. key)
     if previousExpiry > now then expiry = math.min(expiry, previousExpiry) end
   end
-  redis.call('SET', prefix .. key, cjson.encode(value), 'PXAT', expiry)
+  local namespace = string.sub(key, 1, 8) == 'removed:' and resetPrefix or prefix
+  redis.call('SET', namespace .. key, cjson.encode(value), 'PXAT', expiry)
 end
 local function epoch(author)
   local raw = redis.call('GET', resetPrefix .. 'reset:' .. author)
@@ -59,6 +64,22 @@ if p.op == 'remove' then
 end
 local function lifecycle(member, mode, at, source, publishedAt, previous)
   local key = 'life:' .. member .. ':' .. mode
+  if not previous then
+    local raw = redis.call('GET', resetPrefix .. key)
+    local prior = raw and cjson.decode(raw) or nil
+    -- FLAG: A history upgrade must retain stale/conflicting and unknown-time refusals.
+    -- Only a later observed source change supplies a new introduction time; old positive
+    -- publication clocks, revisions and counters never become current evidence.
+    if prior then
+      if at < prior.at or (at == prior.at and (prior.conflict or prior.source ~= source)) then return nil end
+      if prior.source ~= source then
+        publishedAt = at
+      elseif prior.introducedKnown == false then
+        previous = { at = prior.at, source = prior.source, conflict = prior.conflict,
+          revision = p.token, introducedAt = 0, introducedKnown = false }
+      end
+    end
+  end
   if previous and at < previous.at then return nil end
   if previous and at == previous.at then
     if previous.source ~= source then
@@ -96,6 +117,10 @@ if p.op == 'invalidate' then
   for mode, source in pairs(p.sources) do
     local key = 'life:' .. p.member .. ':' .. mode
     local previous = read(key)
+    if not previous then
+      local raw = redis.call('GET', resetPrefix .. key)
+      if raw then previous = cjson.decode(raw) end
+    end
     if not previous or previous.source ~= source then
       write(key, { at = previous and previous.at or 0, source = source, conflict = true,
         revision = p.token, introducedAt = 0, introducedKnown = false,
@@ -163,7 +188,14 @@ if read('removed:' .. p.member) or p.at <= epoch(p.author) then return cjson.enc
 local previous = read(stateKey(p.member))
 local currentEpoch = epoch(p.author)
 local previousLife = read('life:' .. p.member .. ':' .. p.mode)
-local materialized = previousLife and previousLife.materialized or nil
+local priorLife = nil
+if (not previousLife or not previousLife.materializedRevision) and currentEpoch ~= 0 then
+  local raw = redis.call('GET', resetPrefix .. 'life:' .. p.member .. ':' .. p.mode)
+  if raw then priorLife = cjson.decode(raw) end
+end
+-- FLAG: The old incarnation is negative reset evidence only; never reuse its publication
+-- time, equality, matches or revision as positive v4 history.
+local materialized = previousLife and previousLife.materialized or (priorLife and priorLife.materialized or nil)
 if not materialized and previous then
   materialized = { epoch = previous.epoch, at = previous.at, source = previous.source, identity = previous.identity }
 end
@@ -175,7 +207,7 @@ if resetIncarnation and (p.at <= materialized.at or p.identity == '' or not mate
   or materialized.identity == '' or p.identity == materialized.identity) then
   return cjson.encode({ kind = 'stale' })
 end
-if not materialized and previousLife and previousLife.materializedRevision and currentEpoch ~= 0 then
+if not materialized and ((previousLife and previousLife.materializedRevision) or (priorLife and priorLife.materializedRevision)) and currentEpoch ~= 0 then
   return cjson.encode({ kind = 'stale' })
 end
 -- FLAG: A synthetic pending replay cannot replace proof for this exact event. Newer
@@ -192,7 +224,7 @@ if resetIncarnation then
   -- FLAG: Only a proved later content change may introduce another incarnation after
   -- reset. Unknown-time replacements retain their fail-closed introduction boundary.
   if not life.introducedKnown then return cjson.encode({ kind = 'stale' }) end
-  if life.source == materialized.source then life.introducedAt = p.at end
+  if life.source == materialized.source or priorLife then life.introducedAt = p.at end
   if life.introducedAt <= currentEpoch then return cjson.encode({ kind = 'stale' }) end
   life.revision = p.token
   life.predecessorRevision = nil

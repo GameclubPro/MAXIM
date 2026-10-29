@@ -9,6 +9,9 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   marketplaceBindingInputSchema,
+  marketplaceButtonModules,
+  MARKETPLACE_BUTTON_DEFAULT_CAPTION,
+  type MarketplaceButtonModule,
   marketplaceButtonPolicyMutationSchema,
   marketplaceButtonPolicyStateSchema,
   marketplaceEntryResponseSchema,
@@ -37,7 +40,7 @@ export type MarketplaceButtonPolicyRow = {
 };
 export type MarketplaceButtonContextRow = {
   policy_id: string;
-  context: MarketplaceButtonContext;
+  context: MarketplaceButtonContext | MarketplaceButtonModule;
   enabled: boolean;
   confirmed_by: string | null;
   confirmed_at: Date | null;
@@ -138,7 +141,7 @@ export class MarketplaceButtonPolicyService {
     raw: unknown,
   ): Promise<MarketplaceButtonPolicyState> {
     const command = marketplaceButtonPolicyMutationSchema.parse(raw);
-    if (!marketplaceButtonContexts(input).includes(command.context)) {
+    if ('context' in command && !marketplaceButtonContexts(input).includes(command.context)) {
       const legacy = await this.prisma.$queryRaw<
         Array<{ id: string }>
       >`SELECT p.id FROM marketplace_button_policies p JOIN marketplace_button_contexts c ON c.policy_id=p.id WHERE p.entity_id=${input.entityId} AND p.kind=${input.kind} AND p.profile=${input.profile} AND c.context='PUBLICATIONS'`;
@@ -156,10 +159,11 @@ export class MarketplaceButtonPolicyService {
     if (replay[0]) return this.replay(replay[0], input.actorUserId, hash);
     // FLAG: Disabling does not depend on the peer. Enabling verifies the public
     // card and the confirmer's exact platform access without changing ownership.
-    const binding = command.enabled ? await this.access.attest(input) : authorization;
-    const entry = command.enabled ? await this.readEntry(input) : null;
+    const enabling = 'enabled' in command && command.enabled;
+    const binding = enabling ? await this.access.attest(input) : authorization;
+    const entry = enabling ? await this.readEntry(input) : null;
     if (
-      command.enabled &&
+      enabling &&
       (!entry?.listing?.publicUrl ||
         entry.publicState !== 'PUBLIC' ||
         !entry.validUntil ||
@@ -183,39 +187,78 @@ export class MarketplaceButtonPolicyService {
         Array<{ actor_user_id: string; payload_hash: string; result: unknown }>
       >`SELECT actor_user_id,payload_hash,result FROM marketplace_button_requests WHERE request_id=${command.requestId}::uuid`;
       if (previous[0]) return this.replay(previous[0], input.actorUserId, hash);
-      if (policy.revision !== command.expectedRevision)
+      if ('expectedRevision' in command && policy.revision !== command.expectedRevision)
         throw new ConflictException('Настройки изменились. Обновите экран');
       const current = await tx.$queryRaw<
         Array<{ id: string }>
       >`SELECT id FROM marketplace_bindings WHERE id=${binding.id}::uuid AND ${marketplaceLocalGrantSql('marketplace_bindings', false)}`;
       if (!current.length) throw new ConflictException('Права изменились. Обновите экран');
-      const until =
-        command.enabled && entry?.validUntil && binding.valid_until && binding.checked_at
-          ? new Date(
-              Math.min(
-                Date.parse(entry.validUntil),
-                binding.valid_until.getTime(),
-                binding.checked_at.getTime() + 300_000,
-                started.getTime() + 300_000,
-              ),
-            )
-          : null;
-      if (command.enabled && (!until || until.getTime() <= Date.now()))
-        throw new ConflictException('Проверка профиля истекла. Повторите включение');
-      await tx.$executeRaw`INSERT INTO marketplace_button_contexts(policy_id,profile,context,enabled,confirmed_by,confirmed_at,listing_id,ownership_key,binding_id,verified_until,public_url,refresh_at)
-        VALUES(${policy.id}::uuid,${input.profile},${command.context},${command.enabled},${input.actorUserId},${started},${entry?.listing?.id ?? null}::uuid,${entry?.listing?.ownershipKey ?? null},${binding.id}::uuid,${until},${entry?.listing?.publicUrl ?? null},now()+interval '2 minutes')
-        ON CONFLICT(policy_id,context) DO UPDATE SET enabled=EXCLUDED.enabled,confirmed_by=EXCLUDED.confirmed_by,confirmed_at=EXCLUDED.confirmed_at,
-          listing_id=EXCLUDED.listing_id,ownership_key=EXCLUDED.ownership_key,binding_id=EXCLUDED.binding_id,verified_until=EXCLUDED.verified_until,public_url=EXCLUDED.public_url,
-          refresh_at=EXCLUDED.refresh_at,lease_id=NULL,lease_until=NULL,suspended_reason=NULL,diagnostic=NULL`;
-      if (command.context === 'PUBLICATIONS') {
-        // Old readers must not restore a superseded actor-scoped publication opt-in.
-        await tx.$executeRaw`UPDATE marketplace_bindings SET append_enabled=false,append_revision=append_revision+1,revision=revision+1,updated_at=now() WHERE entity_id=${input.entityId} AND kind=${input.kind} AND profile=${input.profile} AND append_enabled=true`;
+      if ('caption' in command) {
+        const captions = await tx.$queryRaw<
+          Array<{ revision: number }>
+        >`SELECT revision FROM marketplace_button_captions WHERE entity_id=${input.entityId} AND kind=${input.kind}`;
+        if ((captions[0]?.revision ?? 0) !== command.expectedCaptionRevision)
+          throw new ConflictException('Текст изменил другой администратор. Обновите экран');
+        await tx.$executeRaw`INSERT INTO marketplace_button_captions(entity_id,kind,caption,revision)
+          VALUES(${input.entityId},${input.kind},${command.caption},1)
+          ON CONFLICT(entity_id,kind) DO UPDATE SET caption=EXCLUDED.caption,revision=marketplace_button_captions.revision+1`;
+      } else {
+        const until =
+          enabling && entry?.validUntil && binding.valid_until && binding.checked_at
+            ? new Date(
+                Math.min(
+                  Date.parse(entry.validUntil),
+                  binding.valid_until.getTime(),
+                  binding.checked_at.getTime() + 300_000,
+                  started.getTime() + 300_000,
+                ),
+              )
+            : null;
+        if (enabling && (!until || until.getTime() <= Date.now()))
+          throw new ConflictException('Проверка профиля истекла. Повторите включение');
+        const modules = marketplaceButtonModules[command.context];
+        const grouped = modules.length > 1;
+        if (grouped) await this.materializeModules(tx, policy.id, command.context);
+        const targets = grouped ? (command.module ? [command.module] : modules) : [command.context];
+        // Retire a legacy aggregate before changing children. Its off trigger is also
+        // the rollback fence for a still-open old administrator screen.
+        if (grouped && !command.module)
+          await tx.$executeRaw`UPDATE marketplace_button_contexts SET enabled=false WHERE policy_id=${policy.id}::uuid AND context=${command.context}`;
+        for (const context of targets) {
+          await tx.$executeRaw`INSERT INTO marketplace_button_contexts(policy_id,profile,context,enabled,confirmed_by,confirmed_at,listing_id,ownership_key,binding_id,verified_until,public_url,refresh_at)
+            VALUES(${policy.id}::uuid,${input.profile},${context},${command.enabled},${input.actorUserId},${started},${entry?.listing?.id ?? null}::uuid,${entry?.listing?.ownershipKey ?? null},${binding.id}::uuid,${until},${entry?.listing?.publicUrl ?? null},now()+interval '2 minutes')
+            ON CONFLICT(policy_id,context) DO UPDATE SET enabled=EXCLUDED.enabled,confirmed_by=EXCLUDED.confirmed_by,confirmed_at=EXCLUDED.confirmed_at,
+              listing_id=EXCLUDED.listing_id,ownership_key=EXCLUDED.ownership_key,binding_id=EXCLUDED.binding_id,verified_until=EXCLUDED.verified_until,public_url=EXCLUDED.public_url,
+              refresh_at=EXCLUDED.refresh_at,lease_id=NULL,lease_until=NULL,suspended_reason=NULL,diagnostic=NULL`;
+        }
+        if (command.context === 'PUBLICATIONS') {
+          await tx.$executeRaw`UPDATE marketplace_bindings SET append_enabled=false,append_revision=append_revision+1,revision=revision+1,updated_at=now() WHERE entity_id=${input.entityId} AND kind=${input.kind} AND profile=${input.profile} AND append_enabled=true`;
+        }
+        await tx.$executeRaw`UPDATE marketplace_button_policies SET revision=revision+1,updated_at=now() WHERE id=${policy.id}::uuid`;
       }
-      await tx.$executeRaw`UPDATE marketplace_button_policies SET revision=revision+1,updated_at=now() WHERE id=${policy.id}::uuid`;
       const result = await this.present(tx, input);
       await tx.$executeRaw`INSERT INTO marketplace_button_requests(request_id,policy_id,actor_user_id,payload_hash,result) VALUES(${command.requestId}::uuid,${policy.id}::uuid,${input.actorUserId},${hash},${JSON.stringify(result)}::jsonb)`;
       return result;
     });
+  }
+  private async materializeModules(db: Sql, policyId: string, context: MarketplaceButtonContext) {
+    const modules = marketplaceButtonModules[context];
+    const existing = await db.$queryRaw<
+      Array<{ context: string }>
+    >`SELECT context FROM marketplace_button_contexts WHERE policy_id=${policyId}::uuid AND context=ANY(${[...modules]}::text[])`;
+    if (existing.length) return;
+    const legacy = await db.$queryRaw<
+      MarketplaceButtonContextRow[]
+    >`SELECT * FROM marketplace_button_contexts WHERE policy_id=${policyId}::uuid AND context=${context}`;
+    const source = legacy[0];
+    if (!source) return;
+    // FLAG: Disable the legacy reader before copying its exact old scope. Newly
+    // supported night/rules messages do not inherit historical moderation consent.
+    await db.$executeRaw`UPDATE marketplace_button_contexts SET enabled=false WHERE policy_id=${policyId}::uuid AND context=${context}`;
+    await db.$executeRaw`INSERT INTO marketplace_button_contexts(policy_id,profile,context,enabled,confirmed_by,confirmed_at,listing_id,ownership_key,binding_id,verified_until,public_url,refresh_at,suspended_reason)
+      SELECT c.policy_id,c.profile,m.module,${source.enabled} AND m.module NOT IN ('NIGHT_MODE','RULES'),c.confirmed_by,c.confirmed_at,c.listing_id,c.ownership_key,c.binding_id,c.verified_until,c.public_url,c.refresh_at,c.suspended_reason
+      FROM marketplace_button_contexts c CROSS JOIN unnest(${[...modules]}::text[]) m(module)
+      WHERE c.policy_id=${policyId}::uuid AND c.context=${context} ON CONFLICT DO NOTHING`;
   }
   private replay(
     previous: { actor_user_id: string; payload_hash: string; result: unknown },
@@ -240,7 +283,12 @@ export class MarketplaceButtonPolicyService {
         AND NOT EXISTS(SELECT 1 FROM chat_membership_activity_events e WHERE e.chat_id=b.entity_id AND e.user_id=c.confirmed_by AND e.event_type='user_removed' AND e.event_at AT TIME ZONE 'UTC'>=c.confirmed_at))) allowed
       FROM marketplace_button_contexts c WHERE c.policy_id=${policy.id}::uuid`
       : [];
+    const captions = await db.$queryRaw<
+      Array<{ caption: string; revision: number }>
+    >`SELECT caption,revision FROM marketplace_button_captions WHERE entity_id=${input.entityId} AND kind=${input.kind}`;
     return marketplaceButtonPolicyStateSchema.parse({
+      caption: captions[0]?.caption ?? MARKETPLACE_BUTTON_DEFAULT_CAPTION,
+      captionRevision: captions[0]?.revision ?? 0,
       entityId: input.entityId,
       kind: input.kind,
       profile: input.profile,
@@ -251,21 +299,57 @@ export class MarketplaceButtonPolicyService {
           ? ['PUBLICATIONS' as const]
           : []),
       ].map((context) => {
-        const row = contexts.find((item) => item.context === context);
+        const definitions = marketplaceButtonModules[context];
+        const legacy = contexts.find((item) => item.context === context);
+        const hasModules = definitions.some((module) =>
+          contexts.some((item) => item.context === module),
+        );
+        const modules = definitions.map((module) => {
+          const row = hasModules
+            ? contexts.find((item) => item.context === module)
+            : ['NIGHT_MODE', 'RULES'].includes(module)
+              ? undefined
+              : legacy;
+          return {
+            module,
+            enabled: row?.enabled ?? false,
+            effective: row?.allowed ?? false,
+            needsConfirmation: !!row?.enabled && !!row.suspended_reason,
+          };
+        });
+        const enabled = modules.some((item) => item.enabled);
+        const effective = modules.some((item) => item.effective);
+        const needsConfirmation = modules.some((item) => item.needsConfirmation);
         return {
           context,
-          enabled: row?.enabled ?? false,
-          effective: row?.allowed ?? false,
-          status: !row?.enabled
+          enabled,
+          effective,
+          modules,
+          partial: enabled && modules.some((item) => !item.enabled),
+          status: !enabled
             ? 'OFF'
-            : row.suspended_reason
+            : needsConfirmation
               ? 'CONFIRM_REQUIRED'
-              : row.allowed
+              : effective
                 ? 'READY'
-                : !row.public_url
-                  ? 'PROFILE_UNAVAILABLE'
-                  : 'CHECKING',
-          enabledAt: row?.confirmed_at?.toISOString() ?? null,
+                : contexts.some(
+                      (row) =>
+                        (row.context === context ||
+                          definitions.includes(row.context as MarketplaceButtonModule)) &&
+                        row.enabled &&
+                        row.public_url,
+                    )
+                  ? 'CHECKING'
+                  : 'PROFILE_UNAVAILABLE',
+          enabledAt:
+            contexts
+              .find(
+                (row) =>
+                  (row.context === context ||
+                    definitions.includes(row.context as MarketplaceButtonModule)) &&
+                  row.enabled,
+              )
+              ?.confirmed_at?.toISOString() ?? null,
         };
       }),
       buttonDiagnostic: contexts.some((row) => row.diagnostic === 'KEYBOARD_FULL')

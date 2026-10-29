@@ -2161,7 +2161,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('keeps retry backoff for transient webhook processing errors', async () => {
+  it('retains a transient handler failure without scheduling a forbidden whole-handler retry', async () => {
     const prisma = {
       webhookEvent: {
         findUnique: jest.fn().mockResolvedValue({
@@ -2192,15 +2192,15 @@ describe('ModerationService', () => {
       data: expect.objectContaining({
         status: 'FAILED',
         errorMessage: 'MAX API interactive rate limit exceeded',
-        nextEnqueueAt: expect.any(Date),
+        nextEnqueueAt: null,
+        queueName: null,
       }),
     });
   });
 
-  it('honors an extended retry delay for an ambiguous shared lock acquisition', async () => {
+  it('retains an ambiguous handler lock failure without restarting the already started handler', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-07-17T12:00:00.000Z'));
-    const nowMs = Date.now();
     const prisma = {
       webhookEvent: {
         findUnique: jest.fn().mockResolvedValue({
@@ -2233,7 +2233,9 @@ describe('ModerationService', () => {
         where: expect.objectContaining({ id: 'event-shared-lock-timeout-1' }),
         data: expect.objectContaining({
           status: 'FAILED',
-          nextEnqueueAt: new Date(nowMs + SHARED_CHAT_EXECUTION_LOCK_AMBIGUOUS_RETRY_AFTER_MS),
+          errorMessage: 'shared lock acquisition was ambiguous',
+          nextEnqueueAt: null,
+          queueName: null,
         }),
       });
     } finally {

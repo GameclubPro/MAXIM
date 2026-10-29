@@ -1,4 +1,7 @@
-import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
+import {
+  withMarketplaceModerationMessage,
+  marketplaceModuleForRule,
+} from '../max/marketplace-publication-button';
 import { EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import type { MaxSendMessageOptions } from '../max/max-client.service';
 import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
@@ -158,6 +161,7 @@ export async function executeModerationRuleFollowUp(
             messageOptions,
             chatId,
             'MODERATION_NOTICE',
+            marketplaceModuleForRule(topViolation.ruleCode),
           ),
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
@@ -592,7 +596,7 @@ export async function executeModerationRuleFollowUp(
       muteDurationHours: actionMuteDurationHours,
       deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
-      botMessageOptions:
+      botMessageOptions: withMarketplaceModerationMessage(
         topViolation.ruleCode === 'LINK_BLOCKED'
           ? (linkMessageOptions ?? undefined)
           : isPhoneNumberHit
@@ -602,6 +606,10 @@ export async function executeModerationRuleFollowUp(
               : isTextFilterHit
                 ? (textFilterMessageOptions ?? undefined)
                 : undefined,
+        chatId,
+        'MODERATION_NOTICE',
+        marketplaceModuleForRule(topViolation.ruleCode),
+      ),
       sanctionNoticeText:
         isPhoneNumberHit && action === SanctionAction.BAN
           ? host.buildMessageLimitsBanExplanation(

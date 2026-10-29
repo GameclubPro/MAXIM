@@ -12,6 +12,7 @@ import {
   publicationAdminReadSql,
   publicationAdminTargetSql,
   publicationAdminDeliverySql,
+  publicationAdminLifecycleSql,
 } from './publication-admin-access';
 
 export type CurrentRevisionFailedPublicationPageParams = {
@@ -182,7 +183,8 @@ export async function selectPublicationSearchPage(
       : params.view === 'history'
         ? [PublicationLifecycle.COMPLETED, PublicationLifecycle.CANCELED]
         : [PublicationLifecycle.ACTIVE, PublicationLifecycle.PAUSED, PublicationLifecycle.ERROR];
-  const lifecycleFilter = Prisma.sql`publication."lifecycle" IN (${Prisma.join(
+  const effectiveLifecycle = publicationAdminLifecycleSql(scope);
+  const lifecycleFilter = Prisma.sql`(${effectiveLifecycle}) IN (${Prisma.join(
     lifecycle.map((value) => Prisma.sql`CAST(${value} AS "PublicationLifecycle")`),
   )})`;
   const currentRevisionFailure =
@@ -233,7 +235,7 @@ export async function selectPublicationSearchPage(
           )
         )`
       : params.status
-        ? Prisma.sql`AND publication."lifecycle" IN (${Prisma.join(
+        ? Prisma.sql`AND (${effectiveLifecycle}) IN (${Prisma.join(
             (params.status === 'active'
               ? [PublicationLifecycle.ACTIVE]
               : params.status === 'paused'

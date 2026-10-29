@@ -2,6 +2,7 @@ import {
   appendMarketplacePublicationButton,
   appendMarketplaceEditableAttachments,
   withMarketplaceModerationMessage,
+  marketplaceModuleForRule,
   isMarketplacePublicationTarget,
 } from './marketplace-publication-button';
 import type { MaxSendMessageOptions } from './max-client.service';
@@ -38,7 +39,7 @@ describe('optional marketplace publication button', () => {
     expect(result.outcome).toBe('ADDED');
     expect(result.options).toEqual({
       ...snapshot,
-      buttons: [...snapshot.buttons!, [{ type: 'link', text: 'Профиль в Биржике', url }]],
+      buttons: [...snapshot.buttons!, [{ type: 'link', text: 'Заказать рекламу', url }]],
     });
     expect(original).toEqual(snapshot);
     expect(appendMarketplacePublicationButton(result.options, `${url}#preview`).outcome).toBe(
@@ -105,7 +106,7 @@ describe('locked channel keyboard decoration', () => {
         type: 'inline_keyboard',
         payload: {
           marker: 'preserve',
-          buttons: [[custom], [{ type: 'link', text: 'Профиль в Биржике', url }]],
+          buttons: [[custom], [{ type: 'link', text: 'Заказать рекламу', url }]],
         },
       },
     ]);
@@ -142,9 +143,48 @@ describe('locked channel keyboard decoration', () => {
     for (const purpose of ['GREETING', 'MODERATION_NOTICE'] as const) {
       expect(withMarketplaceModerationMessage(source, '-10', purpose)).toEqual({
         ...source,
-        marketplacePublication: { entityId: '-10', purpose },
+        marketplacePublication: {
+          entityId: '-10',
+          purpose,
+        },
       });
     }
     expect(source).not.toHaveProperty('marketplacePublication');
+  });
+});
+
+describe('editable advertising caption', () => {
+  it('uses the supplied caption for sends and locked channel decoration', () => {
+    expect(
+      appendMarketplacePublicationButton({}, url, 'Реклама здесь').options.buttons?.at(-1)?.[0]
+        .text,
+    ).toBe('Реклама здесь');
+    expect(appendMarketplaceEditableAttachments([], url, 'Реклама здесь').attachments).toEqual([
+      {
+        type: 'inline_keyboard',
+        payload: { buttons: [[{ type: 'link', text: 'Реклама здесь', url }]] },
+      },
+    ]);
+  });
+  it('retains the originating module on automatic sanction notices', () => {
+    const options = withMarketplaceModerationMessage({}, '-10', 'MODERATION_NOTICE', 'DUPLICATES');
+    expect(
+      withMarketplaceModerationMessage(options, '-10', 'MODERATION_NOTICE').marketplacePublication
+        ?.module,
+    ).toBe('DUPLICATES');
+  });
+});
+
+describe('message-limit advertising scope', () => {
+  it.each([
+    'VOICE_BLOCKED',
+    'PHOTO_BLOCKED',
+    'VIDEO_BLOCKED',
+    'FILE_BLOCKED',
+    'FORWARDED_MESSAGE_BLOCKED',
+    'PHOTO_RATE_LIMIT',
+    'STICKER_RATE_LIMIT',
+  ])('keeps %s under message limits', (rule) => {
+    expect(marketplaceModuleForRule(rule)).toBe('MESSAGE_LIMITS');
   });
 });

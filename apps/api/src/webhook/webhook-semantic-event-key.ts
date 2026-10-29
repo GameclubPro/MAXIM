@@ -278,7 +278,8 @@ export function buildWebhookSemanticEventKey(payload: unknown): string | null {
 
   if (chatId && messageId && updateType === 'message_edited') {
     const eventAtIso = hasTrustedEventTimestamp ? readEventTimestampIso(row) : null;
-    const content = extractDuplicateMessageContent(row.raw ?? row);
+    // FLAG: Parser corrections must not mint a new execution identity for a retained edit.
+    const content = extractDuplicateMessageContent(row.raw ?? row, true, 'webhook_identity_v1');
     return eventAtIso
       ? `message:${updateType}:${chatId}:${messageId}:${eventAtIso}:${content.sourceDigest}`
       : null;

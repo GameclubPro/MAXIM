@@ -1,3 +1,4 @@
+import { withMarketplaceModerationMessage } from '../max/marketplace-publication-button';
 import {
   chatRulesSchema,
   DEFAULT_BROADCAST_BUTTON_TEXT,
@@ -786,13 +787,23 @@ async function publishChatRulesMessageWithRetry(params: {
         ? await params.maxClient.sendMessageImmediateWithResolvedLink(
             params.chatId,
             params.text,
-            params.options,
+            withMarketplaceModerationMessage(
+              params.options,
+              params.chatId,
+              'MODERATION_NOTICE',
+              'RULES',
+            ),
             buildChatRulesSendOptions(params.botId),
           )
         : await params.maxClient.sendMessageImmediateWithResolvedLink(
             params.chatId,
             params.text,
-            params.options,
+            withMarketplaceModerationMessage(
+              params.options,
+              params.chatId,
+              'MODERATION_NOTICE',
+              'RULES',
+            ),
             buildChatRulesSendOptions(),
           );
     } catch (error: unknown) {

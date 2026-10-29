@@ -1,4 +1,8 @@
-import { publicationAdminAccessWhere, publicationAdminScope } from './publication-admin-access';
+import {
+  publicationAdminAccessWhere,
+  publicationAdminLifecycleWhere,
+  publicationAdminScope,
+} from './publication-admin-access';
 import {
   decodePublicationListCursor,
   encodePublicationListCursor,
@@ -349,7 +353,13 @@ describe('Publication performance and pagination', () => {
       dispatchProfile: 'PUBLIK_V1',
       id: { in: ['publication-match'] },
     });
-    expect(publicationFindMany.mock.calls[0]?.[0].where.AND).toBeUndefined();
+    expect(publicationFindMany.mock.calls[0]?.[0].where.AND).toEqual([
+      publicationAdminLifecycleWhere(publicationAdminScope('user-1', 'publisher-bot'), [
+        PublicationLifecycle.ACTIVE,
+        PublicationLifecycle.PAUSED,
+        PublicationLifecycle.ERROR,
+      ]),
+    ]);
   });
 
   it('hides publication details owned by another dispatch profile', async () => {

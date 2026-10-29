@@ -1,3 +1,4 @@
+import type { MarketplaceButtonPolicyState } from '@maxim/contracts/marketplace-integration';
 import {
   Body,
   ConflictException,
@@ -229,28 +230,38 @@ export class MarketplaceProfileController {
       this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
     );
   }
-  @Get('entities/:kind/:entityId/button-policy') buttonPolicy(
+  @Get('entities/:kind/:entityId/button-policy') async buttonPolicy(
     @CurrentUser() user: AuthUser,
     @Param('kind') kind: string,
     @Param('entityId') id: string,
     @Query('profile') profile: unknown,
     @Req() request: { miniappProfile?: string },
+    @Query('version') version?: unknown,
   ) {
-    return this.buttons.get(
-      this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
+    const parsedVersion = z.literal('2').optional().parse(version);
+    return buttonPolicyResponse(
+      await this.buttons.get(
+        this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
+      ),
+      parsedVersion,
     );
   }
-  @Post('entities/:kind/:entityId/button-policy') changeButtonPolicy(
+  @Post('entities/:kind/:entityId/button-policy') async changeButtonPolicy(
     @CurrentUser() user: AuthUser,
     @Param('kind') kind: string,
     @Param('entityId') id: string,
     @Query('profile') profile: unknown,
     @Body() body: unknown,
     @Req() request: { miniappProfile?: string },
+    @Query('version') version?: unknown,
   ) {
-    return this.buttons.mutate(
-      this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
-      body,
+    const parsedVersion = z.literal('2').optional().parse(version);
+    return buttonPolicyResponse(
+      await this.buttons.mutate(
+        this.buttons.identity(user.userId, kind, id, this.profile(profile, request)),
+        body,
+      ),
+      parsedVersion,
     );
   }
   @Get('capability') capability(@CurrentUser() user: AuthUser) {
@@ -306,4 +317,23 @@ export class MarketplaceNavigationController {
   @Get('navigation') get(@Query() query: unknown) {
     return this.navigation.reverse(query);
   }
+}
+
+/** Older open miniapps use strict schemas. Module fields are opt-in on the wire. */
+export function buttonPolicyResponse(state: MarketplaceButtonPolicyState, version?: string) {
+  if (version === '2') return state;
+  return {
+    entityId: state.entityId,
+    kind: state.kind,
+    profile: state.profile,
+    revision: state.revision,
+    buttonDiagnostic: state.buttonDiagnostic,
+    contexts: state.contexts.map(({ context, enabled, effective, status, enabledAt }) => ({
+      context,
+      enabled,
+      effective,
+      status,
+      enabledAt,
+    })),
+  };
 }

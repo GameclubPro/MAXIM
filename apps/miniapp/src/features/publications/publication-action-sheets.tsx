@@ -10,6 +10,9 @@ export function PublicationActionSheet({
   actions: ReturnType<typeof usePublicationActions>;
 }) {
   const { actionTarget, setActionTarget, actionMutation } = actions;
+  const cancelsAccessibleTargets =
+    actionTarget?.action === 'cancel' &&
+    actionTarget.publication.access?.canManageAllTargets === false;
   const cancelsFutureSends = Boolean(
     actionTarget?.action === 'cancel' &&
     getPublicationActionCapabilities(actionTarget.publication).hasFutureSends,
@@ -21,17 +24,21 @@ export function PublicationActionSheet({
         open={actionTarget !== null}
         title={
           actionTarget?.action === 'cancel'
-            ? cancelsFutureSends
-              ? 'Отменить будущие отправки?'
-              : 'Отменить публикацию?'
+            ? cancelsAccessibleTargets
+              ? 'Отменить отправки в ваших чатах и каналах?'
+              : cancelsFutureSends
+                ? 'Отменить будущие отправки?'
+                : 'Отменить публикацию?'
             : actionTarget?.action === 'pause'
               ? 'Поставить на паузу?'
               : 'Запустить расписание?'
         }
         summary={
-          cancelsFutureSends
-            ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
-            : undefined
+          cancelsAccessibleTargets
+            ? 'Рассылки в остальных чатах и каналах продолжатся. Уже отправленные сообщения сохранятся.'
+            : cancelsFutureSends
+              ? 'Будущие отправки отменятся, а ошибки нельзя будет повторить.'
+              : undefined
         }
         previewTitle={
           actionTarget?.publication.title ? (

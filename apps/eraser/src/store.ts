@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type pg from 'pg';
+import { Housekeeping } from './housekeeping.js';
+export {
+  HOUSEKEEPING_INTERVAL_MS,
+  TERMINAL_PURGE_BATCH,
+  WEBHOOK_PURGE_BATCH,
+} from './housekeeping.js';
 import { readProtectionEvidence } from './protection-evidence.js';
 import {
   ServiceError,
@@ -25,9 +31,6 @@ function effectiveDueSql(hours: Hours): string {
   return `GREATEST(source_ms + ${age},CEIL(EXTRACT(EPOCH FROM (next_attempt_at AT TIME ZONE 'UTC')) * 1000)::bigint)`;
 }
 export const CHAT_BUFFER = 200;
-export const HOUSEKEEPING_INTERVAL_MS = 60_000;
-export const TERMINAL_PURGE_BATCH = 2000;
-export const WEBHOOK_PURGE_BATCH = 20_000;
 export type PolicyRow = Policy & {
   normal_next_at: Date;
   live_due: boolean;
@@ -121,10 +124,13 @@ export function protectionGap(
   return null;
 }
 export class Store {
+  private readonly maintenance: Housekeeping;
   constructor(
     readonly pool: pg.Pool,
     readonly executionEnabled: boolean,
-  ) {}
+  ) {
+    this.maintenance = new Housekeeping(pool, executionEnabled);
+  }
   async transaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
@@ -1737,14 +1743,10 @@ export class Store {
         );
     });
   }
+  housekeepingHealth() {
+    return this.maintenance.health();
+  }
   async housekeeping(): Promise<void> {
-    await this.pool.query(
-      "DELETE FROM eraser_candidates WHERE (chat_id,message_id) IN (SELECT chat_id,message_id FROM eraser_candidates WHERE state IN ('deleted','protected') AND updated_at<CURRENT_TIMESTAMP-INTERVAL '7 days' ORDER BY updated_at,chat_id,message_id LIMIT $1)",
-      [TERMINAL_PURGE_BATCH],
-    );
-    await this.pool.query(
-      "DELETE FROM eraser_webhook_receipts WHERE receipt_key IN (SELECT receipt_key FROM eraser_webhook_receipts WHERE received_at<CURRENT_TIMESTAMP-INTERVAL '7 days' ORDER BY received_at,receipt_key LIMIT $1)",
-      [WEBHOOK_PURGE_BATCH],
-    );
+    await this.maintenance.run();
   }
 }

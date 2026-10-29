@@ -291,7 +291,14 @@ export class MarketplaceProfileService {
       Array<{ revision: number; enabled: boolean | null; diagnostic: string | null }>
     >(Prisma.sql`
       SELECT p.revision,c.enabled,c.diagnostic FROM marketplace_button_policies p
-      LEFT JOIN marketplace_button_contexts c ON c.policy_id=p.id AND c.context='PUBLICATIONS'
+      LEFT JOIN LATERAL (
+        SELECT bool_or(c.enabled) enabled,
+          CASE WHEN bool_or(c.diagnostic='KEYBOARD_FULL') THEN 'KEYBOARD_FULL' ELSE NULL END diagnostic
+        FROM marketplace_button_contexts c WHERE c.policy_id=p.id
+          AND (c.context IN ('PUBLICATION','VK_IMPORT','APPROVED_SUGGESTION') OR
+            (c.context='PUBLICATIONS' AND NOT EXISTS(SELECT 1 FROM marketplace_button_contexts child
+              WHERE child.policy_id=p.id AND child.context IN ('PUBLICATION','VK_IMPORT','APPROVED_SUGGESTION'))))
+      ) c ON true
       WHERE p.entity_id=${binding.entity_id} AND p.kind=${binding.kind} AND p.profile=${binding.profile}
       ${lock ? Prisma.sql`FOR UPDATE OF p` : Prisma.empty}
     `);

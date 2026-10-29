@@ -179,6 +179,12 @@ export class MessageDuplicateDeleteGuardService {
       await this.assertAuthorization(params.chatId, params.binding);
       return qualified;
     }
+    // FLAG: A revoked initial proof cannot become actionable through MAX retries. Reject it
+    // before external reads; Redis errors still retry and final source/history guards remain.
+    if (!(await this.history.stillMatches(params.chatId, params.binding))) {
+      this.metrics?.recordGuardRejection('message_duplicate_history_changed');
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
+    }
     if ((await this.assertSourceActionable(params, true)) !== 'allowed') return null;
     await this.assertAuthorization(params.chatId, params.binding);
     return this.history.qualify(params.chatId, params.binding);

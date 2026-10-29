@@ -129,6 +129,8 @@ try {
         kind: 'CHANNEL',
         profile: 'publisher',
         revision: 0,
+        caption: 'Заказать рекламу',
+        captionRevision: 0,
         contexts: [
           {
             context: 'PUBLICATIONS',
@@ -199,6 +201,17 @@ try {
             policy.revision++;
             policy.contexts[0].enabled = true;
             return route.fulfill({ status: 409, json: { code: 'REVISION_CONFLICT' } });
+          }
+          if ('caption' in body) {
+            if (body.expectedCaptionRevision !== policy.captionRevision)
+              return route.fulfill({ status: 409, json: { code: 'REVISION_CONFLICT' } });
+            policy.caption = body.caption;
+            policy.captionRevision++;
+            if (policyFailure === 'unknown-result') {
+              policyFailure = null;
+              return route.fulfill({ status: 503, json: { code: 'RESPONSE_LOST' } });
+            }
+            return route.fulfill({ json: policyView() });
           }
           if (body.expectedRevision !== policy.revision)
             return route.fulfill({ status: 409, json: { code: 'REVISION_CONFLICT' } });
@@ -459,6 +472,29 @@ try {
         exact: true,
       });
       await toggle.waitFor();
+      const caption = workspace.getByRole('textbox', {
+        name: 'Текст рекламной кнопки',
+        exact: true,
+      });
+      await caption.fill('Реклама здесь');
+      policyFailure = 'unknown-result';
+      await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+      await waitUntil(
+        async () =>
+          policy.captionRevision === 1 &&
+          !(await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).count()),
+        'Lost caption response must reconcile without a second write',
+      );
+      assert.equal(policyMutations.length, 1);
+      await caption.fill('Разместить рекламу');
+      await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).click();
+      await waitUntil(
+        async () =>
+          policy.captionRevision === 2 &&
+          !(await workspace.getByRole('button', { name: 'Сохранить текст', exact: true }).count()),
+        'A new caption must use the reconciled revision',
+      );
+      policyMutations.length = 0;
       policyFailure = 'unknown-result';
       const beforeUnknownReads = reads.policy;
       await toggle.click();
@@ -496,6 +532,11 @@ try {
         .getByText('Сохранение не подтверждено. Проверьте настройки и повторите.', { exact: true })
         .waitFor();
       assert.equal(await confirmation.isEnabled(), true);
+      assert.equal(
+        await toggle.isEnabled(),
+        true,
+        'Explicit withdrawal remains available after an uncertain confirmation',
+      );
       assert.equal(await toggle.isChecked(), true);
       assert.equal(policyMutations.length, beforeReconfirmation + 1);
       assert.equal(

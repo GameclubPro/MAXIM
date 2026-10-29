@@ -88,10 +88,13 @@ import {
   type ResolvedPublicationTarget,
 } from './publication-publisher-routing.service';
 import { publicationBackgroundAccess } from './publication-background-access';
+import { tryCancelAccessiblePublicationTargets } from './publication-target-cancellation';
 import {
   publicationAdminAccessWhere,
   publicationAdminScope,
   publicationAdminTargetWhere,
+  publicationAdminLifecycleWhere,
+  publicationAdminListWhere,
 } from './publication-admin-access';
 import { readStoredPublicationButtons } from './publication-buttons';
 import {
@@ -218,6 +221,8 @@ export class PublicationService {
       dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
         ? this.publisherRouting.requireNewRoute().requiredBotId
         : null;
+    const scope = publicationAdminScope(user.userId, publisherBotId ?? undefined);
+    const publisherScope = publisherBotId ? scope : undefined;
     const filters: Prisma.PublicationWhereInput[] = [];
     if (parsed.data.query && !publisherBotId) {
       const searchBranches: Prisma.PublicationWhereInput[] = [
@@ -270,9 +275,7 @@ export class PublicationService {
               targets: {
                 some: {
                   entityType,
-                  ...publicationAdminTargetWhere(
-                    publicationAdminScope(user.userId, publisherBotId),
-                  ),
+                  ...publicationAdminTargetWhere(scope),
                 },
               },
             }
@@ -320,7 +323,11 @@ export class PublicationService {
             : parsed.data.status === 'paused'
               ? [PublicationLifecycle.PAUSED]
               : [PublicationLifecycle.COMPLETED, PublicationLifecycle.CANCELED];
-        filters.push({ lifecycle: { in: statusLifecycle } });
+        filters.push(
+          publisherBotId
+            ? publicationAdminLifecycleWhere(scope, statusLifecycle)
+            : { lifecycle: { in: statusLifecycle } },
+        );
       }
     }
     if (cursor) {
@@ -334,13 +341,9 @@ export class PublicationService {
     }
 
     const publicationWhere: Prisma.PublicationWhereInput = {
-      ...publicationAdminAccessWhere(
-        publicationAdminScope(user.userId, publisherBotId ?? undefined),
-        dispatchProfile,
-      ),
+      ...publicationAdminAccessWhere(scope, dispatchProfile),
       ...(dispatchProfile ? { dispatchProfile } : {}),
-      lifecycle: { in: lifecycle },
-      ...(filters.length > 0 ? { AND: filters } : {}),
+      ...publicationAdminListWhere(publisherScope, lifecycle, filters),
     };
     let failedPageIdentifiers: Array<{ id: string; updatedAt: Date }> = [];
     let rows: any[];
@@ -375,11 +378,7 @@ export class PublicationService {
           },
           orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
           take: parsed.data.limit + 1,
-          include: this.publicationPresenterService.publicationSummaryInclude(
-            dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-              ? publicationAdminScope(user.userId, publisherBotId ?? undefined)
-              : undefined,
-          ),
+          include: this.publicationPresenterService.publicationSummaryInclude(publisherScope),
         });
         const hydratedById = new Map(hydratedRows.map((row) => [row.id, row]));
         rows = failedPageIdentifiers.flatMap((row) => {
@@ -392,11 +391,7 @@ export class PublicationService {
         where: publicationWhere,
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         take: parsed.data.limit + 1,
-        include: this.publicationPresenterService.publicationSummaryInclude(
-          dispatchProfile === PublicationDispatchProfile.PUBLIK_V1
-            ? publicationAdminScope(user.userId, publisherBotId ?? undefined)
-            : undefined,
-        ),
+        include: this.publicationPresenterService.publicationSummaryInclude(publisherScope),
       });
     }
 
@@ -522,7 +517,7 @@ export class PublicationService {
             is: {
               dispatchProfile: PublicationDispatchProfile.PUBLIK_V1,
               lifecycle: { in: [PublicationLifecycle.ACTIVE, PublicationLifecycle.ERROR] },
-              targets: { some: { OR: targetPredicates } },
+              targets: { some: { OR: targetPredicates, canceledAt: null } },
             },
           },
         },
@@ -531,6 +526,7 @@ export class PublicationService {
           publication: {
             select: {
               targets: {
+                where: { canceledAt: null },
                 select: { targetChatId: true, entityType: true },
               },
             },
@@ -1005,6 +1001,9 @@ export class PublicationService {
               targetChatId: target.chatId,
               entityType: this.toPrismaEntityType(target.entityType),
               position,
+              canceledAt:
+                existing.targets.find((saved) => saved.targetChatId === target.chatId)
+                  ?.canceledAt ?? null,
             })),
           });
         }
@@ -1243,6 +1242,19 @@ export class PublicationService {
     body: unknown,
     dispatchProfile?: PublicationDispatchProfile,
   ): Promise<PublicationDetails> {
+    if (
+      dispatchProfile === PublicationDispatchProfile.PUBLIK_V1 &&
+      (await tryCancelAccessiblePublicationTargets(
+        this.prisma,
+        publicationAdminScope(user.userId, this.publisherRouting.requireNewRoute().requiredBotId),
+        publicationId,
+        body,
+        (value) => this.hashMutationRequest(value),
+        (requestId, hash) => this.findMutationReplay(user.userId, requestId, hash),
+      ))
+    ) {
+      return this.get(publicationId, user, dispatchProfile);
+    }
     return this.transitionPublication(publicationId, user, body, 'cancel', dispatchProfile);
   }
 

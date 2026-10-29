@@ -16,12 +16,18 @@ if (!redisUrl)
 
 type HealthStore = Pick<
   Store,
-  'reserve' | 'reserveConnections' | 'housekeeping' | 'active' | 'finishVisit'
+  | 'reserve'
+  | 'reserveConnections'
+  | 'housekeeping'
+  | 'housekeepingHealth'
+  | 'active'
+  | 'finishVisit'
 >;
 const idleStore: HealthStore = {
   reserve: async () => [],
   reserveConnections: async () => [],
   housekeeping: async () => {},
+  housekeepingHealth: () => new Store({} as Store['pool'], true).housekeepingHealth(),
   active: async () => null,
   finishVisit: async () => {},
 };
@@ -349,4 +355,30 @@ test('shutdown during the final pin read cannot acquire a new DELETE journal', a
     await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await admin.end();
   }
+});
+
+test('maintenance failure does not stop dispatch scheduling or retry every scheduler tick', async (t) => {
+  let attempts = 0;
+  await fixture(
+    async (runtime) => {
+      let now = Date.now() + 31_000;
+      t.mock.method(Date, 'now', () => now);
+      await runtime.tickConnections();
+      await runtime.tick();
+      assert.equal(attempts, 1);
+      assert.equal(runtime.health().schedulerHealthy, true);
+      for (let i = 0; i < 5; i++) await runtime.tick();
+      assert.equal(attempts, 1, 'failed maintenance retains the ordinary cadence');
+      now += 30_000;
+      await runtime.tickConnections();
+      await runtime.tick();
+      assert.equal(attempts, 2);
+    },
+    {
+      housekeeping: async () => {
+        attempts++;
+        throw new Error('Synthetic unavailable maintenance');
+      },
+    },
+  );
 });

@@ -1895,6 +1895,7 @@ export class MaxClientService implements OnModuleDestroy {
                         const prepared = appendMarketplaceEditableAttachments(
                           attachments,
                           binding.url,
+                          binding.caption,
                         );
                         currentAttachments = prepared.attachments;
                         added = prepared.outcome === 'ADDED';
@@ -6451,9 +6452,10 @@ export class MaxClientService implements OnModuleDestroy {
         chatId,
         botId,
         purpose: options.marketplacePublication!.purpose,
+        module: options.marketplacePublication!.module,
       });
       if (!binding) return options;
-      const result = appendMarketplacePublicationButton(options, binding.url);
+      const result = appendMarketplacePublicationButton(options, binding.url, binding.caption);
       if (result.outcome === 'KEYBOARD_FULL') {
         await this.marketplaceState.recordButtonDiagnostic({
           chatId,
