@@ -12,6 +12,7 @@ import { WebhookParser } from './webhook.parser';
 import { buildWebhookSemanticEventKey } from './webhook-semantic-event-key';
 import { buildWebhookReceiptSemanticKey } from './webhook-receipt-semantic-key';
 import { WebhookService } from './webhook.service';
+import type { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const native = databaseUrl ? describe : describe.skip;
@@ -37,9 +38,8 @@ native('Publisher receipt semantic isolation in PostgreSQL', () => {
   const ids: string[] = [];
   const lifecycle = { observeWebhook: jest.fn().mockResolvedValue(undefined) };
   const retention = {
-    captureInput: jest.fn((update: MaxUpdate) => ({ fixtureUpdateId: update.updateId })),
-    capture: jest.fn().mockResolvedValue(undefined),
-  };
+    settleRemovedMessage: jest.fn().mockResolvedValue(false),
+  } satisfies Pick<MessageRetentionStore, 'settleRemovedMessage'>;
 
   beforeAll(async () => {
     const url = new URL(databaseUrl);
@@ -150,7 +150,7 @@ native('Publisher receipt semantic isolation in PostgreSQL', () => {
   }
 
   it.each(['message_created', 'message_edited'] as const)(
-    'removes the Publisher %s collision while retaining canonical claims and retention capture',
+    'removes the Publisher %s collision while retaining canonical claims without legacy retention intake',
     async (type) => {
       const f = await fixture(type);
       const observation = await prisma.webhookEvent.findUniqueOrThrow({
@@ -162,9 +162,7 @@ native('Publisher receipt semantic isolation in PostgreSQL', () => {
       });
       expect(f.owner.semanticKey).toBe(f.semanticKey);
       expect(lifecycle.observeWebhook).toHaveBeenCalledTimes(1);
-      expect(retention.captureInput).toHaveBeenCalledWith(f.update);
-      expect(retention.captureInput).toHaveBeenCalledWith(f.regularUpdate);
-      expect(retention.capture).toHaveBeenCalledTimes(2);
+      expect(retention.settleRemovedMessage).not.toHaveBeenCalled();
       expect(
         await prisma.webhookExecutionClaim.findMany({ where: { webhookEventId: { in: ids } } }),
       ).toEqual([f.claim]);

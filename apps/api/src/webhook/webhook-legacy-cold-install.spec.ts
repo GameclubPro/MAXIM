@@ -415,6 +415,22 @@ describe('strict legacy cold recovery source', () => {
     expect(() => holds.onApplicationBootstrap()).not.toThrow();
   });
 
+  it('permits the retired database-only retention store without an effect reader', () => {
+    const MessageRetentionStore = class MessageRetentionStore {};
+    const modules = new Map([
+      [
+        'test',
+        {
+          providers: new Map([
+            ['retention-maintenance', { instance: new MessageRetentionStore() }],
+          ]),
+        },
+      ],
+    ]);
+    const holds = new WebhookLegacyHoldService({} as never, modules as never);
+    expect(() => holds.onApplicationBootstrap()).not.toThrow();
+  });
+
   it('returns only the exact CHAT hold presence and rejects unavailable metadata authority', async () => {
     const prisma = { $queryRaw: jest.fn().mockResolvedValue([{ held: true }]) };
     const holds = new WebhookLegacyHoldService(prisma as never);

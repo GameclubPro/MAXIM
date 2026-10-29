@@ -17,12 +17,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import { retentionStatus } from '../message-retention/message-retention-status';
 import {
-  MESSAGE_RETENTION_CHAT_LIMIT,
   MESSAGE_RETENTION_SHARD_LIMIT,
-  MESSAGE_RETENTION_RULE,
   retentionBlockerStatus,
 } from '../message-retention/message-retention.policy';
-import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import { EraserControlService } from '../message-retention/eraser-control.service';
 import {
   retentionRuntimePageQuery,
@@ -37,7 +34,6 @@ export class SafetyDeskRetentionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly store: MessageRetentionStore,
-    private readonly capabilities: AdminSettingsBotCapabilityService,
     @Optional() private readonly eraser?: EraserControlService,
   ) {}
 
@@ -239,10 +235,9 @@ export class SafetyDeskRetentionService {
         throw new ConflictException('Настройки изменились. Обновите список.');
       after = value.messageId;
     }
-    const [keys, quota] = await Promise.all([
-      this.prisma.$queryRaw<Array<{ messageId: string }>>(retentionReviewPageQuery(chatId, after)),
-      this.prisma.messageRetentionQuota.findUnique({ where: { shard: policy.quotaShard } }),
-    ]);
+    const keys = await this.prisma.$queryRaw<Array<{ messageId: string }>>(
+      retentionReviewPageQuery(chatId, after),
+    );
     const ids = keys.slice(0, 20).map((row) => row.messageId);
     const selected = ids.length
       ? await this.prisma.messageRetentionCandidate.findMany({
@@ -254,7 +249,6 @@ export class SafetyDeskRetentionService {
     const intents = candidates.length
       ? await this.prisma.moderationDeleteIntent.findMany({
           where: { id: { in: candidates.flatMap((c) => (c.intentId ? [c.intentId] : [])) } },
-          include: { reasons: { select: { ruleCode: true }, take: 2 } },
           take: 20,
         })
       : [];
@@ -281,29 +275,6 @@ export class SafetyDeskRetentionService {
           : null,
       items: candidates.map((candidate) => {
         const intent = candidate.intentId ? byId.get(candidate.intentId) : undefined;
-        const retryAllowed =
-          this.store.allows(chatId, true) &&
-          policy.enabled &&
-          !policy.pausedAt &&
-          quota !== null &&
-          !quota.pausedAt &&
-          policy.pendingCount < MESSAGE_RETENTION_CHAT_LIMIT * 0.8 &&
-          quota.pendingCount < MESSAGE_RETENTION_SHARD_LIMIT * 0.8 &&
-          candidate.activationId === policy.activationId &&
-          !candidate.shadowOnly &&
-          candidate.outcomeCode === 'terminal_review' &&
-          ['skipped', 'cancelled'].includes(candidate.status) &&
-          intent?.retentionOwned === true &&
-          intent.chatId === chatId &&
-          intent.messageId === candidate.messageId &&
-          intent.subjectUserId === candidate.authorId &&
-          ['FAILED_TERMINAL', 'EXPIRED'].includes(intent.status) &&
-          intent.reasons.length === 1 &&
-          intent.reasons[0]?.ruleCode === MESSAGE_RETENTION_RULE &&
-          !intent.deleteDispatchStartedAt &&
-          !intent.deleteDispatchStartedBotId &&
-          !intent.remoteDeleteSucceededAt &&
-          !intent.remoteDeleteSucceededBotId;
         return {
           messageId: candidate.messageId,
           authorId: candidate.authorId,
@@ -316,7 +287,9 @@ export class SafetyDeskRetentionService {
           intentUpdatedAt: intent?.updatedAt.toISOString() ?? null,
           intentAttemptCount: intent?.attemptCount ?? null,
           reconcileAfter: candidate.reconcileAfter?.toISOString() ?? null,
-          retryAllowed,
+          // FLAG: Historical Major journals are evidence only. No operator action
+          // can rearm their retired age-based executor.
+          retryAllowed: false,
         };
       }),
     });
@@ -338,24 +311,7 @@ export class SafetyDeskRetentionService {
           actorUserId: actorUserId?.trim() || 'safety-desk-owner',
         }),
       );
-    if (!this.store.allows(chatId, true))
-      throw new BadRequestException('Обработка выключена для этого чата.');
-    await this.capabilities.assertChatSettingsBotCapabilities(
-      chatId,
-      [{ permission: 'write', featureKeys: ['messageRetention'] }],
-      { forceLive: true },
-    );
-    // FLAG: The store atomically checks versions, ownership, mutation evidence and credits.
-    // An operator can only schedule the normal guarded worker, never dispatch DELETE here.
-    const changed = await this.store.reopenTerminalCandidate({
-      ...parsed.data,
-      chatId,
-      expectedIntentUpdatedAt: new Date(parsed.data.expectedIntentUpdatedAt),
-      actorUserId: actorUserId?.trim() || 'safety-desk-owner',
-    });
-    if (!changed)
-      throw new ConflictException('Состояние или условия обработки изменились. Обновите сведения.');
-    return this.preview(chatId);
+    throw new BadRequestException('Повтор удаления через прежний механизм Майора недоступен.');
   }
 
   private assertChatId(chatId: string): void {

@@ -1,6 +1,5 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { MaxUpdate } from '@maxim/contracts';
 import type { MessageRetentionSummary } from '@maxim/contracts/settings';
 import {
   Prisma,
@@ -8,26 +7,17 @@ import {
   type MessageRetentionPolicy,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
-import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
-import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
-import { captureRetentionMessage } from './message-retention-capture';
 import { purgeRetentionPage, type RetentionPurgeCursor } from './message-retention-purge';
 import { discoverRetentionReceipts } from './message-retention-recovery';
 import { retireTransferredChat } from './eraser-legacy-retirement';
-import { retentionStatus } from './message-retention-status';
 import {
-  MESSAGE_RETENTION_CHAT_LIMIT,
-  MESSAGE_RETENTION_RESUME_MS,
-  MESSAGE_RETENTION_SHARD_LIMIT,
   MESSAGE_RETENTION_RECOVERY_RETRY_MS,
-  MESSAGE_RETENTION_RULE,
   retentionBlockerStatus,
-  readRetentionCapture,
-  retentionModeAllows,
-  type RetentionCapture,
-  type RetentionOutcomeCode,
   type RetentionBlockerStatus,
 } from './message-retention.policy';
+
+// FLAG: Legacy records remain readable, but Major never acquires age-based DELETE authority.
+export const LEGACY_RETENTION_EXECUTION_RETIRED = true;
 
 export type RetentionDiagnostics = {
   hasTerminalReview: boolean;
@@ -47,45 +37,22 @@ export class MessageRetentionStore {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    @Optional() private readonly injectedLegacyHolds?: WebhookLegacyHoldService,
   ) {}
-
-  private get legacyHolds(): WebhookLegacyHoldService | undefined {
-    return this.injectedLegacyHolds ?? WebhookLegacyHoldService.forPrisma(this.prisma);
-  }
 
   get mode(): string {
     return this.config.get<string>('MESSAGE_RETENTION_MODE', 'off');
   }
-  allows(chatId: string, mutation = false): boolean {
-    if (this.config.get<boolean>('ERASER_ENABLED', false)) return false;
-    return retentionModeAllows(
-      this.mode,
-      this.config.get('MESSAGE_RETENTION_CANARY_CHAT_IDS'),
-      chatId,
-      mutation,
-    );
+  allows(_chatId: string, _mutation = false): boolean {
+    return false;
   }
 
-  schedulingFilter(): Prisma.MessageRetentionPolicyWhereInput {
-    if (this.config.get<boolean>('ERASER_ENABLED', false)) return { chatId: { in: [] } };
-    if (this.mode === 'canary') {
-      const ids = this.config
-        .get<string>('MESSAGE_RETENTION_CANARY_CHAT_IDS', '')
-        .split(',')
-        .map((id) => id.trim())
-        .filter((id) => /^-[1-9]\d*$/.test(id));
-      return { chatId: { in: [...new Set(ids)] } };
-    }
-    return this.mode === 'off' ? { chatId: { in: [] } } : {};
-  }
-
-  workSchedulingFilter(allowExecution = true): Prisma.MessageRetentionPolicyWhereInput {
+  workSchedulingFilter(): Prisma.MessageRetentionPolicyWhereInput {
     return {
       OR: [
-        ...(allowExecution
-          ? [this.schedulingFilter()]
-          : [{ enabled: false, pendingCount: { gt: 0 } }]),
+        { enabled: false, pendingCount: { gt: 0 } },
+        // FLAG: This admits one DB-only visit so ended generations can release credit.
+        // A current enabled generation cannot be processed or rescheduled by age.
+        { enabled: true, candidates: { some: { status: { in: ['pending', 'retry'] } } } },
         {
           candidates: {
             some: { outcomeCode: 'reconciliation', reconcileAfter: { lte: new Date() } },
@@ -112,151 +79,8 @@ export class MessageRetentionStore {
       enabled: policy?.enabled ?? false,
       hours: policy?.hours === 24 ? 24 : 48,
       revision: policy?.revision ?? 0,
-      status: retentionStatus(
-        policy ? { ...policy, lastStatus: diagnostics?.blockerStatus ?? policy.lastStatus } : null,
-        this.mode,
-        this.allows(chatId),
-        diagnostics?.oldestDueAt?.getTime(),
-        diagnostics?.blockerStatus,
-      ),
+      status: policy?.enabled ? (diagnostics?.blockerStatus ?? 'paused') : 'off',
     };
-  }
-
-  captureInput(update: MaxUpdate): RetentionCapture | null {
-    if (!update.message || !this.allows(update.message.chatId)) return null;
-    const publisher = buildPublisherBotDescriptor({
-      id: this.config.get('MAX_PUBLISHER_BOT_ID'),
-    }).id;
-    if (update.botId === publisher) return null;
-    return readRetentionCapture(update);
-  }
-
-  async capture(tx: Prisma.TransactionClient, input: RetentionCapture): Promise<void> {
-    // FLAG: Keep the authenticated raw receipt, but admit no new automatic deletion
-    // candidate or shared quota/pause effects for an exactly held source or global user.
-    const holds = this.legacyHolds;
-    if (
-      await captureRetentionMessage(tx, input, this.mode === 'shadow', async () =>
-        Boolean(
-          (await holds?.isMessageHeld(input.chatId, input.messageId, tx)) ||
-          (await holds?.isMemberHeld(input.chatId, input.authorId, tx)) ||
-          (await holds?.isGlobalUserHeld(input.authorId, tx)),
-        ),
-      )
-    )
-      this.logger.warn('Message retention intake paused by capacity guard');
-  }
-
-  async finish(
-    candidate: MessageRetentionCandidate,
-    status: 'deleted' | 'skipped' | 'cancelled',
-    options: { outcomeCode?: RetentionOutcomeCode; reconcile?: boolean } = {},
-  ): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
-      const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({
-        where: { chatId: candidate.chatId },
-      });
-      await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${policy.quotaShard} FOR UPDATE`;
-      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${candidate.chatId} FOR UPDATE`;
-      const current = await tx.messageRetentionPolicy.findUniqueOrThrow({
-        where: { chatId: candidate.chatId },
-      });
-      // FLAG: A stale disabled/old-generation worker cannot cancel the current activation.
-      if (
-        status === 'cancelled' &&
-        current.enabled &&
-        current.activationId === candidate.activationId
-      )
-        return false;
-      const changed = await tx.messageRetentionCandidate.updateMany({
-        where: {
-          chatId: candidate.chatId,
-          messageId: candidate.messageId,
-          activationId: candidate.activationId,
-          status: { in: ['pending', 'retry'] },
-        },
-        data: {
-          status,
-          completedAt: new Date(),
-          outcomeCode: options.reconcile
-            ? 'reconciliation'
-            : (options.outcomeCode ??
-              (status === 'deleted'
-                ? 'deleted'
-                : status === 'cancelled'
-                  ? 'cancelled'
-                  : 'protected')),
-          reconcileAfter: options.reconcile ? new Date() : null,
-        },
-      });
-      if (!changed.count) return false;
-      await tx.messageRetentionPolicy.update({
-        where: { chatId: candidate.chatId },
-        data: {
-          pendingCount: { decrement: 1 },
-          ...(status === 'deleted'
-            ? { deletedCount: { increment: 1 } }
-            : { skippedCount: { increment: 1 } }),
-        },
-      });
-      await tx.messageRetentionQuota.update({
-        where: { shard: policy.quotaShard },
-        data: { pendingCount: { decrement: 1 } },
-      });
-      return true;
-    });
-  }
-
-  async resumeAdmission(chatId: string): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      const initial = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
-      if (!initial.enabled || !initial.pausedAt) return;
-      await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${initial.quotaShard} FOR UPDATE`;
-      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${chatId} FOR UPDATE`;
-      const quota = await tx.messageRetentionQuota.findUniqueOrThrow({
-        where: { shard: initial.quotaShard },
-      });
-      const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
-      if (!policy.enabled) return;
-      const now = new Date();
-      const shardHealthy = quota.pendingCount < MESSAGE_RETENTION_SHARD_LIMIT * 0.6;
-      const resumeShard = Boolean(
-        shardHealthy &&
-        quota.healthySince &&
-        now.getTime() - quota.healthySince.getTime() >= MESSAGE_RETENTION_RESUME_MS,
-      );
-      if (quota.pausedAt) {
-        await tx.messageRetentionQuota.update({
-          where: { shard: quota.shard },
-          data: resumeShard
-            ? { pausedAt: null, healthySince: null }
-            : { healthySince: shardHealthy ? (quota.healthySince ?? now) : null },
-        });
-      }
-      if (!policy.pausedAt) return;
-      const healthy = shardHealthy && policy.pendingCount < MESSAGE_RETENTION_CHAT_LIMIT * 0.6;
-      const resume = Boolean(
-        (!quota.pausedAt || resumeShard) &&
-        healthy &&
-        policy.healthySince &&
-        now.getTime() - policy.healthySince.getTime() >= MESSAGE_RETENTION_RESUME_MS,
-      );
-      await tx.messageRetentionPolicy.update({
-        where: { chatId },
-        data: resume
-          ? { pausedAt: null, healthySince: null, captureAfter: now, lastStatus: 'running' }
-          : { healthySince: healthy ? (policy.healthySince ?? now) : null },
-      });
-      if (resume)
-        await tx.auditLog.create({
-          data: {
-            chatId,
-            actorUserId: 'system:message-retention',
-            action: 'MESSAGE_RETENTION_INTAKE_RESUMED',
-            payload: { startedAt: policy.pausedAt.toISOString(), endedAt: now.toISOString() },
-          },
-        });
-    });
   }
 
   async cancelInactive(candidates: MessageRetentionCandidate[]): Promise<void> {
@@ -305,14 +129,16 @@ export class MessageRetentionStore {
     });
   }
 
-  async dueCandidates(policy: MessageRetentionPolicy): Promise<MessageRetentionCandidate[]> {
-    const now = new Date();
-    const cutoff = new Date(now.getTime() - policy.hours * 3_600_000);
+  async dueInactiveCandidates(
+    policy: MessageRetentionPolicy,
+  ): Promise<MessageRetentionCandidate[]> {
     if (!policy.enabled)
       return this.prisma.messageRetentionCandidate.findMany({
         where: { chatId: policy.chatId, status: { in: ['pending', 'retry'] } },
+        orderBy: [{ messageId: 'asc' }],
         take: 100,
       });
+    // FLAG: Maintenance visits ended activations only; current enabled history stays untouched.
     for (const status of ['pending', 'retry']) {
       for (const activationId of [{ lt: policy.activationId }, { gt: policy.activationId }]) {
         const stale = await this.prisma.messageRetentionCandidate.findMany({
@@ -323,61 +149,19 @@ export class MessageRetentionStore {
         if (stale.length) return stale;
       }
     }
-    if (this.mode === 'shadow')
-      return this.prisma.messageRetentionCandidate.findMany({
-        where: {
-          chatId: policy.chatId,
-          status: 'pending',
-          shadowOnly: true,
-          sourceAt: { lte: cutoff },
-        },
-        orderBy: [{ sourceAt: 'asc' }, { messageId: 'asc' }],
-        take: 5,
-      });
-    const pending = await this.prisma.messageRetentionCandidate.findMany({
-      where: { chatId: policy.chatId, status: 'pending', sourceAt: { lte: cutoff } },
-      orderBy: [{ sourceAt: 'asc' }, { messageId: 'asc' }],
-      take: 5,
-    });
-    const retry = await this.prisma.messageRetentionCandidate.findMany({
-      where: { chatId: policy.chatId, status: 'retry', nextAttemptAt: { lte: now } },
-      orderBy: [{ nextAttemptAt: 'asc' }, { messageId: 'asc' }],
-      take: 5,
-    });
-    return [
-      ...retry.slice(0, 2),
-      ...pending.slice(0, 3),
-      ...retry.slice(2),
-      ...pending.slice(3),
-    ].slice(0, 5);
+    return [];
   }
 
   async scheduleNext(chatId: string, options: { continueInactive?: boolean } = {}): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${chatId} FOR UPDATE`;
       const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
-      const shadowFilter = this.mode === 'shadow' ? { shadowOnly: true } : {};
-      const pending = await tx.messageRetentionCandidate.findFirst({
-        where: { chatId, status: 'pending', ...shadowFilter },
-        orderBy: [{ sourceAt: 'asc' }, { messageId: 'asc' }],
-        select: { sourceAt: true },
-      });
-      const retry = await tx.messageRetentionCandidate.findFirst({
-        where: { chatId, status: 'retry', ...shadowFilter },
-        orderBy: [{ nextAttemptAt: 'asc' }, { messageId: 'asc' }],
-        select: { nextAttemptAt: true },
-      });
       const receipt = await tx.messageRetentionCandidate.findFirst({
         where: { chatId, reconcileAfter: { not: null } },
         orderBy: [{ reconcileAfter: 'asc' }, { messageId: 'asc' }],
         select: { reconcileAfter: true },
       });
-      const times = [
-        pending ? pending.sourceAt.getTime() + policy.hours * 3_600_000 : Infinity,
-        retry?.nextAttemptAt.getTime() ?? Infinity,
-        policy.pausedAt ? Date.now() + 60_000 : Infinity,
-        receipt?.reconcileAfter?.getTime() ?? Infinity,
-      ];
+      const times = [receipt?.reconcileAfter?.getTime() ?? Infinity];
       if (!policy.enabled && policy.pendingCount > 0) times.push(Date.now());
       if (options.continueInactive) times.push(Date.now());
       const next = Math.min(...times);
@@ -409,131 +193,6 @@ export class MessageRetentionStore {
         reconcileAfter: { not: null },
       },
       data: { reconcileAfter: new Date(Date.now() + MESSAGE_RETENTION_RECOVERY_RETRY_MS) },
-    });
-  }
-
-  async reopenTerminalCandidate(input: {
-    chatId: string;
-    messageId: string;
-    activationId: string;
-    expectedRevision: number;
-    intentId: string;
-    expectedIntentUpdatedAt: Date;
-    expectedAttemptCount: number;
-    actorUserId: string;
-  }): Promise<boolean> {
-    return this.prisma.$transaction(async (tx) => {
-      // FLAG: Producers and GC lock the intent first. Never hold the policy while
-      // waiting for that intent; admission credit still locks quota before policy.
-      await tx.$queryRaw`SELECT "id" FROM "moderation_delete_intents" WHERE "id" = ${input.intentId} FOR UPDATE`;
-      const initial = await tx.messageRetentionPolicy.findUnique({
-        where: { chatId: input.chatId },
-      });
-      if (!initial) return false;
-      await tx.$queryRaw`SELECT "shard" FROM "message_retention_quotas" WHERE "shard" = ${initial.quotaShard} FOR UPDATE`;
-      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${input.chatId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT "message_id" FROM "message_retention_candidates" WHERE "chat_id" = ${input.chatId} AND "message_id" = ${input.messageId} FOR UPDATE`;
-      const policy = await tx.messageRetentionPolicy.findUniqueOrThrow({
-        where: { chatId: input.chatId },
-      });
-      const quota = await tx.messageRetentionQuota.findUniqueOrThrow({
-        where: { shard: policy.quotaShard },
-      });
-      const candidate = await tx.messageRetentionCandidate.findUnique({
-        where: { chatId_messageId: { chatId: input.chatId, messageId: input.messageId } },
-      });
-      const intent = await tx.moderationDeleteIntent.findUnique({
-        where: { id: input.intentId },
-        include: { reasons: { select: { ruleCode: true } } },
-      });
-      if (
-        !this.allows(input.chatId, true) ||
-        !policy.enabled ||
-        policy.revision !== input.expectedRevision ||
-        policy.activationId !== input.activationId ||
-        policy.pausedAt ||
-        quota.pausedAt ||
-        policy.pendingCount >= MESSAGE_RETENTION_CHAT_LIMIT * 0.8 ||
-        quota.pendingCount >= MESSAGE_RETENTION_SHARD_LIMIT * 0.8 ||
-        !candidate ||
-        candidate.shadowOnly ||
-        candidate.activationId !== input.activationId ||
-        candidate.intentId !== input.intentId ||
-        candidate.outcomeCode !== 'terminal_review' ||
-        !['skipped', 'cancelled'].includes(candidate.status) ||
-        !intent?.retentionOwned ||
-        intent.chatId !== input.chatId ||
-        intent.messageId !== input.messageId ||
-        intent.subjectUserId !== candidate.authorId ||
-        !['FAILED_TERMINAL', 'EXPIRED'].includes(intent.status) ||
-        intent.updatedAt.getTime() !== input.expectedIntentUpdatedAt.getTime() ||
-        intent.attemptCount !== input.expectedAttemptCount ||
-        intent.reasons.length !== 1 ||
-        intent.reasons[0]?.ruleCode !== MESSAGE_RETENTION_RULE ||
-        intent.deleteDispatchStartedAt ||
-        intent.deleteDispatchStartedBotId ||
-        intent.remoteDeleteSucceededAt ||
-        intent.remoteDeleteSucceededBotId
-      )
-        return false;
-      const now = new Date();
-      await tx.moderationDeleteIntent.update({
-        where: { id: intent.id },
-        data: {
-          status: 'PENDING',
-          nextAttemptAt: now,
-          executeAt: now,
-          completedAt: null,
-          retryUntilAt: new Date('9999-01-01T00:00:00.000Z'),
-          leaseToken: null,
-          leaseExpiresAt: null,
-          leasedFromStatus: null,
-          lastErrorCode: null,
-          lastError: null,
-          lastStatusCode: null,
-        },
-      });
-      await tx.messageRetentionCandidate.update({
-        where: { chatId_messageId: { chatId: input.chatId, messageId: input.messageId } },
-        data: {
-          status: 'pending',
-          completedAt: null,
-          outcomeCode: null,
-          reconcileAfter: null,
-          nextAttemptAt: now,
-        },
-      });
-      await tx.messageRetentionPolicy.update({
-        where: { chatId: input.chatId },
-        data: {
-          pendingCount: { increment: 1 },
-          skippedCount: { decrement: 1 },
-          nextRunAt: now,
-          lastStatus: 'running',
-        },
-      });
-      await tx.messageRetentionQuota.update({
-        where: { shard: policy.quotaShard },
-        data: { pendingCount: { increment: 1 } },
-      });
-      await tx.auditLog.create({
-        data: {
-          chatId: input.chatId,
-          actorUserId: input.actorUserId,
-          action: 'SAFETY_DESK_RETRY_MESSAGE_RETENTION',
-          payload: {
-            messageId: input.messageId,
-            intentId: input.intentId,
-            activationId: input.activationId,
-            revision: input.expectedRevision,
-            previousStatus: intent.status,
-            previousErrorCode: intent.lastErrorCode,
-            expectedIntentUpdatedAt: input.expectedIntentUpdatedAt.toISOString(),
-            expectedAttemptCount: input.expectedAttemptCount,
-          },
-        },
-      });
-      return true;
     });
   }
 
@@ -786,14 +445,6 @@ export class MessageRetentionStore {
           ? (row.lastStatus as Exclude<RetentionBlockerStatus, null>)
           : null),
     };
-  }
-
-  async updateRunStatus(chatId: string, revision: number, status: string): Promise<void> {
-    const diagnostics = await this.diagnostics(chatId);
-    await this.prisma.messageRetentionPolicy.updateMany({
-      where: { chatId, revision },
-      data: { lastStatus: diagnostics.blockerStatus ?? status },
-    });
   }
 
   async discoverLegacyReceipts(): Promise<void> {

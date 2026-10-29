@@ -5,14 +5,7 @@ import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { RedisCounterService } from '../moderation/redis-counter.service';
-import {
-  BackgroundRuntimeGovernorService,
-  type BackgroundRuntimeGovernorDecision,
-} from '../system/background-runtime-governor.service';
-import { MessageRetentionAdmissionService } from '../system/message-retention-admission.service';
-import { MAX_API_SOURCE_TAGS, MaxApiInternalRateLimitError } from '../max/max-client.service';
 import { MessageRetentionStore } from './message-retention-store.service';
-import { MessageRetentionGuardError } from './message-retention-delete-guard.service';
 import {
   MESSAGE_RETENTION_QUEUE,
   MESSAGE_RETENTION_QUEUE_LIMIT,
@@ -21,7 +14,6 @@ import {
   MESSAGE_RETENTION_IDLE_MS,
   MESSAGE_RETENTION_VISIT_MS,
   retentionGuardOutcome,
-  type RetentionOutcomeCode,
 } from './message-retention.policy';
 import type { ModerationDeleteIntent } from '../prisma/prisma-client';
 
@@ -62,7 +54,6 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
   private activeTick: Promise<void> | null = null;
   private stopping = false;
   private nextAdmissionAt = 0;
-  private nextRemoteAdmissionAt = 0;
   private nextMaintenanceAt = Date.now() + MESSAGE_RETENTION_IDLE_MS;
   private nextPurgeAt = Date.now() + 3_600_000;
 
@@ -70,10 +61,8 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly store: MessageRetentionStore,
     private readonly deletes: ModerationDeleteIntentService,
-    private readonly governor: BackgroundRuntimeGovernorService,
     private readonly locks: RedisCounterService,
     @InjectQueue(MESSAGE_RETENTION_QUEUE) private readonly queue: Queue<MessageRetentionJob>,
-    private readonly admission: MessageRetentionAdmissionService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -150,12 +139,7 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
       const policies = await this.prisma.messageRetentionPolicy.findMany({
         where: {
           nextRunAt: { lte: new Date() },
-          AND: [
-            this.store.workSchedulingFilter(
-              this.store.mode === 'shadow' || Date.now() >= this.nextRemoteAdmissionAt,
-            ),
-            { chatId: { notIn: queuedChats } },
-          ],
+          AND: [this.store.workSchedulingFilter(), { chatId: { notIn: queuedChats } }],
         },
         orderBy: [{ nextRunAt: 'asc' }, { chatId: 'asc' }],
         take: freeSlots.length,
@@ -167,8 +151,8 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
         const slot = freeSlots[index];
         if (!slot || this.stopping || Date.now() >= deadline) break;
         if (!(await this.locks.renewLock('message-retention:scheduler:v1', token, 25_000))) break;
-        // Receipt jobs use the same single worker and are permitted to finalize DB-only
-        // success while DELETE is off. Dispatch authority is rechecked in process().
+        // FLAG: This retained queue owns database-only legacy receipt maintenance.
+        // Its jobs cannot create intents, read MAX or dispatch another DELETE.
         await this.queue.add(
           'chat',
           { chatId: policy.chatId },
@@ -209,205 +193,18 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
     if (this.stopping) return;
     const policy = await this.prisma.messageRetentionPolicy.findUnique({ where: { chatId } });
     if (!policy) return;
-    const decision = await this.remoteDecision(chatId);
     const deadline = Date.now() + MESSAGE_RETENTION_VISIT_MS;
-    await this.reconcileReceipts(
-      chatId,
-      decision.action !== 'pause' && this.store.allows(chatId, true),
-      deadline,
-    );
-    if (!this.store.allows(chatId)) {
-      await this.store.updateRunStatus(chatId, policy.revision, 'running');
-      await this.store.scheduleNext(chatId);
-      this.nextAdmissionAt = Date.now();
-      return;
-    }
-    if (decision.action === 'pause' && policy.enabled && this.store.mode !== 'shadow') {
-      this.deferRemoteAdmission(decision.retryAfterMs);
-      await this.store.updateRunStatus(chatId, policy.revision, 'paused');
-      await this.prisma.messageRetentionPolicy.updateMany({
-        where: { chatId, revision: policy.revision },
-        data: { nextRunAt: new Date(Date.now() + decision.retryAfterMs) },
-      });
-      return;
-    }
-    if (decision.action === 'slow')
-      await this.locks.setStringWithTtl('maxapi:message-retention:slow:v1', '1', 60);
-    await this.store.resumeAdmission(chatId);
-    const candidates = await this.store.dueCandidates(policy);
-    const inactive = candidates.filter(
-      (candidate) => !policy.enabled || candidate.activationId !== policy.activationId,
-    );
+    // FLAG: Lastik is the sole age-based executor. Retained jobs only settle saved
+    // receipts or release ended-generation credit, regardless of old rollout flags.
+    await this.reconcileReceipts(chatId, deadline);
+    if (this.stopping || Date.now() >= deadline) return;
+    const inactive = await this.store.dueInactiveCandidates(policy);
     await this.store.cancelInactive(inactive);
-    const limit = decision.action === 'slow' ? 2 : 5;
-    let processed = 0;
-    let runStatus = 'running';
-    for (const candidate of candidates) {
-      if (this.stopping || Date.now() >= deadline) break;
-      if (!policy.enabled || candidate.activationId !== policy.activationId) continue;
-      if (candidate.shadowOnly) {
-        await this.store.finish(candidate, 'skipped', { outcomeCode: 'shadow' });
-        continue;
-      }
-      if (candidate.sourceAt.getTime() + policy.hours * 3_600_000 > Date.now()) {
-        await this.prisma.messageRetentionCandidate.updateMany({
-          where: {
-            chatId,
-            messageId: candidate.messageId,
-            activationId: candidate.activationId,
-            status: { in: ['pending', 'retry'] },
-          },
-          data: { status: 'pending', outcomeCode: null },
-        });
-        continue;
-      }
-      if (this.store.mode === 'shadow' || processed >= limit) break;
-      // FLAG: A quiet period never reserves a whole visit. New higher-priority work
-      // yields before creating another intent; transport rechecks every HTTP attempt.
-      const fresh = await this.remoteDecision(chatId);
-      if (fresh.action === 'pause') {
-        this.deferRemoteAdmission(fresh.retryAfterMs);
-        await this.store.updateRunStatus(chatId, policy.revision, 'paused');
-        await this.prisma.messageRetentionPolicy.updateMany({
-          where: { chatId, revision: policy.revision },
-          data: { nextRunAt: new Date(this.nextRemoteAdmissionAt) },
-        });
-        return;
-      }
-      processed++;
-      let delayMs = decision.action === 'slow' ? 120_000 : 60_000;
-      let outcomeCode: RetentionOutcomeCode = 'deferred';
-      try {
-        let intentId = candidate.intentId ?? (await this.deletes.ensureRetentionIntent(candidate));
-        let intent = await this.prisma.moderationDeleteIntent.findUnique({
-          where: { id: intentId },
-          select: receiptSelect,
-        });
-        if (!intent) {
-          intentId = await this.deletes.ensureRetentionIntent(candidate);
-          intent = await this.prisma.moderationDeleteIntent.findUniqueOrThrow({
-            where: { id: intentId },
-            select: receiptSelect,
-          });
-        }
-        // FLAG: An independent intent is observed, never executed in the retention lane.
-        let result = intent.retentionOwned
-          ? await this.deletes.attemptRetentionIntent(intentId)
-          : intent;
-        if (result.status === 'SUCCEEDED' || result.status === 'ALREADY_ABSENT') {
-          await this.store.finish(candidate, 'deleted');
-          continue;
-        }
-        if (['FAILED_TERMINAL', 'EXPIRED', 'OBSERVED'].includes(result.status)) {
-          const receipt = await this.prisma.moderationDeleteIntent.findUnique({
-            where: { id: intentId },
-            select: receiptSelect,
-          });
-          if (receipt) result = receipt;
-          if (result.status === 'SUCCEEDED' || result.status === 'ALREADY_ABSENT') {
-            await this.store.finish(candidate, 'deleted');
-            continue;
-          }
-          // FLAG: A legacy terminal label cannot discard a dispatched mutation receipt.
-          // Release active credit while independent read-only reconciliation owns its evidence.
-          if (receipt?.retentionOwned && hasMutationEvidence(receipt)) {
-            await this.store.finish(candidate, 'skipped', {
-              outcomeCode: 'reconciliation',
-              reconcile: true,
-            });
-            continue;
-          }
-          if (['FAILED_TERMINAL', 'EXPIRED', 'OBSERVED'].includes(result.status)) {
-            const protectedSkip =
-              result.retentionOwned &&
-              (result.lastErrorCode === 'message_retention_guard_rejected' ||
-                result.lastErrorCode?.startsWith('message_retention_guard:'));
-            const reason =
-              'reasonCode' in result && typeof result.reasonCode === 'string'
-                ? result.reasonCode
-                : result.lastErrorCode?.split(':')[1];
-            await this.store.finish(candidate, 'skipped', {
-              outcomeCode: protectedSkip ? retentionGuardOutcome(reason) : 'terminal_review',
-            });
-            continue;
-          }
-        }
-        delayMs = Math.max(delayMs, result.nextAttemptAt.getTime() - Date.now());
-        outcomeCode = result.status === 'WAITING_CAPABILITY' ? 'waiting_access' : 'deferred';
-      } catch (error: unknown) {
-        if (error instanceof MessageRetentionGuardError) {
-          if (error.disposition === 'skip') {
-            const outcome = retentionGuardOutcome(error.reasonCode);
-            await this.store.finish(candidate, outcome === 'cancelled' ? 'cancelled' : 'skipped', {
-              outcomeCode: outcome,
-              ...(outcome === 'cancelled' && candidate.intentId ? { reconcile: true } : {}),
-            });
-            continue;
-          }
-          outcomeCode = 'deferred';
-        } else if (
-          error instanceof MaxApiInternalRateLimitError &&
-          error.limitScope === 'retention_priority'
-        ) {
-          outcomeCode = 'deferred';
-          delayMs = Math.max(delayMs, error.retryAfterMs);
-          this.deferRemoteAdmission(delayMs);
-        } else {
-          outcomeCode = 'worker_error';
-          delayMs = 5 * 60_000;
-        }
-      }
-      await this.prisma.messageRetentionCandidate.updateMany({
-        where: {
-          chatId,
-          messageId: candidate.messageId,
-          activationId: candidate.activationId,
-          status: { in: ['pending', 'retry'] },
-        },
-        data: { status: 'retry', nextAttemptAt: new Date(Date.now() + delayMs), outcomeCode },
-      });
-      if (outcomeCode === 'worker_error') runStatus = 'error';
-      else if (runStatus !== 'error' && outcomeCode === 'waiting_access') runStatus = 'no_access';
-      else if (runStatus === 'running') runStatus = 'delayed';
-    }
-    await this.store.updateRunStatus(chatId, policy.revision, runStatus);
-    await this.store.scheduleNext(chatId, { continueInactive: inactive.length === 100 });
+    await this.store.scheduleNext(chatId, { continueInactive: inactive.length > 0 });
     this.nextAdmissionAt = Date.now();
   }
 
-  private deferRemoteAdmission(retryAfterMs: number): void {
-    // FLAG: One local scheduler backoff covers the fleet. Age never bypasses it;
-    // confirmed receipt settlement and disabled-policy cancellation stay schedulable.
-    const delay = Math.min(300_000, Math.max(1_000, retryAfterMs));
-    this.nextRemoteAdmissionAt = Math.max(
-      this.nextRemoteAdmissionAt,
-      Date.now() + delay + Math.floor(Math.random() * 1_000),
-    );
-  }
-
-  private async remoteDecision(chatId: string): Promise<BackgroundRuntimeGovernorDecision> {
-    if (!this.store.allows(chatId, true))
-      return { action: 'pause', retryAfterMs: 60_000, reason: 'runtime_disabled' };
-    try {
-      const decision = await this.governor.decide({
-        component: MESSAGE_RETENTION_QUEUE,
-        sourceTag: MAX_API_SOURCE_TAGS.MESSAGE_RETENTION,
-      });
-      if (decision.action === 'pause') return decision;
-      const admission = await this.admission.decide();
-      return admission.allowed
-        ? decision
-        : { action: 'pause', retryAfterMs: admission.retryAfterMs, reason: admission.reason };
-    } catch {
-      return { action: 'pause', retryAfterMs: 60_000, reason: 'metrics_unavailable' };
-    }
-  }
-
-  private async reconcileReceipts(
-    chatId: string,
-    allowRead: boolean,
-    deadline: number,
-  ): Promise<void> {
+  private async reconcileReceipts(chatId: string, deadline: number): Promise<void> {
     const candidates = await this.store.dueReconciliations(chatId, 2);
     for (const candidate of candidates) {
       if (this.stopping || Date.now() >= deadline) break;
@@ -429,14 +226,7 @@ export class MessageRetentionRuntime implements OnModuleInit, OnModuleDestroy {
           );
           continue;
         }
-        const result = await this.deletes.reconcileRetentionIntent(candidate.intentId, {
-          allowRead,
-          canRead: async () => {
-            if (!this.store.allows(chatId, true)) return false;
-            const fresh = await this.remoteDecision(chatId);
-            return fresh.action !== 'pause' && this.store.allows(chatId, true);
-          },
-        });
+        const result = await this.deletes.reconcileRetentionIntent(candidate.intentId);
         if (result?.status === 'SUCCEEDED' || result?.status === 'ALREADY_ABSENT') {
           await this.store.settleReconciliation(candidate, 'deleted');
           continue;

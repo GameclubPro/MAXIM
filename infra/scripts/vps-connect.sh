@@ -970,6 +970,19 @@ if [[ "$connection_floor_required" -eq 1 && ( -e /var/lib/maxim-deploy/eraser-co
   maxim_topology_require_eraser_connection_requests "$(git rev-parse HEAD)" tooling || exit 1
 fi
 
+# FLAG: API retirement survives old environment flags and controller rollback.
+retirement_floor_required=1
+if [[ "$entrypoint" == ./infra/scripts/vps-release-rollback.sh && $# -gt 1 ]]; then
+  retirement_floor_required=0
+  for component in "${@:2}"; do
+    if [[ "$component" == api-shared ]]; then retirement_floor_required=1; fi
+  done
+fi
+if [[ "$retirement_floor_required" -eq 1 && ( -e /var/lib/maxim-deploy/legacy-message-retention-retirement-version || -L /var/lib/maxim-deploy/legacy-message-retention-retirement-version ) ]]; then
+  source infra/scripts/lib/deploy-topology.sh
+  maxim_topology_require_retired_message_retention "$(git rev-parse HEAD)" tooling || exit 1
+fi
+
 # FLAG: Image-only API/static rollback leaves Lastik and controller files unchanged.
 rate_limit_floor_required=1
 if [[ "$entrypoint" == ./infra/scripts/vps-release-rollback.sh && $# -gt 1 ]]; then
@@ -1002,6 +1015,10 @@ if [[ "$(git rev-parse --verify refs/heads/main 2>/dev/null || true)" != "$expec
   exit 1
 fi
 require_market_statistics_lock_dispatch "$expected_tooling_sha" || exit 1
+if [[ -e /var/lib/maxim-deploy/legacy-message-retention-retirement-version || -L /var/lib/maxim-deploy/legacy-message-retention-retirement-version ]]; then
+  source infra/scripts/lib/deploy-topology.sh
+  maxim_topology_require_retired_message_retention "$expected_tooling_sha" tooling || exit 1
+fi
 if [[ -e /var/lib/maxim-deploy/eraser-rate-limit-reader-version || -L /var/lib/maxim-deploy/eraser-rate-limit-reader-version ]]; then
   source infra/scripts/lib/deploy-topology.sh
   maxim_topology_require_eraser_rate_limit_reader "$expected_tooling_sha" tooling || exit 1

@@ -71,3 +71,8 @@ maxim_eraser_smoke() {
   local expected_sha="$1"
   node infra/scripts/eraser-smoke.mjs "$expected_sha"
 }
+
+# FLAG: Install before an API writer starts; old retention mode cannot undo retirement.
+maxim_eraser_install_retired_message_retention_floor() {
+  node infra/scripts/assert-eraser-source.mjs "$1" --install-retention-retirement-floor
+}

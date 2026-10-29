@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { assertLegacyRetentionRetirementSource } from './assert-eraser-source.mjs';
 import { assertSourceAbandonmentSource } from './assert-source-abandonment-source.mjs';
 
 export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
@@ -110,11 +111,24 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'NO_REPLAY_ORDER_RELEASED',
       'async isMessageHeld(',
       'async hasChatHolds(',
+      "'WebhookService',",
+      "'WebhookCanonicalExecutionService',",
+      "'WebhookOutboxService',",
+      "'GroupCommandAuthorityService',",
+      "'ModerationService',",
+      "'MaxClientService',",
+      "'MaxActionLedgerService',",
+      "'MaxActionDispatchService',",
+      "'ModerationDeleteIntentService',",
+      "'ModerationStateDeleteGuardService',",
       "'PrivateControlService',",
       "'MessageDuplicateDeleteGuardService',",
       "'MessageDuplicateMediaService',",
+      "'PhotoDuplicateModerationService',",
+      "'CommercialOcrModerationService',",
+      "'ModerationRuleFollowupService',",
+      "'GlobalSpammerIntelligenceService',",
       'async isAnyMessageSourceHeld(',
-      "'MessageRetentionStore',",
       "'PublisherChatCommentProducerService',",
       "'PublisherChatCommentDeliveryService',",
       'async isMemberHeld(',
@@ -251,15 +265,6 @@ export const LEGACY_DISPOSITION_SOURCE_CHECKS = Object.freeze([
       'await this.legacyHolds?.isMessageHeld(',
       'await this.legacyHolds?.isMemberHeld(',
       'await this.legacyHolds?.isGlobalUserHeld(',
-    ],
-  ],
-  [
-    'apps/api/src/message-retention/message-retention-store.service.ts',
-    [
-      'WebhookLegacyHoldService.forPrisma(this.prisma)',
-      'await holds?.isMessageHeld(',
-      'await holds?.isMemberHeld(',
-      'await holds?.isGlobalUserHeld(',
     ],
   ],
   [
@@ -476,6 +481,29 @@ export function assertLegacyDispositionSource(
         `Rollback target lacks permanent legacy disposition readers or final effect guards: ${path}`,
       );
     sources.set(path, source);
+  }
+  // FLAG: A removed intake needs no source admission; prove permanent retirement instead.
+  const retentionPath = 'apps/api/src/message-retention/message-retention-store.service.ts';
+  const retention = readSource(retentionPath);
+  const oldGuards = [
+    'WebhookLegacyHoldService.forPrisma(this.prisma)',
+    'await holds?.isMessageHeld(',
+    'await holds?.isMemberHeld(',
+    'await holds?.isGlobalUserHeld(',
+  ];
+  const legacyHoldSource = sources.get('apps/api/src/webhook/webhook-legacy-hold.service.ts');
+  if (
+    typeof retention !== 'string' ||
+    oldGuards.some((marker) => !retention.includes(marker)) ||
+    !legacyHoldSource?.includes("'MessageRetentionStore',")
+  ) {
+    try {
+      assertLegacyRetentionRetirementSource(commitSha, 'api-shared', readSource);
+    } catch {
+      throw new Error(
+        `Rollback target lacks permanent legacy disposition readers or final effect guards: ${retentionPath}`,
+      );
+    }
   }
   for (const [path, marker, minimum] of LEGACY_CLAIM_WRITER_SOURCE_COUNTS)
     if ((sources.get(path)?.split(marker).length ?? 1) - 1 < minimum)

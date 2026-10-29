@@ -1146,7 +1146,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
     const s = await fixture(2, 'on');
     await s.pause();
     Object.assign(s.ingress, {
-      messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+      messageRetention: new MessageRetentionStore(s.prisma as never, s.config),
     });
     const chatId = (await s.seedCatalog(1))[0]!;
     for (const bot of s.bots) s.denyBot(bot.id);
@@ -1915,7 +1915,7 @@ describeStores('native multibot ingress → outbox → moderation → guarded si
       await s.pause();
       if (type === 'message_removed')
         Object.assign(s.ingress, {
-          messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+          messageRetention: new MessageRetentionStore(s.prisma as never, s.config),
         });
       const [chatId, independentChatId] = await s.seedCatalog(2, {
         maxMessageLengthEnabled: false,

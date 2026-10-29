@@ -1,7 +1,4 @@
 import { MessageRetentionRuntime } from './message-retention-runtime.service';
-import { MessageRetentionGuardError } from './message-retention-delete-guard.service';
-import type { MessageRetentionAdmissionService } from '../system/message-retention-admission.service';
-import { MaxApiInternalRateLimitError } from '../max/max-client.service';
 
 function setup() {
   const policy = {
@@ -45,7 +42,7 @@ function setup() {
   };
   const store = {
     mode: 'on',
-    allows: jest.fn().mockReturnValue(true),
+    allows: jest.fn().mockReturnValue(false),
     workSchedulingFilter: () => ({ chatId: { in: ['-1'] } }),
     dueReconciliations: jest.fn().mockResolvedValue([]),
     deferReconciliation: jest.fn(),
@@ -53,29 +50,14 @@ function setup() {
     discoverLegacyReceipts: jest.fn(),
     retireTransferredCandidates: jest.fn(),
     updateRunStatus: jest.fn(),
-    resumeAdmission: jest.fn(),
-    dueCandidates: jest.fn().mockResolvedValue([candidate]),
+    dueInactiveCandidates: jest.fn().mockResolvedValue([]),
     cancelInactive: jest.fn(),
-    finish: jest.fn(),
     scheduleNext: jest.fn(),
     purge: jest.fn(),
   };
   const deletes = {
-    ensureRetentionIntent: jest.fn().mockResolvedValue('i'),
-    attemptRetentionIntent: jest.fn().mockResolvedValue({
-      retentionOwned: true,
-      status: 'SUCCEEDED',
-      nextAttemptAt: new Date(),
-      lastErrorCode: null,
-    }),
     reconcileRetentionIntent: jest.fn().mockResolvedValue({ status: 'ALREADY_ABSENT' }),
   };
-  const governor = { decide: jest.fn().mockResolvedValue({ action: 'run', retryAfterMs: 60_000 }) };
-  const admission = {
-    decide: jest
-      .fn<ReturnType<MessageRetentionAdmissionService['decide']>, []>()
-      .mockResolvedValue({ allowed: true, reason: 'allowed', retryAfterMs: 60_000 }),
-  } satisfies Pick<MessageRetentionAdmissionService, 'decide'>;
   const locks = {
     acquireLock: jest.fn().mockResolvedValue('lease'),
     renewLock: jest.fn().mockResolvedValue(true),
@@ -92,18 +74,14 @@ function setup() {
     prisma as never,
     store as never,
     deletes as never,
-    governor as never,
     locks as never,
     queue as never,
-    admission as unknown as MessageRetentionAdmissionService,
   );
   return {
     runtime,
     prisma,
     store,
     deletes,
-    governor,
-    admission,
     locks,
     queue,
     policy,
@@ -111,104 +89,25 @@ function setup() {
     intent,
   };
 }
-describe('retention runtime isolation', () => {
-  it('waits for quiet load without creating intents or consuming attempts', async () => {
-    const { runtime, admission, deletes, store, prisma, candidate } = setup();
-    candidate.sourceAt = new Date(Date.now() - 100 * 86_400_000);
-    admission.decide.mockResolvedValue({
-      allowed: false,
-      reason: 'current_window_incomplete',
-      retryAfterMs: 60_000,
-    });
-    await runtime.process('-1');
-    expect(deletes.ensureRetentionIntent).not.toHaveBeenCalled();
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-    expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'paused');
-  });
-  it('yields the rest of a visit when higher-priority work appears', async () => {
-    const { runtime, admission, store, deletes, candidate } = setup();
-    store.dueCandidates.mockResolvedValue([candidate, { ...candidate, messageId: 'next' }]);
-    admission.decide
-      .mockResolvedValueOnce({ allowed: true, reason: 'allowed', retryAfterMs: 1_000 })
-      .mockResolvedValueOnce({ allowed: true, reason: 'allowed', retryAfterMs: 1_000 })
-      .mockResolvedValue({ allowed: false, reason: 'higher_priority_active', retryAfterMs: 5_000 });
-    await runtime.process('-1');
-    expect(deletes.attemptRetentionIntent).toHaveBeenCalledTimes(1);
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'paused');
-    expect(store.scheduleNext).not.toHaveBeenCalled();
-  });
-  it('does not mistake a missing capacity observation for available capacity', async () => {
-    const { runtime, admission, deletes } = setup();
-    admission.decide.mockRejectedValue(new Error('lost observation'));
-    await runtime.process('-1');
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-  });
-  it('settles confirmed receipts from the database when governor observations fail', async () => {
-    const { runtime, governor, admission, store, deletes, candidate } = setup();
-    governor.decide.mockRejectedValue(new Error('governor observations unavailable'));
-    store.dueReconciliations.mockResolvedValue([
-      { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
-    ]);
-
-    await runtime.process('-1');
-
-    expect(deletes.reconcileRetentionIntent).toHaveBeenCalledWith('i', {
-      allowRead: false,
-      canRead: expect.any(Function),
-    });
-    expect(store.settleReconciliation).toHaveBeenCalledWith(expect.any(Object), 'deleted');
-    expect(admission.decide).not.toHaveBeenCalled();
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'paused');
-  });
-  it('defers final transport priority rejection without marking the module as broken', async () => {
-    const { runtime, deletes, store, prisma } = setup();
-    deletes.attemptRetentionIntent.mockRejectedValueOnce(
-      new MaxApiInternalRateLimitError('Higher-priority activity', 1_000, 'retention_priority'),
-    );
-
-    await runtime.process('-1');
-
-    expect(prisma.messageRetentionCandidate.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'retry', outcomeCode: 'deferred' }),
-      }),
-    );
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'delayed');
-  });
-  it('presents expected verification deferrals as delayed work, not a broken module', async () => {
-    const { runtime, deletes, store } = setup();
-    deletes.attemptRetentionIntent.mockResolvedValue({
-      retentionOwned: true,
-      status: 'RETRYABLE',
-      nextAttemptAt: new Date(),
-      lastErrorCode: 'message_retention_guard_rejected',
-    });
-    await runtime.process('-1');
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'delayed');
-  });
+describe('retired retention database maintenance', () => {
   afterEach(() => jest.useRealTimers());
-  it('resets an obsolete error status after a successful run with revision fencing', async () => {
-    const { runtime, store } = setup();
+  it('handles a stale queued job without creating or attempting an age-based deletion', async () => {
+    const { runtime, store, prisma } = setup();
     await runtime.process('-1');
-    expect(store.finish).toHaveBeenCalledWith(expect.any(Object), 'deleted');
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'running');
-  });
-  it('never executes an ordinary moderation intent', async () => {
-    const { runtime, intent, deletes } = setup();
-    intent.retentionOwned = false;
-    await runtime.process('-1');
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-  });
-  it('returns age-deferred candidates to indexed pending selection when the period increases', async () => {
-    const { runtime, policy, prisma, deletes } = setup();
-    policy.hours = 48;
-    await runtime.process('-1');
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-    expect(prisma.messageRetentionCandidate.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { status: 'pending', outcomeCode: null } }),
+    expect(store.dueInactiveCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true }),
     );
+    expect(store.cancelInactive).toHaveBeenCalledWith([]);
+    expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
+    expect(store.scheduleNext).toHaveBeenCalledWith('-1', { continueInactive: false });
+  });
+  it('releases ended generations through the retained bounded cancellation path', async () => {
+    const { runtime, store, candidate } = setup();
+    const ended = { ...candidate, activationId: 'ended' };
+    store.dueInactiveCandidates.mockResolvedValue([ended]);
+    await runtime.process('-1');
+    expect(store.cancelInactive).toHaveBeenCalledWith([ended]);
+    expect(store.scheduleNext).toHaveBeenCalledWith('-1', { continueInactive: true });
   });
   it('uses stable bounded queue slots and native chat deduplication', async () => {
     const { runtime, queue, prisma } = setup();
@@ -239,7 +138,7 @@ describe('retention runtime isolation', () => {
   });
   it('keeps bounded database maintenance running with MAX dispatch off', async () => {
     jest.useFakeTimers();
-    const { runtime, store, governor, queue } = setup();
+    const { runtime, store, queue } = setup();
     store.mode = 'off';
     await runtime.onModuleInit();
     expect(queue.setGlobalConcurrency).toHaveBeenCalledWith(1);
@@ -247,7 +146,6 @@ describe('retention runtime isolation', () => {
     jest.setSystemTime(Date.now() + 3_600_000);
     await runtime.tick();
     expect(store.purge).toHaveBeenCalledTimes(1);
-    expect(governor.decide).not.toHaveBeenCalled();
     await runtime.onModuleDestroy();
   });
   it('drains an in-flight scheduler and does not add work after shutdown begins', async () => {
@@ -270,86 +168,16 @@ describe('retention runtime isolation', () => {
     await stop;
     expect(queue.add).not.toHaveBeenCalled();
   });
-  it.each(['FAILED_TERMINAL', 'EXPIRED', 'OBSERVED'])(
-    'releases a candidate for %s instead of retrying a terminal intent',
-    async (status) => {
-      const { runtime, deletes, store, prisma, intent } = setup();
-      intent.status = status;
-      intent.lastErrorCode = 'max_bad_request';
-      deletes.attemptRetentionIntent.mockResolvedValue({
-        retentionOwned: true,
-        status,
-        nextAttemptAt: new Date(),
-        lastErrorCode: 'max_bad_request',
-      });
-      await runtime.process('-1');
-      expect(store.finish).toHaveBeenCalledWith(expect.any(Object), 'skipped', {
-        outcomeCode: 'terminal_review',
-      });
-      expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
-    },
-  );
-  it('uses final guard rejection as a protected skip', async () => {
-    const { runtime, deletes, store, intent } = setup();
-    intent.status = 'FAILED_TERMINAL';
-    intent.lastErrorCode = 'message_retention_guard_rejected';
-    deletes.attemptRetentionIntent.mockResolvedValue({
-      retentionOwned: true,
-      status: 'FAILED_TERMINAL',
-      nextAttemptAt: new Date(),
-      lastErrorCode: 'message_retention_guard_rejected',
-    });
-    await runtime.process('-1');
-    expect(store.finish).toHaveBeenCalledWith(expect.any(Object), 'skipped', {
-      outcomeCode: 'protected',
-    });
-  });
-  it('settles cancellation that wins while the producer creates an intent without a worker error', async () => {
-    const { runtime, deletes, candidate, policy, store, prisma } = setup();
-    candidate.intentId = null;
-    deletes.ensureRetentionIntent.mockImplementationOnce(async () => {
-      policy.enabled = false;
-      throw new MessageRetentionGuardError(
-        'skip',
-        'Retention activation ended',
-        'activation_ended',
-      );
-    });
-    await runtime.process('-1');
-    expect(store.finish).toHaveBeenCalledWith(candidate, 'cancelled', { outcomeCode: 'cancelled' });
-    expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'running');
-  });
-  it('defers a producer verification guard without classifying it as a worker failure', async () => {
-    const { runtime, deletes, candidate, store, prisma } = setup();
-    candidate.intentId = null;
-    deletes.ensureRetentionIntent.mockRejectedValueOnce(
-      new MessageRetentionGuardError('retry', 'Retention policy changed', 'policy_changed'),
-    );
-    await runtime.process('-1');
-    expect(prisma.messageRetentionCandidate.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'retry', outcomeCode: 'deferred' }),
-      }),
-    );
-    expect(store.updateRunStatus).toHaveBeenLastCalledWith('-1', 2, 'delayed');
-  });
   it('finalizes a cancelled receipt with dispatch off using only DB reconciliation', async () => {
-    const { runtime, store, governor, deletes, candidate } = setup();
+    const { runtime, store, deletes, candidate } = setup();
     store.mode = 'off';
     store.allows.mockReturnValue(false);
     store.dueReconciliations.mockResolvedValue([
       { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
     ]);
     await runtime.process('-1');
-    expect(deletes.reconcileRetentionIntent).toHaveBeenCalledWith('i', {
-      allowRead: false,
-      canRead: expect.any(Function),
-    });
+    expect(deletes.reconcileRetentionIntent).toHaveBeenCalledWith('i');
     expect(store.settleReconciliation).toHaveBeenCalledWith(expect.any(Object), 'deleted');
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-    expect(governor.decide).not.toHaveBeenCalled();
   });
   it('keeps unknown receipts visible and scheduled when off prohibits reads', async () => {
     const { runtime, store, deletes, candidate, intent } = setup();
@@ -365,7 +193,7 @@ describe('retention runtime isolation', () => {
     expect(store.settleReconciliation).not.toHaveBeenCalled();
   });
   it('settles an ended pre-dispatch ambiguous failure DB-only when all mutation markers are absent', async () => {
-    const { runtime, store, deletes, candidate, intent, governor } = setup();
+    const { runtime, store, deletes, candidate, intent } = setup();
     store.mode = 'off';
     store.allows.mockReturnValue(false);
     intent.status = 'AMBIGUOUS';
@@ -377,15 +205,13 @@ describe('retention runtime isolation', () => {
     await runtime.process('-1');
     expect(store.settleReconciliation).toHaveBeenCalledWith(expect.any(Object), 'cancelled');
     expect(store.deferReconciliation).not.toHaveBeenCalled();
-    expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
-    expect(governor.decide).not.toHaveBeenCalled();
   });
   it('preserves a dispatch marker that appears after the marker-free recovery snapshot', async () => {
     const { runtime, store, deletes, candidate, intent, prisma } = setup();
     store.dueReconciliations.mockResolvedValue([
       { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
     ]);
-    store.dueCandidates.mockResolvedValue([]);
+    store.dueInactiveCandidates.mockResolvedValue([]);
     prisma.moderationDeleteIntent.findUnique
       .mockResolvedValueOnce({ ...intent, status: 'AMBIGUOUS' })
       .mockResolvedValueOnce({
@@ -398,30 +224,13 @@ describe('retention runtime isolation', () => {
     expect(store.settleReconciliation).not.toHaveBeenCalled();
     expect(store.deferReconciliation).toHaveBeenCalledWith(expect.any(Object));
   });
-  it('keeps a marker-free ambiguous intent retryable while its candidate remains active', async () => {
-    const { runtime, deletes, intent, store, prisma } = setup();
-    intent.status = 'AMBIGUOUS';
-    deletes.attemptRetentionIntent.mockResolvedValue({
-      retentionOwned: true,
-      status: 'AMBIGUOUS',
-      nextAttemptAt: new Date(),
-      lastErrorCode: 'delete_intent_execution_failed',
-    });
-    await runtime.process('-1');
-    expect(store.finish).not.toHaveBeenCalled();
-    expect(prisma.messageRetentionCandidate.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'retry', outcomeCode: 'deferred' }),
-      }),
-    );
-  });
   it('settles an observed receipt instead of indefinitely deferring a terminal result', async () => {
     const { runtime, store, deletes, candidate, intent } = setup();
     intent.status = 'OBSERVED';
     store.dueReconciliations.mockResolvedValue([
       { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
     ]);
-    store.dueCandidates.mockResolvedValue([]);
+    store.dueInactiveCandidates.mockResolvedValue([]);
     deletes.reconcileRetentionIntent.mockResolvedValue({ status: 'OBSERVED' });
     await runtime.process('-1');
     expect(store.settleReconciliation).toHaveBeenCalledWith(expect.any(Object), 'terminal_review');
@@ -435,7 +244,7 @@ describe('retention runtime isolation', () => {
   ] as const)(
     'preserves a legacy terminal receipt with %s while mode off prevents verification',
     async (field) => {
-      const { runtime, store, deletes, candidate, intent, governor } = setup();
+      const { runtime, store, deletes, candidate, intent } = setup();
       store.mode = 'off';
       store.allows.mockReturnValue(false);
       intent.status = 'FAILED_TERMINAL';
@@ -447,8 +256,6 @@ describe('retention runtime isolation', () => {
       await runtime.process('-1');
       expect(store.settleReconciliation).not.toHaveBeenCalled();
       expect(store.deferReconciliation).toHaveBeenCalledWith(expect.any(Object));
-      expect(governor.decide).not.toHaveBeenCalled();
-      expect(deletes.attemptRetentionIntent).not.toHaveBeenCalled();
     },
   );
   it('preserves newly persisted dispatch evidence when a recovery claim returns the old terminal status', async () => {
@@ -456,7 +263,7 @@ describe('retention runtime isolation', () => {
     store.dueReconciliations.mockResolvedValue([
       { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
     ]);
-    store.dueCandidates.mockResolvedValue([]);
+    store.dueInactiveCandidates.mockResolvedValue([]);
     prisma.moderationDeleteIntent.findUnique
       .mockResolvedValueOnce({ ...intent, status: 'FAILED_TERMINAL' })
       .mockResolvedValueOnce({
@@ -475,7 +282,7 @@ describe('retention runtime isolation', () => {
     store.dueReconciliations.mockResolvedValue([
       { ...candidate, status: 'cancelled', reconcileAfter: new Date() },
     ]);
-    store.dueCandidates.mockResolvedValue([]);
+    store.dueInactiveCandidates.mockResolvedValue([]);
     prisma.moderationDeleteIntent.findUnique
       .mockResolvedValueOnce({
         ...intent,
@@ -493,23 +300,6 @@ describe('retention runtime isolation', () => {
     expect(store.settleReconciliation).toHaveBeenCalledWith(expect.any(Object), 'terminal_review');
     expect(store.deferReconciliation).not.toHaveBeenCalled();
   });
-  it('releases active credit but keeps a legacy terminal dispatch receipt under reconciliation', async () => {
-    const { runtime, deletes, intent, store, prisma } = setup();
-    intent.status = 'FAILED_TERMINAL';
-    intent.deleteDispatchStartedAt = new Date();
-    deletes.attemptRetentionIntent.mockResolvedValue({
-      retentionOwned: true,
-      status: 'FAILED_TERMINAL',
-      nextAttemptAt: new Date(),
-      lastErrorCode: 'legacy_error',
-    });
-    await runtime.process('-1');
-    expect(store.finish).toHaveBeenCalledWith(expect.any(Object), 'skipped', {
-      outcomeCode: 'reconciliation',
-      reconcile: true,
-    });
-    expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
-  });
   it('backs off idle polling, but a completed visit wakes ready work immediately', async () => {
     jest.useFakeTimers();
     const { runtime, prisma, queue } = setup();
@@ -521,11 +311,10 @@ describe('retention runtime isolation', () => {
     await runtime.tick();
     expect(queue.getJobCounts).toHaveBeenCalledTimes(2);
   });
-  it('does not query policies or governor while fixed slots are full', async () => {
-    const { runtime, queue, prisma, governor } = setup();
+  it('does not query policies while fixed slots are full', async () => {
+    const { runtime, queue, prisma } = setup();
     queue.getJobCounts.mockResolvedValue({ waiting: 99, active: 1 });
     await runtime.tick();
     expect(prisma.messageRetentionPolicy.findMany).not.toHaveBeenCalled();
-    expect(governor.decide).not.toHaveBeenCalled();
   });
 });

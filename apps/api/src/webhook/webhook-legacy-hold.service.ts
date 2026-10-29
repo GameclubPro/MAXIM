@@ -54,10 +54,11 @@ const protectedProviders = new Set([
   'ModerationRuleFollowupService',
   'GlobalSpammerIntelligenceService',
   'PrivateControlService',
-  'MessageRetentionStore',
   'PublisherChatCommentProducerService',
   'PublisherChatCommentDeliveryService',
 ]);
+// FLAG: The retired MessageRetentionStore performs database-only maintenance;
+// its removed intake cannot admit or dispatch effects. Active effect readers stay mandatory.
 const instances = new WeakMap<object, WebhookLegacyHoldService>();
 
 @Injectable()

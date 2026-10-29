@@ -15,6 +15,8 @@ export const ERASER_CONNECTION_REQUEST_FLOOR =
   '/var/lib/maxim-deploy/eraser-connection-request-version';
 export const ERASER_RATE_LIMIT_READER_FLOOR =
   '/var/lib/maxim-deploy/eraser-rate-limit-reader-version';
+export const LEGACY_RETENTION_RETIREMENT_FLOOR =
+  '/var/lib/maxim-deploy/legacy-message-retention-retirement-version';
 
 export const ERASER_RATE_LIMIT_READER_CHECKS = Object.freeze({
   eraser: [
@@ -214,6 +216,15 @@ export function installEraserRateLimitReaderFloor(path = ERASER_RATE_LIMIT_READE
   installReaderFloor(path, 'rate limit');
 }
 
+// FLAG: Retirement is permanent; flags and old journals cannot restore Major's age executor.
+export function validateLegacyRetentionRetirementFloor(path = LEGACY_RETENTION_RETIREMENT_FLOOR) {
+  validateReaderFloor(path, 'legacy retention retirement');
+}
+
+export function installLegacyRetentionRetirementFloor(path = LEGACY_RETENTION_RETIREMENT_FLOOR) {
+  installReaderFloor(path, 'legacy retention retirement');
+}
+
 // FLAG: A quoted or commented capability is not a reader. Keep quoted shell arguments intact,
 // but require each marker to start in executable source rather than a literal or comment.
 function activeReaderSource(raw, path) {
@@ -313,6 +324,163 @@ function activeReaderSource(raw, path) {
   return { source: visible.join(''), active };
 }
 
+export const LEGACY_RETENTION_RETIREMENT_CHECKS = Object.freeze({
+  'api-shared': [
+    [
+      'apps/api/src/message-retention/message-retention-store.service.ts',
+      ['export const LEGACY_RETENTION_EXECUTION_RETIRED = true;', 'return false;'],
+    ],
+    [
+      'apps/api/src/message-retention/message-retention-delete-guard.service.ts',
+      ['async assertAllowed(', 'throw new MessageRetentionGuardError('],
+    ],
+    [
+      'apps/api/src/message-retention/message-retention-binding.ts',
+      ['export function retentionBindingQuery('],
+    ],
+    [
+      'apps/api/src/moderation/moderation-delete-intent.service.ts',
+      ['async reconcileRetentionIntent('],
+    ],
+    [
+      'apps/api/src/message-retention/message-retention-runtime.service.ts',
+      ['async process(', 'reconcileRetentionIntent(', 'retireTransferredCandidates('],
+    ],
+  ],
+  tooling: [
+    [
+      'infra/scripts/lib/deploy-topology.sh',
+      [
+        'maxim_topology_require_retired_message_retention()',
+        '--validate-retention-retirement-floor',
+        '--retention-retirement "$component"',
+      ],
+    ],
+    [
+      'infra/scripts/vps-pull-build-up.sh',
+      [
+        'maxim_eraser_install_retired_message_retention_floor "$TARGET_SHA"',
+        'maxim_topology_require_retired_message_retention "$(git rev-parse "origin/$BRANCH")" tooling',
+        'maxim_topology_require_retired_message_retention "$(git rev-parse "refs/heads/$BRANCH")" tooling',
+      ],
+    ],
+    [
+      'infra/scripts/vps-release-rollback.sh',
+      ['maxim_topology_require_retired_message_retention "$API_SOURCE_SHA" api-shared'],
+    ],
+    [
+      'infra/scripts/vps-runtime-rollback.sh',
+      ['maxim_topology_require_retired_message_retention "$TARGET_FULL_SHA" all'],
+    ],
+    [
+      'infra/scripts/vps-connect.sh',
+      [
+        'legacy-message-retention-retirement-version',
+        'maxim_topology_require_retired_message_retention "$(git rev-parse HEAD)" tooling',
+        'maxim_topology_require_retired_message_retention "$expected_tooling_sha" tooling',
+      ],
+    ],
+    [
+      'infra/scripts/lib/eraser-deploy.sh',
+      [
+        'maxim_eraser_install_retired_message_retention_floor()',
+        '--install-retention-retirement-floor',
+      ],
+    ],
+    [
+      'infra/scripts/assert-eraser-source.mjs',
+      [
+        'export function assertLegacyRetentionRetirementSource(',
+        'validateLegacyRetentionRetirementFloor();',
+        'installLegacyRetentionRetirementFloor();',
+      ],
+    ],
+  ],
+});
+
+export function assertLegacyRetentionRetirementSource(
+  sha,
+  component = 'all',
+  readSource = (path) =>
+    execFileSync('git', ['show', `${sha}:${path}`], {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+) {
+  if (!/^[a-f0-9]{40}$/u.test(sha ?? ''))
+    throw new Error('Legacy retention retirement requires an exact source SHA.');
+  const scopes =
+    component === 'all' ? Object.keys(LEGACY_RETENTION_RETIREMENT_CHECKS) : [component];
+  if (scopes.some((scope) => !Object.hasOwn(LEGACY_RETENTION_RETIREMENT_CHECKS, scope)))
+    throw new Error('Unknown legacy retention retirement component.');
+  const sources = new Map();
+  for (const scope of scopes) {
+    for (const [path, markers] of LEGACY_RETENTION_RETIREMENT_CHECKS[scope]) {
+      const { source, active } = activeReaderSource(readSource(path), path);
+      sources.set(path, source);
+      if (
+        markers.some((marker) => {
+          for (let at = source.indexOf(marker); at >= 0; at = source.indexOf(marker, at + 1))
+            if (active[at]) return false;
+          return true;
+        })
+      )
+        throw new Error(`Rollback target lacks permanent legacy retention retirement: ${path}`);
+    }
+  }
+  if (!scopes.includes('api-shared')) return;
+  const store = sources.get('apps/api/src/message-retention/message-retention-store.service.ts');
+  const guard = sources.get(
+    'apps/api/src/message-retention/message-retention-delete-guard.service.ts',
+  );
+  const bindingReader = sources.get('apps/api/src/message-retention/message-retention-binding.ts');
+  const executor = sources.get('apps/api/src/moderation/moderation-delete-intent.service.ts');
+  const runtime = sources.get(
+    'apps/api/src/message-retention/message-retention-runtime.service.ts',
+  );
+  const forbidden =
+    /\b(?:ensureRetentionIntent|attemptRetentionIntent|captureRetentionMessage|readRetentionCapture)\s*\(/u;
+  const dispatch = /if\s*\(intent\.retentionOwned\)\s*(?:\{\s*)?return false;/u;
+  const allows = /\ballows\([^)]*\)\s*:\s*boolean\s*\{\s*return false;\s*\}/u;
+  const rejectOnly =
+    /async assertAllowed\([\s\S]*?\)\s*:\s*Promise<void>\s*\{\s*throw new MessageRetentionGuardError\(/u;
+  const remoteOrWriteGuard =
+    /\b(?:MaxClientService|MaxBotLinkService|BackgroundRuntimeGovernorService|MessageRetentionAdmissionService|INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b|\bfetch\s*\(|\.(?:max|maxClient)\.|\.(?:create|update|delete|upsert)\w*\s*\(|\$executeRaw/u;
+  const reconcileStart = executor.indexOf('async reconcileRetentionIntent(');
+  const reconcileOpen = executor.indexOf('{', reconcileStart);
+  const { active: executorActive } = activeReaderSource(executor, 'executor.ts');
+  let reconcileEnd = reconcileOpen + 1;
+  let depth = 1;
+  for (; reconcileEnd < executor.length && depth > 0; reconcileEnd++) {
+    if (!executorActive[reconcileEnd]) continue;
+    if (executor[reconcileEnd] === '{') depth++;
+    if (executor[reconcileEnd] === '}') depth--;
+  }
+  const reconcile = executor.slice(reconcileOpen, reconcileEnd);
+  if (
+    depth !== 0 ||
+    !executor.includes('intent."retention_owned" = FALSE') ||
+    !allows.test(store) ||
+    !rejectOnly.test(guard) ||
+    remoteOrWriteGuard.test([guard, bindingReader].join('\n')) ||
+    !bindingReader.includes('WHERE intent."id" = ${intentId}') ||
+    !bindingReader.includes('LIMIT 1') ||
+    !guard.includes("'runtime_retired'") ||
+    !dispatch.test(executor) ||
+    forbidden.test([store, guard, executor, runtime].join('\n')) ||
+    /\b(?:verifyMessageAbsence|resolveDeleteRouteWithRefresh|\.max\.|\.maxClient\.)/u.test(
+      reconcile,
+    ) ||
+    /\b(?:MaxClientService|MessageRetentionAdmissionService|remoteDecision|allowRead|canRead)\b/u.test(
+      runtime,
+    )
+  )
+    throw new Error(
+      'Rollback target lacks permanent legacy retention retirement: executable boundary',
+    );
+}
+
 export function assertEraserRateLimitReaderSource(
   sha,
   component = 'all',
@@ -402,6 +570,14 @@ export function assertEraserSource(
   for (const [path, markers] of ERASER_SOURCE_CHECKS) {
     const source = readSource(path);
     if (typeof source !== 'string' || markers.some((marker) => !source.includes(marker))) {
+      if (path.endsWith('message-retention-delete-guard.service.ts')) {
+        try {
+          assertLegacyRetentionRetirementSource(sha, 'api-shared', readSource);
+          continue;
+        } catch {
+          /* A partial retirement is not a persisted ownership fence. */
+        }
+      }
       throw new Error(`Rollback target lacks the installed Lastik ownership reader: ${path}`);
     }
   }
@@ -417,6 +593,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
       installEraserConnectionRequestFloor();
     } else if (action === '--validate-connection-request-floor') {
       validateEraserConnectionRequestFloor();
+    } else if (action === '--retention-retirement') {
+      assertLegacyRetentionRetirementSource(sha, component);
+    } else if (action === '--install-retention-retirement-floor') {
+      assertLegacyRetentionRetirementSource(sha);
+      installLegacyRetentionRetirementFloor();
+    } else if (action === '--validate-retention-retirement-floor') {
+      validateLegacyRetentionRetirementFloor();
     } else if (action === '--rate-limit-reader') {
       assertEraserRateLimitReaderSource(sha, component);
     } else if (action === '--install-rate-limit-reader-floor') {

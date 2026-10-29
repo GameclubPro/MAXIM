@@ -13,7 +13,6 @@ import {
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import type { PGlite as EmbeddedPostgres } from '@electric-sql/pglite';
-import { captureRetentionMessage } from '../src/message-retention/message-retention-capture';
 import { purgeRetentionPage } from '../src/message-retention/message-retention-purge';
 import { discoverRetentionReceipts } from '../src/message-retention/message-retention-recovery';
 import { Prisma } from '../src/prisma/prisma-client';
@@ -38,19 +37,10 @@ if (postgresUrl && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(postgre
 
 describe('retention PostgreSQL statements', () => {
   let db: EmbeddedPostgres;
-  let calls: number;
   let postgres: Client | null = null;
   const schema = `retention_test_${randomUUID().replaceAll('-', '')}`;
-  const input = () => ({
-    chatId: '-1',
-    messageId: 'm1',
-    authorId: 'u1',
-    originBotId: 'bot1',
-    sourceAt: new Date(),
-  });
   const adapter = {
     $queryRaw: async (query: Prisma.Sql) => {
-      calls++;
       return (
         await db.query(
           query.text,
@@ -59,7 +49,6 @@ describe('retention PostgreSQL statements', () => {
       ).rows;
     },
     $executeRaw: async (query: Prisma.Sql) => {
-      calls++;
       return (
         await db.query(
           query.text,
@@ -106,7 +95,6 @@ describe('retention PostgreSQL statements', () => {
     await db.exec(reconciliationMigration);
   });
   beforeEach(async () => {
-    calls = 0;
     await db.exec(`BEGIN; INSERT INTO chats(id) VALUES ('-1');
       INSERT INTO message_retention_policies(chat_id, activation_id, quota_shard, enabled, capture_after)
       VALUES ('-1', 'activation', 0, TRUE, CURRENT_TIMESTAMP - INTERVAL '1 hour');`);
@@ -133,145 +121,6 @@ describe('retention PostgreSQL statements', () => {
       FROM message_retention_policies p JOIN message_retention_quotas q ON q.shard=p.quota_shard WHERE p.chat_id='-1'`)
     ).rows[0]!;
   }
-  it('admits in three statements and does not charge mirrored/replayed receipts twice', async () => {
-    const message = input();
-    await captureRetentionMessage(adapter as never, message, false);
-    assert.equal(
-      calls,
-      3,
-      JSON.stringify({
-        source: message.sourceAt,
-        clock: (
-          await db.query(
-            'SELECT CURRENT_TIMESTAMP::text AS now, capture_after::text FROM message_retention_policies',
-          )
-        ).rows,
-      }),
-    );
-    assert.deepEqual(await snapshot(), {
-      pending_count: 1,
-      quota_count: 1,
-      skipped_count: 0,
-      candidates: 1,
-    });
-    calls = 0;
-    await captureRetentionMessage(adapter as never, { ...message, originBotId: 'bot2' }, false);
-    assert.equal(calls, 1);
-    assert.deepEqual(await snapshot(), {
-      pending_count: 1,
-      quota_count: 1,
-      skipped_count: 0,
-      candidates: 1,
-    });
-  });
-  it('rolls back admission and both quota changes together', async () => {
-    await db.exec('SAVEPOINT before_capture');
-    await captureRetentionMessage(adapter as never, input(), false);
-    await db.exec('ROLLBACK TO SAVEPOINT before_capture');
-    assert.deepEqual(await snapshot(), {
-      pending_count: 0,
-      quota_count: 0,
-      skipped_count: 0,
-      candidates: 0,
-    });
-  });
-  it(
-    'does not double-charge receipts that wait behind another PostgreSQL transaction',
-    { skip: !postgresUrl },
-    async () => {
-      await db.exec('COMMIT');
-      const first = new Client({ connectionString: postgresUrl, statement_timeout: 5000 });
-      const second = new Client({ connectionString: postgresUrl, statement_timeout: 5000 });
-      await first.connect();
-      await second.connect();
-      try {
-        for (const connection of [first, second])
-          await connection.query(`SET search_path TO "${schema}"; SET TIME ZONE 'UTC'; BEGIN`);
-        const parameters = (query: Prisma.Sql) =>
-          query.values.map((v) => (v instanceof Date ? v.toISOString() : v));
-        const wrap = (connection: Client, observe = () => {}) => ({
-          $queryRaw: async (query: Prisma.Sql) => {
-            observe();
-            return (await connection.query(query.text, parameters(query))).rows;
-          },
-          $executeRaw: async (query: Prisma.Sql) =>
-            (await connection.query(query.text, parameters(query))).rowCount,
-        });
-        const message = input();
-        await captureRetentionMessage(wrap(first) as never, message, false);
-        let secondQuery = 0;
-        let enteredLock!: () => void;
-        const waiting = new Promise<void>((resolve) => {
-          enteredLock = resolve;
-        });
-        const mirrored = captureRetentionMessage(
-          wrap(second, () => {
-            if (++secondQuery === 2) enteredLock();
-          }) as never,
-          message,
-          false,
-        );
-        await waiting;
-        await first.query('COMMIT');
-        await mirrored;
-        await second.query('COMMIT');
-        assert.deepEqual(await snapshot(), {
-          pending_count: 1,
-          quota_count: 1,
-          skipped_count: 0,
-          candidates: 1,
-        });
-      } finally {
-        await first.end();
-        await second.end();
-      }
-    },
-  );
-  for (const reason of ['disabled', 'old', 'administrator', 'missing-chat'])
-    it(`does not lock quotas for ${reason}`, async () => {
-      const message = input();
-      if (reason === 'disabled')
-        await db.exec('UPDATE message_retention_policies SET enabled=FALSE');
-      if (reason === 'old') message.sourceAt = new Date(0);
-      if (reason === 'administrator')
-        await db.exec(
-          "INSERT INTO managed_entity_admin_members VALUES ('-1','u1','CHAT','ADMIN',CURRENT_TIMESTAMP + INTERVAL '1 hour')",
-        );
-      if (reason === 'missing-chat') await db.exec("DELETE FROM chats WHERE id='-1'");
-      await captureRetentionMessage(adapter as never, message, false);
-      assert.equal(calls, 1);
-      assert.equal((await snapshot()).candidates, 0);
-    });
-  it('preserves the pause recovery clock and records only the first pause', async () => {
-    await db.exec('UPDATE message_retention_quotas SET pending_count=50000 WHERE shard=0');
-    assert.equal(await captureRetentionMessage(adapter as never, input(), false), true);
-    await db.exec("UPDATE message_retention_policies SET healthy_since=TIMESTAMP '2026-09-01'");
-    assert.equal(
-      await captureRetentionMessage(adapter as never, { ...input(), messageId: 'm2' }, false),
-      false,
-    );
-    assert.equal((await snapshot()).skipped_count, 2);
-    assert.equal((await snapshot()).candidates, 0);
-    assert.deepEqual((await db.query('SELECT count(*)::int AS n FROM audit_logs')).rows[0], {
-      n: 1,
-    });
-    assert.deepEqual(
-      (
-        await db.query<{ healthy_since: Date }>(
-          'SELECT healthy_since FROM message_retention_policies',
-        )
-      ).rows[0]!.healthy_since,
-      new Date('2026-09-01Z'),
-    );
-  });
-  it('marks shadow captures permanently non-executable', async () => {
-    await captureRetentionMessage(adapter as never, input(), true);
-    assert.deepEqual(
-      (await db.query('SELECT shadow_only FROM message_retention_candidates')).rows[0],
-      { shadow_only: true },
-    );
-  });
-
   async function receipt(
     id: string,
     status: string,

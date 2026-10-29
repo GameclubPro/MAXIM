@@ -5,6 +5,29 @@ Redis, queue, policies, compact deletion journals and history cursors belong onl
 Lastik. It is not a fifteenth shared API role. Moderation only changes authenticated
 settings and delivers protected publication references.
 
+## Retired Major executor
+
+Lastik is the sole executor of age-based message cleanup. Major no longer captures
+retention candidates, creates retention DELETE intents, prepares author/pin checks,
+or executes their DELETEs. `ERASER_ENABLED=false`, old `MESSAGE_RETENTION_MODE`
+values and a Lastik outage do not reactivate this removed engine. The settings API
+requires Lastik for changes; it does not enable the old policy as a fallback.
+
+The existing `api-message-retention` role and queue remain for bounded database-only
+compatibility maintenance: transferred-generation retirement, known positive-receipt
+settlement and expiry of eligible completed records. Unknown effects and their original
+journals remain retained. Maintenance never reads or mutates MAX. Existing ordinary
+moderation and its separate deletion reasons continue through their own guards.
+
+An API release installs the permanent `0600` marker
+`/var/lib/maxim-deploy/legacy-message-retention-retirement-version` with value `1`
+before starting writers. Both API rollback paths and controller synchronization require
+this retired executor capability after installation; disabling flags or exhausting the
+queue never lowers it. Static-only immutable rollback keeps its component scope.
+The original ownership, protection, connection and cooldown reader floors remain
+independent and unchanged. Preserved tables and migrations are historical evidence,
+not a second execution path; do not drop them or clear their queues as code cleanup.
+
 ## Prerequisites and bootstrap
 
 Require exact-SHA `Required` and `Analyze JavaScript and TypeScript` success. Inspect

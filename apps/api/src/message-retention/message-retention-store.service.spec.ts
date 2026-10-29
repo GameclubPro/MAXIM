@@ -88,27 +88,29 @@ function setup() {
 }
 
 describe('retention state ownership', () => {
-  it('cannot cancel the active generation using an old worker snapshot', async () => {
-    const { store, prisma } = setup();
-    expect(
-      await store.finish(
-        { chatId: '-1', messageId: 'm', activationId: 'new' } as never,
-        'cancelled',
-      ),
-    ).toBe(false);
-    expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
-  });
-  it('settles once and locks quota before policy before candidate', async () => {
-    const { store, prisma } = setup();
-    const message = { chatId: '-1', messageId: 'm', activationId: 'old' };
-    expect(await store.finish(message as never, 'deleted')).toBe(true);
-    expect(prisma.$queryRaw.mock.calls[0][0].join('')).toContain('message_retention_quotas');
-    expect(prisma.$queryRaw.mock.calls[1][0].join('')).toContain('message_retention_policies');
+  it('does not cancel an active current generation from stale reconciliation', async () => {
+    const { store, prisma, candidate } = setup();
+    candidate.status = 'pending';
+    candidate.reconcileAfter = new Date();
+    await store.settleReconciliation(candidate as never, 'cancelled');
     expect(prisma.messageRetentionCandidate.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ activationId: 'old' }) }),
+      expect.objectContaining({ data: { reconcileAfter: expect.any(Date) } }),
     );
-    prisma.messageRetentionCandidate.updateMany.mockResolvedValue({ count: 0 });
-    expect(await store.finish(message as never, 'deleted')).toBe(false);
+    expect(prisma.messageRetentionPolicy.update).not.toHaveBeenCalled();
+    expect(prisma.messageRetentionQuota.update).not.toHaveBeenCalled();
+  });
+  it('settles an exact authenticated receipt once and locks intent before quota before policy before candidate', async () => {
+    const { store, prisma, candidate } = setup();
+    candidate.status = 'pending';
+    const message = { chatId: '-1', messageId: 'm' };
+    expect(await store.settleRemovedMessage(prisma as never, message)).toBe(true);
+    expect(prisma.$queryRaw.mock.calls.map((call) => call[0].join(''))).toEqual([
+      expect.stringContaining('moderation_delete_intents'),
+      expect.stringContaining('message_retention_quotas'),
+      expect.stringContaining('message_retention_policies'),
+      expect.stringContaining('message_retention_candidates'),
+    ]);
+    expect(await store.settleRemovedMessage(prisma as never, message)).toBe(false);
     expect(prisma.messageRetentionQuota.update).toHaveBeenCalledTimes(1);
   });
   it('batch cancellation excludes the current generation and releases only changed rows', async () => {
@@ -126,25 +128,42 @@ describe('retention state ownership', () => {
       store.cancelInactive([{ chatId: '-1' }, { chatId: '-2' }] as never),
     ).rejects.toThrow('single-chat');
   });
-  it('filters the cohort before scheduling and refuses wildcard expansion', () => {
-    expect(setup().store.schedulingFilter()).toEqual({ chatId: { in: ['-1', '-2'] } });
-  });
-  it('does no resume work for a chat that is not capacity-paused', async () => {
-    const { store, prisma } = setup();
-    await store.resumeAdmission('-1');
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
-  });
-  it('resumes a stable low-watermark policy with a new capture baseline', async () => {
-    const { store, prisma, policy } = setup();
-    policy.pausedAt = new Date(Date.now() - 700_000);
-    policy.healthySince = new Date(Date.now() - 601_000);
-    await store.resumeAdmission('-1');
-    expect(prisma.messageRetentionPolicy.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ pausedAt: null, captureAfter: expect.any(Date) }),
-      }),
-    );
-    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+  it.each(['off', 'shadow', 'canary', 'on'])(
+    'never admits legacy execution with mode %s, regardless of Lastik availability',
+    (mode) => {
+      const { prisma } = setup();
+      for (const eraserEnabled of [false, true]) {
+        const store = new MessageRetentionStore(
+          prisma as never,
+          new ConfigService({
+            MESSAGE_RETENTION_MODE: mode,
+            MESSAGE_RETENTION_CANARY_CHAT_IDS: '-1',
+            ERASER_ENABLED: eraserEnabled,
+          }),
+        );
+        expect(store.allows('-1')).toBe(false);
+        expect(store.allows('-1', true)).toBe(false);
+        expect(store.workSchedulingFilter()).toEqual({
+          OR: [
+            { enabled: false, pendingCount: { gt: 0 } },
+            { enabled: true, candidates: { some: { status: { in: ['pending', 'retry'] } } } },
+            {
+              candidates: {
+                some: { outcomeCode: 'reconciliation', reconcileAfter: { lte: expect.any(Date) } },
+              },
+            },
+          ],
+        });
+      }
+      expect(prisma.messageRetentionCandidate.updateMany).not.toHaveBeenCalled();
+      expect(prisma.messageRetentionQuota.update).not.toHaveBeenCalled();
+    },
+  );
+  it('reports an enabled legacy policy as paused and a disabled policy as off', async () => {
+    const { store, policy } = setup();
+    expect(await store.summary('-1')).toMatchObject({ enabled: true, status: 'paused' });
+    policy.enabled = false;
+    expect(await store.summary('-1')).toMatchObject({ enabled: false, status: 'off' });
   });
   it('keeps old-generation receipts scheduled after releasing active credit', async () => {
     const { store, prisma } = setup();
@@ -253,89 +272,56 @@ describe('retention state ownership', () => {
       data: { pendingCount: { decrement: 1 } },
     });
   });
-  it('does not overwrite a persisted terminal blocker during an empty successful visit', async () => {
+  it('reads a persisted terminal blocker without rewriting its policy', async () => {
     const { store, prisma } = setup();
     prisma.$queryRaw.mockResolvedValue([{ enabled: true, hours: 48, hasTerminalReview: true }]);
-    await store.updateRunStatus('-1', 1, 'running');
-    expect(prisma.messageRetentionPolicy.updateMany).toHaveBeenCalledWith({
-      where: { chatId: '-1', revision: 1 },
-      data: { lastStatus: 'error' },
-    });
+    expect(await store.summary('-1')).toMatchObject({ status: 'error' });
+    expect(prisma.messageRetentionPolicy.updateMany).not.toHaveBeenCalled();
+    expect(prisma.messageRetentionPolicy.update).not.toHaveBeenCalled();
   });
-  it('makes overdue backlog immediately ready instead of adding a 30-second cooldown', async () => {
+  it('does not reschedule enabled legacy history after a maintenance visit', async () => {
     const { store, prisma } = setup();
-    const now = Date.now();
-    prisma.messageRetentionCandidate.findFirst.mockResolvedValueOnce({
-      sourceAt: new Date(now - 49 * 3_600_000),
-    });
     await store.scheduleNext('-1');
-    const next = prisma.messageRetentionPolicy.update.mock.calls[0][0].data.nextRunAt as Date;
-    expect(next.getTime()).toBeLessThan(now + 1_000);
-  });
-  it('selects shadow rows separately from an older executable backlog', async () => {
-    const { store, prisma } = setup();
-    jest.spyOn(store, 'mode', 'get').mockReturnValue('shadow');
-    await store.dueCandidates({
-      chatId: '-1',
-      hours: 24,
-      enabled: true,
-      activationId: 'a',
-    } as never);
-    expect(prisma.messageRetentionCandidate.findMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ shadowOnly: true }) }),
-    );
-  });
-  it('reopens an exact reviewed candidate once with credit and audit in the same transaction', async () => {
-    const { store, prisma, intent } = setup();
-    const input = {
-      chatId: '-1',
-      messageId: 'm',
-      intentId: 'i',
-      activationId: 'new',
-      expectedRevision: 1,
-      expectedIntentUpdatedAt: intent.updatedAt,
-      expectedAttemptCount: 1,
-      actorUserId: 'operator',
-    };
-    expect(await store.reopenTerminalCandidate(input)).toBe(true);
-    expect(prisma.messageRetentionQuota.update).toHaveBeenCalledWith({
-      where: { shard: 0 },
-      data: { pendingCount: { increment: 1 } },
+    expect(prisma.messageRetentionPolicy.update).toHaveBeenCalledWith({
+      where: { chatId: '-1' },
+      data: { nextRunAt: null },
     });
-    expect(prisma.auditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          actorUserId: 'operator',
-          action: 'SAFETY_DESK_RETRY_MESSAGE_RETENTION',
-        }),
-      }),
+    expect(prisma.messageRetentionCandidate.findFirst).toHaveBeenCalledTimes(1);
+    expect(prisma.messageRetentionCandidate.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { chatId: '-1', reconcileAfter: { not: null } } }),
     );
-    expect(await store.reopenTerminalCandidate(input)).toBe(false);
-    expect(prisma.messageRetentionQuota.update).toHaveBeenCalledTimes(1);
   });
-  it.each(['old_activation', 'capacity', 'dispatch_evidence'])(
-    'refuses unsafe operator reopen for %s',
-    async (reason) => {
-      const { store, prisma, intent, policy, candidate } = setup();
-      if (reason === 'old_activation') candidate.activationId = 'old';
-      if (reason === 'capacity') policy.pendingCount = 40_000;
-      if (reason === 'dispatch_evidence') intent.deleteDispatchStartedAt = new Date();
-      expect(
-        await store.reopenTerminalCandidate({
-          chatId: '-1',
-          messageId: 'm',
-          intentId: 'i',
-          activationId: 'new',
-          expectedRevision: 1,
-          expectedIntentUpdatedAt: intent.updatedAt,
-          expectedAttemptCount: 1,
-          actorUserId: 'operator',
-        }),
-      ).toBe(false);
-      expect(prisma.messageRetentionQuota.update).not.toHaveBeenCalled();
-      expect(prisma.auditLog.create).not.toHaveBeenCalled();
-    },
-  );
+  it('keeps future receipt settlement scheduled while legacy execution is retired', async () => {
+    const { store, prisma } = setup();
+    const reconcileAfter = new Date(Date.now() + 60_000);
+    prisma.messageRetentionCandidate.findFirst.mockResolvedValue({ reconcileAfter });
+    await store.scheduleNext('-1');
+    expect(prisma.messageRetentionPolicy.update).toHaveBeenCalledWith({
+      where: { chatId: '-1' },
+      data: { nextRunAt: reconcileAfter },
+    });
+  });
+  it('never selects the current activation for age-based processing', async () => {
+    const { store, prisma, policy } = setup();
+    expect(await store.dueInactiveCandidates(policy as never)).toEqual([]);
+    expect(prisma.messageRetentionCandidate.findMany).toHaveBeenCalledTimes(4);
+    for (const call of prisma.messageRetentionCandidate.findMany.mock.calls) {
+      expect(call[0]).toMatchObject({ take: 100, where: { chatId: '-1' } });
+      expect(call[0].where.activationId).toEqual(
+        expect.objectContaining('lt' in call[0].where.activationId ? { lt: 'new' } : { gt: 'new' }),
+      );
+    }
+  });
+  it('selects a bounded batch of disabled candidates for SQL cancellation only', async () => {
+    const { store, prisma, policy } = setup();
+    policy.enabled = false;
+    await store.dueInactiveCandidates(policy as never);
+    expect(prisma.messageRetentionCandidate.findMany).toHaveBeenCalledWith({
+      where: { chatId: '-1', status: { in: ['pending', 'retry'] } },
+      orderBy: [{ messageId: 'asc' }],
+      take: 100,
+    });
+  });
   it('settles an authenticated removal once and protects independently owned intents', async () => {
     const { store, prisma, candidate } = setup();
     candidate.status = 'pending';

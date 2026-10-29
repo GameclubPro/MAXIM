@@ -9,7 +9,6 @@ import { createPrismaAdapter, PrismaClient } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ManagedEntitiesService } from './managed-entities.service';
 import type { AdminSettingsService } from './admin-settings.service';
-import type { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import type { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 import type { MaxClientService } from '../max/max-client.service';
 import { AdminMessageRetentionService } from './admin-message-retention.service';
@@ -83,9 +82,6 @@ integration('supplemental network settings with PostgreSQL', () => {
       prisma,
       access as unknown as ManagedEntitiesService,
       {
-        assertChatSettingsBotCapabilities: async () => undefined,
-      } as unknown as AdminSettingsBotCapabilityService,
-      {
         allows: () => true,
         mode: 'on',
         diagnostics: async () => ({ oldestDueAt: null, blockerStatus: null }),
@@ -155,7 +151,7 @@ integration('supplemental network settings with PostgreSQL', () => {
     await db.$disconnect();
   });
 
-  async function prepared(section: NetworkSettingsSection, changes: NetworkSettingsChange[]) {
+  async function previewed(section: NetworkSettingsSection, changes: NetworkSettingsChange[]) {
     const scope = {
       entityType: 'chat' as const,
       section,
@@ -173,8 +169,12 @@ integration('supplemental network settings with PostgreSQL', () => {
     });
     for (let i = 0; i < 8 && (await service.status(user, operationId)).status === 'PREVIEWING'; i++)
       await service.tick(1);
-    expect((await service.status(user, operationId)).status).toBe('PREPARED');
     return { operationId, previewHash: result.previewHash };
+  }
+  async function prepared(section: NetworkSettingsSection, changes: NetworkSettingsChange[]) {
+    const input = await previewed(section, changes);
+    expect((await service.status(user, input.operationId)).status).toBe('PREPARED');
+    return input;
   }
   async function apply(input: { operationId: string; previewHash: string }) {
     await service.apply(user, input);
@@ -216,20 +216,22 @@ integration('supplemental network settings with PostgreSQL', () => {
       }),
     ).toBe(2);
   });
-  it('keeps each retention duration and commits advertising changes without sending', async () => {
-    expect(
-      (
-        await apply(
-          await prepared('messageRetention', [
-            { path: 'messageRetention.enabled', op: 'set', value: true },
-          ]),
-        )
-      ).status,
-    ).toBe('COMPLETE');
+  it('rejects retention writes without Lastik, preserves legacy durations, and commits advertising without sending', async () => {
+    const input = await previewed('messageRetention', [
+      { path: 'messageRetention.enabled', op: 'set', value: true },
+    ]);
+    const preview = await service.status(user, input.operationId);
+    expect(preview.status).toBe('FAILED');
+    expect(preview.outcomes).toHaveLength(2);
+    expect(preview.outcomes.every((target) => target.status === 'FAILED')).toBe(true);
+    expect(preview.outcomes.map((target) => target.failureCode)).toEqual(
+      expect.arrayContaining(['TRANSIENT', 'PREFLIGHT_ABORTED']),
+    );
+    expect((await apply(input)).status).toBe('FAILED');
     for (const [index, id] of ids.entries())
       expect(
         await db.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: id } }),
-      ).toMatchObject({ enabled: true, hours: index === 0 ? 24 : 48, revision: 1 });
+      ).toMatchObject({ enabled: false, hours: index === 0 ? 24 : 48, revision: 0 });
     expect(
       (
         await apply(
@@ -254,20 +256,32 @@ integration('supplemental network settings with PostgreSQL', () => {
         publishedMessageId: `receipt-${index}`,
       });
   });
-  it('rejects a changed independent policy after confirmation and leaves every target untouched', async () => {
-    const input = await prepared('messageRetention', [
-      { path: 'messageRetention.hours', op: 'set', value: 48 },
+  it('rejects a changed independent advertising policy after confirmation and leaves every target untouched', async () => {
+    await db.advertisingPlacement.updateMany({
+      where: { chatId: { in: ids } },
+      data: { enabled: true, listingId: randomUUID() },
+    });
+    const input = await prepared('advertising', [
+      { path: 'advertising.enabled', op: 'set', value: false },
     ]);
-    await db.messageRetentionPolicy.update({
+    await db.advertisingPlacement.update({
       where: { chatId: ids[0]! },
       data: { revision: { increment: 1 } },
     });
+    const current = await db.advertisingPlacement.findMany({
+      where: { chatId: { in: ids } },
+      orderBy: { chatId: 'asc' },
+    });
     expect((await apply(input)).status).toBe('FAILED');
     expect(
-      (await db.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: ids[0]! } })).hours,
-    ).toBe(24);
+      await db.advertisingPlacement.findMany({
+        where: { chatId: { in: ids } },
+        orderBy: { chatId: 'asc' },
+      }),
+    ).toEqual(current);
+    expect(await db.advertisingPlacementSend.count({ where: { chatId: { in: ids } } })).toBe(0);
   });
-  it('rolls back the policy and audit if its durable receipt cannot commit', async () => {
+  it('cannot change a legacy policy or audit when Lastik is unavailable', async () => {
     const id = ids[1]!;
     const current = await db.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: id } });
     const auditCount = await db.auditLog.count({
@@ -284,7 +298,7 @@ integration('supplemental network settings with PostgreSQL', () => {
           },
         },
       ),
-    ).rejects.toThrow('receipt rejected');
+    ).rejects.toMatchObject({ status: 503 });
     expect(await db.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: id } })).toEqual(
       current,
     );

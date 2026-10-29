@@ -4,7 +4,8 @@ import { after, before, describe, it } from 'node:test';
 import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { RedisCounterService } from '../src/moderation/redis-counter.service';
-import type { MessageRetentionAdmissionService } from '../src/system/message-retention-admission.service';
+import type { MessageRetentionStore } from '../src/message-retention/message-retention-store.service';
+import type { ModerationDeleteIntentService } from '../src/moderation/moderation-delete-intent.service';
 import {
   MessageRetentionRuntime,
   type MessageRetentionJob,
@@ -117,25 +118,24 @@ describe('retention scheduler with real isolated Redis and BullMQ', { skip: !red
     const runtime = new MessageRetentionRuntime(
       prisma as never,
       {
-        mode: 'on',
         workSchedulingFilter: () => ({}),
+        retireTransferredCandidates: async () => undefined,
         discoverLegacyReceipts: async () => undefined,
         purge: async () => undefined,
-      } as never,
+      } satisfies Pick<
+        MessageRetentionStore,
+        'workSchedulingFilter' | 'retireTransferredCandidates' | 'discoverLegacyReceipts' | 'purge'
+      > as MessageRetentionStore,
       {
-        attemptRetentionIntent: async () => {
-          throw new Error('Queue admission must never execute a MAX mutation');
+        reconcileRetentionIntent: async () => {
+          throw new Error('Queue admission must never process legacy receipts or execute MAX');
         },
-      } as never,
-      { decide: async () => ({ action: 'run' }) } as never,
+      } satisfies Pick<
+        ModerationDeleteIntentService,
+        'reconcileRetentionIntent'
+      > as unknown as ModerationDeleteIntentService,
       locks,
       queue,
-      {
-        decide: async () => ({ allowed: true, reason: 'allowed', retryAfterMs: 1_000 }),
-      } satisfies Pick<
-        MessageRetentionAdmissionService,
-        'decide'
-      > as MessageRetentionAdmissionService,
     );
     runtimes.push(runtime);
     return runtime;

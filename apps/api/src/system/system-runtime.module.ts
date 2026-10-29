@@ -10,7 +10,6 @@ import { ActionHealthService } from './action-health.service';
 import { ActionLatencyService } from './action-latency.service';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 import { MaxApiMetricsService } from './max-api-metrics.service';
-import { MessageRetentionAdmissionService } from './message-retention-admission.service';
 import { MaxActionLedgerWatchdogService } from './max-action-ledger-watchdog.service';
 import { AUXILIARY_QUEUE_NAMES, QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
@@ -37,7 +36,6 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     ActionHealthService,
     ActionLatencyService,
     MaxApiMetricsService,
-    MessageRetentionAdmissionService,
     MaxActionLedgerWatchdogService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,
@@ -52,7 +50,6 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     ActionHealthService,
     ActionLatencyService,
     MaxApiMetricsService,
-    MessageRetentionAdmissionService,
     RuntimeDiagnosticsService,
     BackgroundRuntimeGovernorService,
     SystemModeService,
