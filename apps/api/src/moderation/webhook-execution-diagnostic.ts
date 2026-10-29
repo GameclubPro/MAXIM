@@ -1,4 +1,5 @@
 import type { Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { describeWebhookPreparationFailure } from '../webhook/webhook-preparation-diagnostic';
 import { readDuplicateLookupFailure } from './message-duplicate/message-duplicate-lookup-diagnostic';
 import { readModerationGuardFailure } from './moderation-guard-failure-diagnostic';
@@ -14,11 +15,28 @@ export function logWebhookExecutionFailure(
   stage: WebhookExecutionFailureStage,
   error: unknown,
   hotPathStage?: unknown,
+  webhookEventId?: unknown,
 ): void {
   logger.warn(
-    { stage, ...describeWebhookExecutionFailure(error, hotPathStage) },
+    {
+      stage,
+      eventRef: webhookDiagnosticReference(webhookEventId),
+      ...describeWebhookExecutionFailure(error, hotPathStage),
+    },
     'Webhook execution failed before recovery settlement',
   );
+}
+
+// FLAG: Correlate the first failure with later settlement without emitting receipt,
+// participant or chat identities, source text, tokens or arbitrary exception fields.
+export function webhookDiagnosticReference(webhookEventId: unknown): string | null {
+  if (
+    typeof webhookEventId !== 'string' ||
+    webhookEventId.length === 0 ||
+    webhookEventId.length > 128
+  )
+    return null;
+  return createHash('sha256').update(webhookEventId).digest('hex').slice(0, 24);
 }
 
 const HOT_PATH_STAGES = new Set([

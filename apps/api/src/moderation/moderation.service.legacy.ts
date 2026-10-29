@@ -1377,7 +1377,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (error instanceof WebhookPreparationDeferredError)
         throw new WebhookPreparationRetryError(webhookEventId, error);
       if (error instanceof WebhookOrderedPredecessorPendingError) throw error;
-      logWebhookExecutionFailure(this.logger, 'preparation', error);
+      logWebhookExecutionFailure(this.logger, 'preparation', error, undefined, webhookEventId);
       throw error;
     }
     if (!execution) {
@@ -1477,6 +1477,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         failureStage,
         error,
         this.readWebhookHotPathProfileSnapshot(hotPathProfile)?.latestStage,
+        webhookEventId,
       );
       // FLAG: A returned handler with unresolved database finalization must retain its exact
       // owner lease and replay fence; this is neither handler failure nor preparation retry.
