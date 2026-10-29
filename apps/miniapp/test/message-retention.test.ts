@@ -356,3 +356,41 @@ test('nested leave guards preserve the parent guard and stop navigation on a fai
   assert.deepEqual(events, ['child', 'discard-parent', 'discard-child']);
   assert.equal(await combineManagedEntityLeaveGuards([parent]).save(), true);
 });
+
+test('eligible deletion age never falls back to mixed legacy or uncertain journal ages', async () => {
+  const { retentionEligibleSince, retentionHistoryLabel } =
+    await import('../src/pages/settings/settings-message-retention-model');
+  const initial = await getMessageRetention(createPreviewApiTransport(), PREVIEW_CHAT_ID);
+  const state = { ...initial, pendingCount: 4, oldestDueAt: '2026-10-01T00:00:00.000Z' };
+  assert.equal(retentionEligibleSince(state), null);
+  const progress = {
+    pendingCountComplete: true,
+    eligibleCount: 0,
+    eligibleCountComplete: true,
+    oldestEligibleDueAt: null,
+    unknownCount: 2,
+    unknownCountComplete: true,
+    oldestUnknownAt: '2026-10-02T00:00:00.000Z',
+  };
+  assert.equal(retentionEligibleSince({ ...state, progress }), null);
+  assert.equal(
+    retentionEligibleSince({
+      ...state,
+      progress: { ...progress, eligibleCount: 1, oldestEligibleDueAt: '2026-10-29T00:00:00.000Z' },
+    }),
+    '2026-10-29T00:00:00.000Z',
+  );
+  assert.equal(
+    retentionHistoryLabel({
+      ...state,
+      historyStatus: 'complete',
+      coverage: {
+        lastCompletedAt: null,
+        gap: true,
+        protectedHistory: false,
+        executionStopped: false,
+      },
+    }),
+    'Часть истории ещё не проверена',
+  );
+});

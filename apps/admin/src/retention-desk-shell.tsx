@@ -40,17 +40,26 @@ export function RetentionRuntimeMetrics({
 }: {
   runtime: SafetyDeskRetentionRuntimeResponse | null;
 }) {
+  const unavailable = runtime?.unavailableSources?.length ?? 0;
+  const complete = runtime?.incomplete === false && unavailable === 0;
+  const reviewCount =
+    runtime?.items.filter((item) => item.hasTerminalReview || item.hasUnresolvedReceipt).length ??
+    0;
   return (
     <>
-      <Metric label="Чатов на странице" value={String(runtime?.items.length ?? 0)} tone="neutral" />
       <Metric
-        label="Нужна проверка"
-        value={String(
-          runtime?.items.filter((item) => item.hasTerminalReview || item.hasUnresolvedReceipt)
-            .length ?? 0,
-        )}
+        label="Чатов на странице"
+        value={runtime ? String(runtime.items.length + unavailable) : '—'}
+        tone="neutral"
+      />
+      <Metric
+        label={complete ? 'Нужна проверка' : 'Проверка (по доступным)'}
+        value={runtime && (runtime.items.length > 0 || complete) ? String(reviewCount) : '—'}
         tone="warning"
       />
+      {unavailable > 0 && (
+        <Metric label="Без диагностики" value={String(unavailable)} tone="warning" />
+      )}
     </>
   );
 }

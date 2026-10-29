@@ -1,7 +1,14 @@
 import type { SafetyDeskRetentionRuntimeItem } from '@maxim/contracts/safety-desk';
 import { useRetentionDesk, type RetentionDeskProps } from './retention-desk-state';
 import { buildRetentionRetryRequest, formatDateTime } from './safety-desk-model';
-import { retentionDiagnosticLabels } from './retention-diagnostics';
+import {
+  retentionCountLabel,
+  retentionDiagnosticLabels,
+  retentionSourceLabel,
+  retentionWorkerWarning,
+  retentionPageWarning,
+} from './retention-diagnostics';
+import { RetentionConnectionDetails, RetentionRuntimeDetails } from './retention-details';
 
 const statusLabels: Record<SafetyDeskRetentionRuntimeItem['status'], string> = {
   off: 'Выключено',
@@ -20,7 +27,10 @@ export function RetentionDesk(props: RetentionDeskProps) {
     runtime,
     selected,
     preview,
+    previewPageAfter,
+    previewTrail,
     trail,
+    pageAfter,
     loading,
     previewLoading,
     busyMessageId,
@@ -28,6 +38,9 @@ export function RetentionDesk(props: RetentionDeskProps) {
     previewNotice,
     retryPage,
     loadPreview,
+    refreshPreview,
+    nextPreviewPage,
+    previousPreviewPage,
     retry,
     nextPage,
     previousPage,
@@ -71,8 +84,22 @@ export function RetentionDesk(props: RetentionDeskProps) {
                     </span>
                   ))}
                 </div>
-                {!runtime.items.length ? (
-                  <p className="queue-empty">Чатов с настройкой очистки пока нет.</p>
+                {retentionPageWarning(runtime) && (
+                  <p className="retention-alert">{retentionPageWarning(runtime)}</p>
+                )}
+                {retentionWorkerWarning(runtime) && (
+                  <p className="retention-alert" role="status">
+                    {retentionWorkerWarning(runtime)}
+                  </p>
+                )}
+                {!runtime.items.length && !runtime.unavailableSources?.length ? (
+                  <p className="queue-empty">
+                    {runtime.incomplete === false
+                      ? pageAfter || runtime.nextAfter
+                        ? 'На этой странице чатов нет.'
+                        : 'Чатов с настройкой очистки пока нет.'
+                      : 'Данные о чатах на этой странице не подтверждены.'}
+                  </p>
                 ) : (
                   <div className="retention-table-scroll">
                     <table className="retention-table">
@@ -81,7 +108,7 @@ export function RetentionDesk(props: RetentionDeskProps) {
                           <th>Чат / срок</th>
                           <th>Состояние</th>
                           <th>В очереди</th>
-                          <th>Удалено / пропущено</th>
+                          <th>Больше нет / пропущено</th>
                           <th>Следующий запуск</th>
                           <th>Диагностика</th>
                         </tr>
@@ -99,6 +126,7 @@ export function RetentionDesk(props: RetentionDeskProps) {
                                 {item.hours === 168 ? '1 неделя' : `${item.hours} ч`} ·{' '}
                                 {item.enabled ? 'Включено' : 'Выключено'}
                               </small>
+                              <small>{retentionSourceLabel(item.source)}</small>
                             </td>
                             <td>
                               <span
@@ -111,15 +139,60 @@ export function RetentionDesk(props: RetentionDeskProps) {
                               ))}
                             </td>
                             <td>
-                              {item.pendingCount}
+                              {retentionCountLabel(
+                                item.pendingCount,
+                                item.progress?.pendingCountComplete,
+                              )}
                               <small>
-                                {item.oldestDueAt
-                                  ? `Старейшее: ${dateLabel(item.oldestDueAt)}`
-                                  : 'Нет ожидающих'}
+                                {item.progress
+                                  ? `Готовы по сроку: ${retentionCountLabel(item.progress.eligibleCount, item.progress.eligibleCountComplete)}`
+                                  : 'Готовность по сроку неизвестна'}
+                              </small>
+                              {item.progress?.oldestEligibleDueAt && (
+                                <small>
+                                  Ожидают с {dateLabel(item.progress.oldestEligibleDueAt)}
+                                </small>
+                              )}
+                              {item.progress && (
+                                <small>
+                                  Результат не подтверждён:{' '}
+                                  {retentionCountLabel(
+                                    item.progress.unknownCount,
+                                    item.progress.unknownCountComplete,
+                                  )}
+                                </small>
+                              )}
+                              {item.progress?.oldestUnknownAt && (
+                                <small>
+                                  Неопределённый результат с{' '}
+                                  {dateLabel(item.progress.oldestUnknownAt)}
+                                </small>
+                              )}
+                              <small>
+                                {item.coverage?.lastCompletedAt
+                                  ? `Полный обход: ${dateLabel(item.coverage.lastCompletedAt)}`
+                                  : 'Полный обход не подтверждён'}
                               </small>
                             </td>
                             <td>
                               {item.deletedCount} / {item.skippedCount}
+                              {item.confirmationCounts ? (
+                                <>
+                                  <small>Первое подтверждение:</small>
+                                  <small>
+                                    По ответу удаления: {item.confirmationCounts.deleteAcknowledged}
+                                  </small>
+                                  <small>
+                                    По уведомлению: {item.confirmationCounts.removalReceipt}
+                                  </small>
+                                  <small>
+                                    Прежний счётчик без источника:{' '}
+                                    {item.confirmationCounts.historicalUnknown}
+                                  </small>
+                                </>
+                              ) : (
+                                <small>Источники подтверждений неизвестны</small>
+                              )}
                             </td>
                             <td>{dateLabel(item.nextRunAt)}</td>
                             <td>
@@ -133,10 +206,32 @@ export function RetentionDesk(props: RetentionDeskProps) {
                             </td>
                           </tr>
                         ))}
+                        {runtime.unavailableSources?.map((item) => (
+                          <tr key={`unavailable:${item.source}:${item.chatId}`}>
+                            <td>
+                              <strong>{item.chatTitle || item.chatId}</strong>
+                              <small>
+                                {item.chatId} · {retentionSourceLabel(item.source)}
+                              </small>
+                            </td>
+                            <td colSpan={5}>
+                              <span className="risk-badge is-high">Источник недоступен</span>
+                              <small>
+                                {item.reason === 'not_initialized'
+                                  ? 'Сохранённое подключение найдено, настройки источника недоступны.'
+                                  : item.reason === 'invalid_response'
+                                    ? 'Не удалось проверить ответ источника.'
+                                    : 'Не удалось получить состояние очистки.'}{' '}
+                                Счётчики неизвестны.
+                              </small>
+                            </td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
                 )}
+                <RetentionRuntimeDetails runtime={runtime} />
               </>
             )
           )}
@@ -144,7 +239,7 @@ export function RetentionDesk(props: RetentionDeskProps) {
         <footer className="retention-pagination">
           <span>
             {runtime
-              ? `Снимок: ${dateLabel(runtime.generatedAt)} · до 50 чатов`
+              ? `Снимок: ${dateLabel(runtime.generatedAt)} · до 50 чатов на странице${runtime.nextAfter ? ' · список продолжается' : pageAfter ? ' · последняя страница' : ''}`
               : 'До 50 чатов на странице'}
           </span>
           <button
@@ -168,17 +263,18 @@ export function RetentionDesk(props: RetentionDeskProps) {
           <header className="retention-toolbar">
             <div>
               <h2>{selected.chatTitle || selected.chatId}</h2>
-              <p>До 20 сообщений, требующих проверки. Повтор только ставит запись в очередь.</p>
+              <p>До 20 сообщений на странице. Повтор только ставит запись в очередь.</p>
             </div>
             <button
               className="ghost-action"
               disabled={previewLoading || busyMessageId !== null}
-              onClick={() => void loadPreview(selected)}
+              onClick={() => void refreshPreview()}
             >
               Обновить диагностику
             </button>
           </header>
           <div className="retention-preview-scroll">
+            <RetentionConnectionDetails item={selected} />
             {!selected.enabled && (
               <p className="retention-alert">Очистка выключена. Повтор недоступен.</p>
             )}
@@ -197,8 +293,24 @@ export function RetentionDesk(props: RetentionDeskProps) {
                   <p className="retention-snapshot">
                     Ревизия {preview.revision} · запуск {preview.activationId}
                   </p>
+                  <p className="retention-snapshot">
+                    {retentionSourceLabel(preview.source)} ·{' '}
+                    {preview.nextAfter
+                      ? 'Показана часть сообщений, требующих проверки.'
+                      : preview.incomplete === undefined
+                        ? 'Полнота списка неизвестна.'
+                        : preview.incomplete
+                          ? 'Показана часть сообщений, требующих проверки.'
+                          : 'Конец списка.'}
+                  </p>
                   {!preview.items.length ? (
-                    <p className="queue-empty">Сообщений, требующих проверки, нет.</p>
+                    <p className="queue-empty">
+                      {preview.incomplete === false &&
+                      !preview.nextAfter &&
+                      previewPageAfter === null
+                        ? 'Сообщений, требующих проверки, нет.'
+                        : 'На этой странице сообщений нет.'}
+                    </p>
                   ) : (
                     <div className="retention-candidates">
                       {preview.items.map((item) => (
@@ -215,9 +327,6 @@ export function RetentionDesk(props: RetentionDeskProps) {
                             <span>
                               Удаление: {item.intentStatus ?? 'нет задания'} · попыток:{' '}
                               {item.intentAttemptCount ?? 0}
-                              {item.reconcileAfter
-                                ? ` · проверка после ${dateLabel(item.reconcileAfter)}`
-                                : ''}
                             </span>
                           </div>
                           {selected.enabled && buildRetentionRetryRequest(preview, item) ? (
@@ -241,6 +350,23 @@ export function RetentionDesk(props: RetentionDeskProps) {
               )
             )}
           </div>
+          <footer className="retention-pagination">
+            <span>До 20 сообщений на странице</span>
+            <button
+              className="ghost-action"
+              disabled={previewLoading || !previewTrail.length || busyMessageId !== null}
+              onClick={() => void previousPreviewPage()}
+            >
+              Предыдущие сообщения
+            </button>
+            <button
+              className="ghost-action"
+              disabled={previewLoading || !preview?.nextAfter || busyMessageId !== null}
+              onClick={() => void nextPreviewPage()}
+            >
+              Следующие сообщения
+            </button>
+          </footer>
         </section>
       )}
     </section>

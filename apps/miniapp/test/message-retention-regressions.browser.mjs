@@ -25,12 +25,23 @@ export async function runRetentionRegressions(browser, base, output, scenarios) 
     'connection-expired',
     'connection-cancel',
     'mixed-hours',
+    'diagnostics-light-ios',
+    'diagnostics-dark-android',
+    'diagnostics-light-android',
+    'diagnostics-dark-ios',
   ]) {
     const context = await browser.newContext({
-      viewport: { width: scenario === 'mixed-hours' ? 320 : 360, height: 800 },
-      colorScheme: 'dark',
+      viewport: {
+        width: scenario === 'mixed-hours' ? 320 : scenario.endsWith('-ios') ? 390 : 360,
+        height: 800,
+      },
+      colorScheme: scenario.includes('-light-') ? 'light' : 'dark',
     });
-    await installMaxBridgeShimInitScript(context, { platform: 'android' }, { colorScheme: 'dark' });
+    await installMaxBridgeShimInitScript(
+      context,
+      { platform: scenario.endsWith('-ios') ? 'ios' : 'android' },
+      { colorScheme: scenario.includes('-light-') ? 'light' : 'dark' },
+    );
     await context.addInitScript(() => {
       window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ = true;
     });
@@ -90,11 +101,60 @@ export async function runRetentionRegressions(browser, base, output, scenarios) 
         assert.deepEqual(errors, [], scenario);
         continue;
       }
+      if (scenario.startsWith('diagnostics-')) {
+        await page.evaluate(() =>
+          window.__RETENTION_TEST__.replaceServer({
+            enabled: true,
+            status: 'running',
+            historyStatus: 'blocked',
+            pendingCount: 3,
+            deletedCount: 9,
+            oldestDueAt: '2026-10-01T00:00:00.000Z',
+            progress: {
+              pendingCountComplete: true,
+              eligibleCount: 1,
+              eligibleCountComplete: true,
+              oldestEligibleDueAt: '2026-10-29T00:00:00.000Z',
+              unknownCount: 201,
+              unknownCountComplete: false,
+              oldestUnknownAt: '2026-10-20T00:00:00.000Z',
+            },
+            coverage: {
+              lastCompletedAt: '2026-10-28T00:00:00.000Z',
+              gap: true,
+              protectedHistory: true,
+              executionStopped: false,
+            },
+          }),
+        );
+      }
       const entry = page.getByRole('button', { name: 'Удаление старых сообщений', exact: true });
       await entry.click();
       const panel = page.getByRole('dialog', { name: 'Удаление старых сообщений' });
       const toggle = panel.getByRole('switch', { name: 'Удаление по сроку' });
       await toggle.waitFor();
+      if (scenario.startsWith('diagnostics-')) {
+        await panel.locator('.message-retention-progress summary').click();
+        await panel.getByText('Больше нет в чате', { exact: true }).waitFor();
+        await panel.getByText('Часть истории ещё не проверена', { exact: true }).waitFor();
+        assert.equal(await panel.locator('time[datetime="2026-10-29T00:00:00.000Z"]').count(), 1);
+        assert.equal(await panel.locator('time[datetime="2026-10-20T00:00:00.000Z"]').count(), 1);
+        assert.equal(await panel.locator('time[datetime="2026-10-01T00:00:00.000Z"]').count(), 0);
+        assert.equal(await panel.getByText('Не менее 201', { exact: true }).count(), 1);
+        assert.equal(
+          await panel.getByRole('switch', { name: 'Удаление по сроку' }).isChecked(),
+          true,
+        );
+        const layout = await panel.evaluate((element) => ({
+          overflow: element.scrollWidth > element.clientWidth + 2,
+          clipped: [...element.querySelectorAll('dt, dd, button')].some(
+            (node) => node.scrollWidth > node.clientWidth + 2,
+          ),
+        }));
+        assert.deepEqual(layout, { overflow: false, clipped: false });
+        await panel.getByText('Последний полный обход', { exact: true }).scrollIntoViewIfNeeded();
+        if (output) await page.screenshot({ path: join(output, `${scenario}.png`) });
+      }
       if (scenario === 'connect-bot') {
         await page.evaluate(() => {
           window.__RETENTION_TEST__.replaceServer({ connectionStatus: 'missing' });

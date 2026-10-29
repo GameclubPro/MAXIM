@@ -205,9 +205,11 @@ export class SafetyDeskApiClient {
   fetchRetentionPreview(
     chatId: string,
     accessCode: string,
+    after: string | null = null,
   ): Promise<SafetyDeskRetentionPreviewResponse> {
+    const cursor = after ? `?after=${encodeURIComponent(after)}` : '';
     return this.transport.request(
-      `${SAFETY_DESK_API_BASE}/runtime/retention/${encodeURIComponent(chatId)}/preview`,
+      `${SAFETY_DESK_API_BASE}/runtime/retention/${encodeURIComponent(chatId)}/preview${cursor}`,
       accessCode,
       safetyDeskRetentionPreviewResponseSchema,
     );

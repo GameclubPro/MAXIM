@@ -1467,8 +1467,23 @@ button:disabled {
   min-height: 0;
 }
 
-.retention-runtime {
+.retention-runtime,
+.retention-preview {
   grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.retention-operational-details {
+  min-width: 0;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.retention-operational-details summary {
+  cursor: pointer;
+  font-weight: 600;
 }
 
 .retention-toolbar,

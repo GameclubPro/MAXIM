@@ -33,17 +33,28 @@ describe('Lastik control transport', () => {
     );
   });
 
-  it('does not fall back or return success when Lastik is disabled or unreachable', async () => {
+  it('keeps configured reads available with execution disabled and redacts unreachable errors', async () => {
     const fetch = jest
       .spyOn(global, 'fetch')
       .mockRejectedValue(new Error('private upstream details'));
     await expect(client(false).request('/chats/-1/policy')).rejects.toMatchObject({ status: 503 });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
     const error = await client()
       .request('/chats/-1/policy')
       .catch((value: unknown) => value);
     expect(error).toMatchObject({ status: 503 });
     expect(String(error)).not.toContain('private upstream details');
+  });
+
+  it('blocks policy and retry writes before transport when execution is disabled', async () => {
+    const fetch = jest.spyOn(global, 'fetch');
+    await expect(client(false).request('/chats/-1/policy', 'PUT', {})).rejects.toMatchObject({
+      status: 503,
+    });
+    await expect(client(false).request('/chats/-1/retry', 'POST', {})).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('preserves a revision conflict without disclosing upstream bodies', async () => {

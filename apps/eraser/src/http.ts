@@ -107,6 +107,22 @@ export function createHttpServer(
   config: Config,
   redisPing: () => Promise<unknown>,
 ) {
+  const policyResponse = (value: Record<string, unknown>) => {
+    const health = runtime.health();
+    if (
+      value.enabled !== true ||
+      (health.schedulerHealthy && health.workers?.cleanup.healthy !== false)
+    )
+      return value;
+    // FLAG: Unhealthy runtime means execution cannot be confirmed, not proof that every
+    // effect stopped. Project availability without changing policy, journals or cached receipts.
+    const coverage = record(value.coverage);
+    return {
+      ...value,
+      status: 'unavailable',
+      ...(coverage ? { coverage: { ...coverage, executionStopped: true } } : {}),
+    };
+  };
   const send = (response: ServerResponse, status: number, value: unknown) => {
     response.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -179,45 +195,23 @@ export function createHttpServer(
           const after = url.searchParams.get('after');
           if (after !== null && !validChat(after))
             fail(400, 'INVALID_CURSOR', 'Некорректный курсор.');
-          const policies = (
-            await store.pool.query<{ chat_id: string }>(
-              'SELECT chat_id FROM eraser_policies WHERE ($1::text IS NULL OR chat_id>$1) ORDER BY chat_id LIMIT 51',
-              [after],
-            )
-          ).rows;
-          const items = [];
-          for (const row of policies.slice(0, 50)) {
-            const policy = (await store.policy(row.chat_id))!;
-            const snapshot = await store.snapshot(row.chat_id);
-            const flags = (
-              await store.pool.query<{ review: boolean; uncertain: boolean }>(
-                "SELECT EXISTS(SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state='review') AS review,EXISTS(SELECT 1 FROM eraser_candidates WHERE chat_id=$1 AND state IN ('uncertain','dispatching')) AS uncertain",
-                [row.chat_id],
-              )
-            ).rows[0]!;
-            items.push({
-              chatId: row.chat_id,
-              chatTitle: 'Чат',
-              ...snapshot,
-              activationId: policy.activation_id,
-              nextRunAt: policy.next_run_at.toISOString(),
-              hasTerminalReview: flags.review,
-              hasUnresolvedReceipt: flags.uncertain,
-              diagnostics: {
-                lastError: policy.last_error,
-                historyBoundaryBlocked: policy.history_gap,
-                awaitingCurrentProtection: policy.deferred_from !== null,
-                awaitingHistoricalProtection: policy.historical_deferred_from !== null,
-              },
-              updatedAt: policy.updated_at.toISOString(),
-            });
-          }
+          const selected = url.searchParams.get('chatIds');
+          const chatIds = selected === null ? undefined : selected.split(',');
+          if (
+            chatIds &&
+            (after !== null ||
+              chatIds.length > 50 ||
+              chatIds.some((id) => !validChat(id)) ||
+              new Set(chatIds).size !== chatIds.length)
+          )
+            fail(400, 'INVALID_SELECTION', 'Некорректный список чатов.');
+          const page = await store.runtimeDiagnostics(config.botId, { after, chatIds });
           return send(response, 200, {
-            generatedAt: new Date().toISOString(),
+            ...page,
             mode: config.enabled ? 'on' : 'off',
-            nextAfter: policies.length > 50 ? policies[49]!.chat_id : null,
             quotas: [],
-            items,
+            health: runtime.health(),
+            ...(max.metrics ? { transportMetrics: max.metrics() } : {}),
           });
         }
         const match =
@@ -228,7 +222,7 @@ export function createHttpServer(
         const chatId = match[1]!,
           route = match[2]!;
         if (route === 'policy' && request.method === 'GET')
-          return send(response, 200, await store.snapshot(chatId));
+          return send(response, 200, policyResponse(await store.snapshot(chatId)));
         if (route === 'bootstrap' && request.method === 'PUT') {
           const value = await body(request);
           if (!hours(value.hours)) fail(400, 'INVALID_POLICY', 'Некорректный срок.');
@@ -237,7 +231,7 @@ export function createHttpServer(
             value.hours,
             value.sourceRevision === undefined ? undefined : protectionInput(value),
           );
-          return send(response, 200, await store.snapshot(chatId));
+          return send(response, 200, policyResponse(await store.snapshot(chatId)));
         }
         if (route === 'protection' && request.method === 'PUT') {
           await store.protect(chatId, protectionInput(await body(request)));
@@ -246,7 +240,7 @@ export function createHttpServer(
         if (route === 'policy' && request.method === 'PUT') {
           const input = updateInput(await body(request));
           const cached = await store.operation(chatId, input);
-          if (cached) return send(response, 200, cached);
+          if (cached) return send(response, 200, policyResponse(cached));
           if (input.enabled && !input.connectWhenReady) {
             if (!config.enabled) fail(503, 'ERASER_UNAVAILABLE', 'Ластик пока недоступен.');
             try {
@@ -268,10 +262,10 @@ export function createHttpServer(
               );
             }
           }
-          return send(response, 200, await store.update(chatId, input));
+          return send(response, 200, policyResponse(await store.update(chatId, input)));
         }
         if (route === 'review' && request.method === 'GET')
-          return send(response, 200, await review(store, chatId));
+          return send(response, 200, await review(store, chatId, url.searchParams.get('after')));
         if (route === 'retry' && request.method === 'POST') {
           const input = await body(request);
           if (
@@ -306,9 +300,42 @@ export function createHttpServer(
     })();
   });
 }
-async function review(store: Store, chatId: string) {
+async function review(store: Store, chatId: string, cursor: string | null = null) {
   const policy = await store.policy(chatId);
   if (!policy) return fail(404, 'NOT_FOUND', 'Настройки удаления не найдены.');
+  let after: string | null = null;
+  if (cursor !== null) {
+    let value: Record<string, unknown> | null = null;
+    try {
+      if (cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error();
+      value = record(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
+    } catch {
+      fail(400, 'INVALID_CURSOR', 'Некорректный курсор.');
+    }
+    if (
+      !value ||
+      value.version !== 1 ||
+      !['eraser', 'legacy'].includes(String(value.source)) ||
+      typeof value.chatId !== 'string' ||
+      !validChat(value.chatId) ||
+      !integer(value.revision) ||
+      typeof value.activationId !== 'string' ||
+      !value.activationId ||
+      value.activationId.length > 256 ||
+      typeof value.messageId !== 'string' ||
+      !value.messageId ||
+      value.messageId.length > 256
+    )
+      return fail(400, 'INVALID_CURSOR', 'Некорректный курсор.');
+    if (
+      value.source !== 'eraser' ||
+      value.chatId !== chatId ||
+      value.revision !== policy.revision ||
+      value.activationId !== policy.activation_id
+    )
+      return fail(409, 'ERASER_REVIEW_CONFLICT', 'Настройки изменились. Обновите список.');
+    after = value.messageId;
+  }
   const rows = (
     await store.pool.query<{
       message_id: string;
@@ -319,20 +346,44 @@ async function review(store: Store, chatId: string) {
       dispatch_id: string | null;
       intent_updated_at: string;
       attempt_count: number;
-      next_attempt_at: Date;
+      overdue: boolean;
     }>(
       // FLAG: Preserve the exact PostgreSQL version through the operator round trip; JS Date
       // truncates microseconds and cannot safely represent this compare-and-swap token.
-      `SELECT *,to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS intent_updated_at
-       FROM eraser_candidates WHERE chat_id=$1 AND state IN ('review','uncertain','dispatching') ORDER BY message_id LIMIT 20`,
-      [chatId],
+      `SELECT *,to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS intent_updated_at,
+        next_attempt_at<=statement_timestamp() AS overdue FROM (
+        ${['review', 'uncertain', 'dispatching']
+          .map(
+            (state) => `(SELECT * FROM eraser_candidates
+          WHERE chat_id=$1 AND state='${state}' AND ($2::text IS NULL OR message_id>$2)
+          ORDER BY message_id LIMIT 21)`,
+          )
+          .join(' UNION ALL ')}
+       ) states ORDER BY message_id LIMIT 21`,
+      [chatId, after],
     )
   ).rows;
   return {
     chatId,
     revision: policy.revision,
     activationId: policy.activation_id,
-    items: rows.map((row) => ({
+    source: 'eraser',
+    sourceStatus: 'available',
+    incomplete: rows.length > 20,
+    nextAfter:
+      rows.length > 20
+        ? Buffer.from(
+            JSON.stringify({
+              version: 1,
+              source: 'eraser',
+              chatId,
+              revision: policy.revision,
+              activationId: policy.activation_id,
+              messageId: rows[19]!.message_id,
+            }),
+          ).toString('base64url')
+        : null,
+    items: rows.slice(0, 20).map((row) => ({
       messageId: row.message_id,
       authorId: row.author_id,
       sourceAt: new Date(Number(row.source_ms)).toISOString(),
@@ -343,12 +394,12 @@ async function review(store: Store, chatId: string) {
       intentStatus:
         row.state === 'review'
           ? 'FAILED_TERMINAL'
-          : row.state === 'dispatching'
+          : row.state === 'dispatching' && !row.overdue
             ? 'IN_PROGRESS'
             : 'AMBIGUOUS',
       intentUpdatedAt: row.intent_updated_at,
       intentAttemptCount: row.attempt_count,
-      reconcileAfter: row.next_attempt_at.toISOString(),
+      reconcileAfter: null,
       retryAllowed: row.state === 'review' && row.attempt_count === 0 && row.dispatch_id === null,
     })),
   };

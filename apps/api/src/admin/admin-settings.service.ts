@@ -84,7 +84,7 @@ import { ManualModerationService } from './manual-moderation.service';
 import { classifySettingsScreenAccessError } from './settings-screen-access.error';
 import { AdminDuplicateDiagnosticsService } from './admin-duplicate-diagnostics.service';
 import { ReportViewService } from '../moderation/reports/report-view.service';
-import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
+import { AdminMessageRetentionService } from './admin-message-retention.service';
 
 const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
   'nightModeEnabled',
@@ -119,7 +119,7 @@ export class AdminSettingsService {
     @Optional() private readonly messageDuplicatePolicy?: MessageDuplicatePolicyService,
     @Optional() private readonly duplicateDiagnostics?: AdminDuplicateDiagnosticsService,
     @Optional() private readonly reports?: ReportViewService,
-    @Optional() private readonly retention?: MessageRetentionStore,
+    @Optional() private readonly retention?: AdminMessageRetentionService,
     @Optional() _commercialOcrRuntimePolicy?: CommercialOcrRuntimePolicyService,
     @Optional() private readonly botRegistry?: MaxBotRegistryService,
     @Optional() private readonly config?: ConfigService,
