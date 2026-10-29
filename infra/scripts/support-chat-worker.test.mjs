@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { setTimeout as pause } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -35,6 +36,7 @@ input.on('line',line=>{
    process.stdout.write(JSON.stringify({type:'hello',chatId:'-78271094414679'})+'\\n');
    process.stdout.write(JSON.stringify({type:'question',id:'fixture-source',text:'Как подключить бота?',history:[],issuedAt:Date.now(),deadline:Date.now()+30000})+'\\n');
  } else if(value.type==='answer') {
+   if('usage' in value || 'promptTokens' in value || 'completionTokens' in value) process.exit(8);
    if(value.reply!==true || value.text!==${JSON.stringify(presentedAnswer)}) process.exit(2);
    process.stdout.write(JSON.stringify({type:'settled',id:value.id,outcome:'sent'})+'\\n');
    process.exit(0);
@@ -563,7 +565,15 @@ test(
       if(value.apiProfileSha256!==${JSON.stringify(SUPPORT_API_PROFILE.sha256)} || value.modelSha256!==undefined) process.exit(9);`,
     );
     let invoked = false;
-    const statuses = [];
+    const statuses = [],
+      observations = [];
+    const usage = {
+      promptTokens: 1700,
+      completionTokens: 380,
+      totalTokens: 2080,
+      cachedTokens: 500,
+      reasoningTokens: 200,
+    };
     await supportChatSession({
       key: 'fixture-key',
       api: true,
@@ -571,14 +581,25 @@ test(
       command: process.execPath,
       args: ['-e', apiPeer],
       onStatus: (value) => statuses.push(value),
-      invoke: async ({ api, key }) => {
+      onUsage: (value) => observations.push(value),
+      invoke: async ({ api, key, onUsage }) => {
         assert.equal(api, true);
         assert.equal(key, 'fixture-key');
         invoked = true;
+        onUsage(usage);
         return { action: 'reply', text: presentedAnswer };
       },
     });
     assert.equal(invoked, true);
     assert.ok(statuses.includes('sent'));
+    assert.equal(observations.length, 1);
+    assert.equal(
+      observations[0].sourceDigest,
+      createHash('sha256').update('fixture-source').digest('hex'),
+    );
+    assert.equal(observations[0].kind, 'provider-reported');
+    assert.deepEqual(observations[0].usage, usage);
+    assert.equal(observations[0].text, undefined);
+    assert.equal(observations[0].key, undefined);
   },
 );

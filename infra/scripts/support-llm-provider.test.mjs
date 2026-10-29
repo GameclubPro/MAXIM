@@ -16,6 +16,45 @@ import bridge from './support-chat-bridge.cjs';
 const json = (value, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 
+test('provider usage preserves actual totals and included reasoning without inventing absent counts', async () => {
+  const { supportTokenUsage } = await import('./support-llm-client.mjs');
+  assert.equal(typeof supportTokenUsage, 'function');
+  const actual = {
+    prompt_tokens: 1700,
+    completion_tokens: 380,
+    total_tokens: 2080,
+    prompt_tokens_details: { cached_tokens: 500 },
+    completion_tokens_details: { reasoning_tokens: 200 },
+    private: 'SECRET',
+  };
+  assert.deepEqual(supportTokenUsage(actual), {
+    promptTokens: 1700,
+    completionTokens: 380,
+    totalTokens: 2080,
+    cachedTokens: 500,
+    reasoningTokens: 200,
+  });
+  assert.deepEqual(
+    supportTokenUsage({ prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }),
+    {
+      promptTokens: 10,
+      completionTokens: 3,
+      totalTokens: 13,
+      cachedTokens: null,
+      reasoningTokens: null,
+    },
+  );
+  for (const value of [
+    undefined,
+    null,
+    {},
+    { ...actual, total_tokens: 2280 },
+    { ...actual, prompt_tokens: '1700' },
+    { ...actual, completion_tokens: -1 },
+  ])
+    assert.equal(supportTokenUsage(value), null);
+});
+
 test('provider configuration and credentials are private, exact and separate from the CPU key', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'support-provider-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -89,6 +128,7 @@ test('API availability requires the exact selected model and bounded JSON', asyn
 
 test('API inference uses medium, structured sources and the existing presentation without a CPU tokenizer', async (t) => {
   let calls = 0;
+  const observed = [];
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     calls++;
     assert.equal(url.href, `${SUPPORT_API_PROFILE.endpoint}/v1/chat/completions`);
@@ -105,6 +145,12 @@ test('API inference uses medium, structured sources and the existing presentatio
     assert.ok(payload.messages[0].content.includes('baselineFacts'));
     return json({
       model: 'gpt-6.1-sol',
+      usage: {
+        prompt_tokens: 1700,
+        completion_tokens: 380,
+        total_tokens: 2080,
+        completion_tokens_details: { reasoning_tokens: 200 },
+      },
       choices: [
         {
           finish_reason: 'stop',
@@ -123,9 +169,18 @@ test('API inference uses medium, structured sources and the existing presentatio
     text: 'Я администратор. Как создать пост через Публик и добавить фото?',
     key: 'fixture',
     api: true,
+    onUsage: (usage) => observed.push(usage),
   });
   assert.equal(calls, 1);
   assert.equal(answer.responseRoute, 'model-inference');
+  assert.deepEqual(answer.usage, {
+    promptTokens: 1700,
+    completionTokens: 380,
+    totalTokens: 2080,
+    cachedTokens: null,
+    reasoningTokens: 200,
+  });
+  assert.deepEqual(observed, [answer.usage]);
   assert.ok(answer.text.endsWith(`\n\n${SUPPORT_ANSWER_FOOTER}`));
 });
 
