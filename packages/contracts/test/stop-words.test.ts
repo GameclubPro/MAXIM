@@ -68,6 +68,21 @@ describe('stop-word policy contract', () => {
   it('requires a revision on every scoped write', () => {
     expect(updateStopWordsRequestSchema.safeParse({ policy: {} }).success).toBe(false);
   });
+  it('keeps replacement intent optional and accepts only actual booleans', () => {
+    const original = { policy: {}, expectedRevision: 3 };
+    expect(updateStopWordsRequestSchema.parse(original)).not.toHaveProperty(
+      'replaceInvalidStorage',
+    );
+    for (const replaceInvalidStorage of [true, false])
+      expect(
+        updateStopWordsRequestSchema.parse({ ...original, replaceInvalidStorage })
+          .replaceInvalidStorage,
+      ).toBe(replaceInvalidStorage);
+    for (const replaceInvalidStorage of ['true', 1, {}, null])
+      expect(
+        updateStopWordsRequestSchema.safeParse({ ...original, replaceInvalidStorage }).success,
+      ).toBe(false);
+  });
   it('adds optional storage health only to the full response', () => {
     const response = { policy: {}, revision: 3, imageScanStatus: 'unavailable' };
     expect(stopWordsStateSchema.parse(response).storageStatus).toBeUndefined();

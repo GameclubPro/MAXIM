@@ -367,6 +367,7 @@ import {
   normalizeChatSettings,
   readPublicChatCommentSettings as readPublicChatCommentSettingsValue,
   readChatSettings as readChatSettingsValue,
+  readChatSettingsSnapshot as readChatSettingsSnapshotValue,
   saveChatSettings as saveChatSettingsValue,
   type PublicChatCommentSettings,
   type ResolvedBotAssignmentData,
@@ -8252,6 +8253,16 @@ export class AdminService implements OnModuleDestroy {
       body,
       source,
       getSourceSettings: () => this.getSettings(sourceChatId, user),
+      getSourceStopWordsSettings: async () => {
+        await this.assertManagedEntityReadAccess(sourceChatId, user.userId, 'chat');
+        return readChatSettingsSnapshotValue({
+          prisma: this.prisma,
+          chatContextCache: this.chatContextCache,
+          logger: this.logger,
+          chatId: sourceChatId,
+          botAssignmentData: await this.resolveChatSettingsReadBotAssignmentData(sourceChatId),
+        });
+      },
       applySettings: (settings, target, settingKeys, botSpeechMediaKeys) =>
         this.applySettingsToAllChats(
           sourceChatId,
