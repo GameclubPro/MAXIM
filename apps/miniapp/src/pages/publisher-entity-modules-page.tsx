@@ -377,6 +377,8 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
       {!smartphoneLayout ? (
         <MarketplaceProfileCard
           api={api}
+          entityTitle={entity.title}
+          entityAvatarUrl={entity.avatarUrl}
           entityType={entity.entityType}
           entityId={entity.id}
           profile="publisher"
@@ -711,6 +713,8 @@ export function PublisherEntityModulesPage({ api }: { api: ApiTransport }) {
         {smartphoneLayout ? (
           <MarketplaceProfileCard
             api={api}
+            entityTitle={entity.title}
+            entityAvatarUrl={entity.avatarUrl}
             entityType={entity.entityType}
             entityId={entity.id}
             profile="publisher"

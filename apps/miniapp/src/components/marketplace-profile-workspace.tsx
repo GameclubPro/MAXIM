@@ -7,6 +7,7 @@ import {
 } from '@maxim/contracts/marketplace-integration';
 import { EntityAvatar } from './ui/entity-avatar';
 import { AppIcon } from './ui/app-icon';
+import { MarketplaceEditorActions } from './marketplace-editor-actions';
 import { marketplaceTargetFromLink, openMarketplace } from '../lib/marketplace-launch';
 import { ApiRequestError } from '../lib/api-request-error';
 import {
@@ -31,6 +32,8 @@ export default function MarketplaceProfileWorkspace({
   api,
   entityId,
   entityType,
+  entityTitle,
+  entityAvatarUrl,
   profile,
   screen,
   canManage,
@@ -40,6 +43,10 @@ export default function MarketplaceProfileWorkspace({
   onOpenProfile,
   onDirtyChange,
   onBusyChange,
+  resetDraftVersion,
+  onDraftChange,
+  onPublished,
+  onRequestExternalNavigation,
 }: MarketplaceProfileCardProps & {
   screen: 'overview' | 'profile';
   canManage: boolean;
@@ -49,16 +56,19 @@ export default function MarketplaceProfileWorkspace({
   onOpenProfile: (opener?: HTMLElement) => void;
   onDirtyChange: (dirty: boolean) => void;
   onBusyChange: (busy: boolean) => void;
+  resetDraftVersion: number;
+  onDraftChange: () => void;
+  onPublished: () => void;
+  onRequestExternalNavigation: (navigate: () => void) => void;
 }) {
   const cache = useQueryClient();
   const queryKey = marketplaceQueryKey(profile, entityType, entityId);
   const path = marketplaceProfilePath(profile, entityType, entityId);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState('');
   const [linkBusy, setLinkBusy] = useState(false);
   const [, updateAccessClock] = useState(0);
-  const previousScreen = useRef(screen);
+  const previousReset = useRef(resetDraftVersion);
   const manageAllowed = useRef(canManage);
   manageAllowed.current = canManage;
   const attempt = useRef<{ fingerprint: string; id: string } | null>(null);
@@ -95,14 +105,6 @@ export default function MarketplaceProfileWorkspace({
       void cache.cancelQueries({ queryKey: marketplaceQueryKey(profile, entityType, entityId) });
   }, [cache, canManage, profile, entityType, entityId]);
   useEffect(() => {
-    if (previousScreen.current === 'profile' && screen === 'overview') {
-      setEditing(false);
-      setDraft(null);
-      setNotice('');
-    }
-    previousScreen.current = screen;
-  }, [screen]);
-  useEffect(() => {
     if (!canManage || !state?.binding.validUntil) return;
     const delay = Date.parse(state.binding.validUntil) - Date.now();
     if (delay <= 0) return;
@@ -120,6 +122,7 @@ export default function MarketplaceProfileWorkspace({
     mutationFn: async ({ action }: { action: Action }) => {
       if (!manageAllowed.current) throw new Error('Сначала проверьте доступ к профилю');
       if (!state) throw new Error('Сначала проверьте состояние профиля');
+      if (action !== 'save' && dirty) throw new Error('Сначала сохраните изменения профиля');
       const change = {
         action,
         expectedRevision: action === 'save' ? (draft?.revision ?? state.revision) : state.revision,
@@ -144,9 +147,9 @@ export default function MarketplaceProfileWorkspace({
       attempt.current = null;
       if (variables.action === 'save' && manageAllowed.current) {
         setDraft(null);
-        setEditing(false);
         setNotice('Профиль сохранён.');
       } else setNotice('');
+      if (variables.action === 'publish' && manageAllowed.current) onPublished();
       void cache.invalidateQueries({ queryKey });
       void cache.invalidateQueries({
         queryKey: ['marketplace-entry', profile, entityType, entityId],
@@ -157,6 +160,16 @@ export default function MarketplaceProfileWorkspace({
     },
     onError: () => void cache.invalidateQueries({ queryKey }),
   });
+  useEffect(() => {
+    if (previousReset.current === resetDraftVersion) return;
+    previousReset.current = resetDraftVersion;
+    setDraft(null);
+    setNotice('');
+    attempt.current = null;
+    // FLAG: Discarding local input does not undo a write whose response was lost.
+    if (mutation.isError && mutation.variables?.action === 'save') void query.refetch();
+    mutation.reset();
+  }, [resetDraftVersion, mutation.reset, mutation.isError, mutation.variables, query.refetch]);
   useEffect(() => {
     onDirtyChange(dirty);
   }, [dirty, onDirtyChange]);
@@ -220,7 +233,7 @@ export default function MarketplaceProfileWorkspace({
   const view = marketplaceProfileView(state, canManage && !query.isError);
   const overview = marketplaceProfileOverview(state, canManage && !query.isError);
   const details = draft?.details ?? marketplaceDetails(state);
-  const formOpen = !state.listing || editing;
+  const formId = `marketplace-profile-form-${profile}-${entityType}-${entityId}`;
   const conflict = draft !== null && draft.revision !== state.revision;
   const busy = mutation.isPending || linkBusy;
   const canSave =
@@ -234,7 +247,8 @@ export default function MarketplaceProfileWorkspace({
     !conflict &&
     (!state.listing || dirty);
   const edit = (key: keyof MarketplaceDetails, value: string) => {
-    if (!canManage) return;
+    if (!canManage || details[key] === value) return;
+    onDraftChange();
     setDraft({
       details: { ...details, [key]: value },
       original: draft?.original ?? marketplaceDetails(state),
@@ -248,11 +262,14 @@ export default function MarketplaceProfileWorkspace({
   const openLink = (url: string | null | undefined) => {
     const target = url ? marketplaceTargetFromLink(url, state.kind, state.entityId) : null;
     if (!canManage || !target || busy) return;
-    setLinkBusy(true);
-    setNotice('');
-    void openMarketplace(api, target)
-      .catch(() => setNotice('Не удалось открыть Биржик. Попробуйте ещё раз.'))
-      .finally(() => setLinkBusy(false));
+    onRequestExternalNavigation(() => {
+      if (!manageAllowed.current) return;
+      setLinkBusy(true);
+      setNotice('');
+      void openMarketplace(api, target)
+        .catch(() => setNotice('Не удалось открыть Биржик. Попробуйте ещё раз.'))
+        .finally(() => setLinkBusy(false));
+    });
   };
   const mainAction = overview.primary;
   const showMainAction =
@@ -260,9 +277,8 @@ export default function MarketplaceProfileWorkspace({
   const runMainAction = (opener?: HTMLElement) => {
     if (!mainAction || busy) return;
     if (mainAction.kind === 'profile') {
-      setEditing(mainAction.editor);
       onOpenProfile(opener);
-    } else if (mainAction.kind === 'publish') mutation.mutate({ action: 'publish' });
+    } else if (mainAction.kind === 'publish' && !dirty) mutation.mutate({ action: 'publish' });
     else if (mainAction.kind === 'refresh') refresh();
     else if ('url' in mainAction) openLink(mainAction.url);
   };
@@ -270,12 +286,14 @@ export default function MarketplaceProfileWorkspace({
     <div className="marketplace-profile" data-marketplace-screen={screen}>
       <div className="marketplace-profile__hero">
         <EntityAvatar
-          title={details.title}
+          title={entityTitle || state.binding.metadata.title || details.title}
           entityType={entityType}
-          avatarUrl={state.binding.metadata.imageUrl}
+          avatarUrl={entityAvatarUrl ?? state.binding.metadata.imageUrl}
         />
         <div>
-          <strong>{details.title || 'Профиль площадки'}</strong>
+          <strong>
+            {entityTitle || state.binding.metadata.title || details.title || 'Профиль площадки'}
+          </strong>
           <small>{screen === 'overview' ? overview.status : view.title}</small>
         </div>
       </div>
@@ -303,9 +321,6 @@ export default function MarketplaceProfileWorkspace({
       )}
       {screen === 'overview' ? (
         <>
-          {overview.placementNote && (
-            <p className="marketplace-profile__placement-note">{overview.placementNote}</p>
-          )}
           {mainAction?.kind === 'publish' && (
             <p className="marketplace-profile-card__intro">Профиль будет виден в Биржике.</p>
           )}
@@ -315,7 +330,9 @@ export default function MarketplaceProfileWorkspace({
               className="button button--accent"
               data-marketplace-action="primary"
               disabled={
-                busy || (mainAction!.kind === 'refresh' && (query.isFetching || recheckingAccess))
+                busy ||
+                (mainAction!.kind === 'publish' && dirty) ||
+                (mainAction!.kind === 'refresh' && (query.isFetching || recheckingAccess))
               }
               onClick={(event) => runMainAction(event.currentTarget)}
             >
@@ -323,175 +340,184 @@ export default function MarketplaceProfileWorkspace({
               {'url' in mainAction! && <AppIcon icon="ArrowUpRight" aria-hidden />}
             </button>
           )}
-          {overview.secondary && (
-            <button
-              type="button"
-              className="button button--ghost"
-              disabled={busy}
-              onClick={() => openLink(overview.secondary!.url)}
-            >
-              {overview.secondary.label}
-              <AppIcon icon="ArrowUpRight" aria-hidden />
-            </button>
+          {overview.placementNote && (
+            <div className="marketplace-profile__placement">
+              <p className="marketplace-profile__placement-note">{overview.placementNote}</p>
+              {overview.placementAction && (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={busy}
+                  onClick={() => openLink(overview.placementAction!.url)}
+                >
+                  {overview.placementAction.label}
+                  <AppIcon icon="ArrowUpRight" aria-hidden />
+                </button>
+              )}
+            </div>
           )}
-          {overview.showProfileSettings && (
+          {(overview.showProfileSettings || overview.conditionsAction) && (
             <div className="marketplace-profile__navigation">
-              <button
-                type="button"
-                className="marketplace-profile__nav-row"
-                data-marketplace-action="profile"
-                disabled={busy}
-                onClick={(event) => onOpenProfile(event.currentTarget)}
-              >
-                <AppIcon icon="EditPencil" aria-hidden />
-                <span>Настройки профиля</span>
-                <AppIcon icon="NavArrowRight" aria-hidden />
-              </button>
+              {overview.showProfileSettings && (
+                <button
+                  type="button"
+                  className="marketplace-profile__nav-row"
+                  data-marketplace-action="profile"
+                  disabled={busy}
+                  onClick={(event) => onOpenProfile(event.currentTarget)}
+                >
+                  <AppIcon icon="EditPencil" aria-hidden />
+                  <span>Изменить профиль</span>
+                  <AppIcon icon="NavArrowRight" aria-hidden />
+                </button>
+              )}
+              {overview.conditionsAction && (
+                <button
+                  type="button"
+                  className="marketplace-profile__nav-row"
+                  data-marketplace-action="conditions"
+                  disabled={busy}
+                  onClick={() => openLink(overview.conditionsAction!.url)}
+                >
+                  <AppIcon icon="Shop" aria-hidden />
+                  <span>{overview.conditionsAction.label}</span>
+                  <AppIcon icon="ArrowUpRight" aria-hidden />
+                </button>
+              )}
             </div>
           )}
         </>
-      ) : formOpen ? (
-        <form
-          className="marketplace-profile__form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (canSave) mutation.mutate({ action: 'save' });
-          }}
-        >
-          <label className="field">
-            <span>Название</span>
-            <input
-              aria-label="Название"
-              value={details.title}
-              maxLength={300}
-              required
-              readOnly={!canManage}
-              disabled={busy}
-              onChange={(event) => edit('title', event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>Описание</span>
-            <textarea
-              aria-label="Описание"
-              value={details.description}
-              maxLength={1500}
-              readOnly={!canManage}
-              disabled={busy}
-              onChange={(event) => edit('description', event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>Тематика</span>
-            <select
-              aria-label="Тематика"
-              value={details.topic}
-              required
-              disabled={busy || !canManage}
-              onChange={(event) => edit('topic', event.target.value)}
-            >
-              <option value="">Выберите тематику</option>
-              {state.choices.topics.map((topic) => (
-                <option key={topic} value={topic}>
-                  {topic}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Регион</span>
-            <select
-              aria-label="Регион"
-              value={details.region}
-              required
-              disabled={busy || !canManage}
-              onChange={(event) => edit('region', event.target.value)}
-            >
-              <option value="">Выберите регион</option>
-              {state.choices.regions.map((region) => (
-                <option key={region} value={region}>
-                  {region}
-                </option>
-              ))}
-            </select>
-          </label>
-          {canManage && conflict && (
-            <div className="marketplace-profile__notice" role="alert">
-              <p>
-                Профиль изменился. Ваш ввод сохранён. Сравните его с новой версией перед
-                сохранением.
-              </p>
-              <dl className="marketplace-profile__facts">
-                {Object.entries(marketplaceDetails(state)).map(([key, value]) => (
-                  <div key={key}>
-                    <dt>
-                      {
-                        {
-                          title: 'Название',
-                          description: 'Описание',
-                          topic: 'Тематика',
-                          region: 'Регион',
-                        }[key]
-                      }
-                    </dt>
-                    <dd>{value || 'Не заполнено'}</dd>
-                  </div>
-                ))}
-              </dl>
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() =>
-                  setDraft(
-                    (current) =>
-                      current && {
-                        ...current,
-                        revision: state.revision,
-                        original: marketplaceDetails(state),
-                      },
-                  )
-                }
-              >
-                Использовать мой вариант
-              </button>
-            </div>
-          )}
-          {canManage && !view.active && (
-            <p className="marketplace-profile-card__intro">
-              Сохранение станет доступно после проверки прав.
-            </p>
-          )}
-          <button className="button button--accent" disabled={!canSave} type="submit">
-            {busy ? 'Сохраняем…' : state.listing ? 'Сохранить изменения' : 'Создать черновик'}
-          </button>
-          {state.listing && !dirty && (
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={() => {
-                setEditing(false);
-                setDraft(null);
-              }}
-            >
-              К профилю
-            </button>
-          )}
-        </form>
       ) : (
         <>
-          {canManage && (
-            <dl className="marketplace-profile__facts">
-              <div>
-                <dt>Тематика</dt>
-                <dd>{state.listing!.topic}</dd>
+          <form
+            id={formId}
+            className="marketplace-profile__form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (canSave) mutation.mutate({ action: 'save' });
+            }}
+          >
+            <label className="field">
+              <span>Название</span>
+              <input
+                aria-label="Название"
+                data-marketplace-field="profile-title"
+                value={details.title}
+                maxLength={300}
+                required
+                readOnly={!canManage || !view.canEdit}
+                disabled={busy}
+                onChange={(event) => edit('title', event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Описание</span>
+              <textarea
+                aria-label="Описание"
+                data-marketplace-field="profile-description"
+                value={details.description}
+                maxLength={1500}
+                readOnly={!canManage || !view.canEdit}
+                disabled={busy}
+                onChange={(event) => edit('description', event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Тематика</span>
+              <select
+                aria-label="Тематика"
+                data-marketplace-field="profile-topic"
+                value={details.topic}
+                required
+                disabled={busy || !canManage || !view.canEdit}
+                onChange={(event) => edit('topic', event.target.value)}
+              >
+                <option value="">Выберите тематику</option>
+                {state.choices.topics.map((topic) => (
+                  <option key={topic} value={topic}>
+                    {topic}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Регион</span>
+              <select
+                aria-label="Регион"
+                data-marketplace-field="profile-region"
+                value={details.region}
+                required
+                disabled={busy || !canManage || !view.canEdit}
+                onChange={(event) => edit('region', event.target.value)}
+              >
+                <option value="">Выберите регион</option>
+                {state.choices.regions.map((region) => (
+                  <option key={region} value={region}>
+                    {region}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {canManage && conflict && (
+              <div className="marketplace-profile__notice" role="alert">
+                <p>
+                  Профиль изменился. Ваш ввод сохранён. Сравните его с новой версией перед
+                  сохранением.
+                </p>
+                <dl className="marketplace-profile__facts">
+                  {Object.entries(marketplaceDetails(state)).map(([key, value]) => (
+                    <div key={key}>
+                      <dt>
+                        {
+                          {
+                            title: 'Название',
+                            description: 'Описание',
+                            topic: 'Тематика',
+                            region: 'Регион',
+                          }[key]
+                        }
+                      </dt>
+                      <dd>{value || 'Не заполнено'}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() =>
+                    setDraft(
+                      (current) =>
+                        current && {
+                          ...current,
+                          revision: state.revision,
+                          original: marketplaceDetails(state),
+                        },
+                    )
+                  }
+                >
+                  Использовать мой вариант
+                </button>
               </div>
-              <div>
-                <dt>Регион</dt>
-                <dd>{state.listing!.region}</dd>
-              </div>
-            </dl>
+            )}
+            {canManage && !view.active && (
+              <p className="marketplace-profile-card__intro">
+                Сохранение станет доступно после проверки прав.
+              </p>
+            )}
+          </form>
+          {(dirty || !state.listing) && (
+            <MarketplaceEditorActions>
+              <button
+                className="button button--accent"
+                disabled={!canSave}
+                type="submit"
+                form={formId}
+              >
+                {busy ? 'Сохраняем…' : state.listing ? 'Сохранить изменения' : 'Создать черновик'}
+              </button>
+            </MarketplaceEditorActions>
           )}
-          {canManage && !published && view.publicState !== 'REVIEW' && (
+          {canManage && state.listing && !published && view.publicState !== 'REVIEW' && (
             <>
               <p className="marketplace-profile-card__intro">Профиль будет виден в Биржике.</p>
               <button
@@ -510,63 +536,58 @@ export default function MarketplaceProfileWorkspace({
               )}
             </>
           )}
-          {canManage && view.active && (
-            <section className="marketplace-profile__section" aria-label="Статистика аудитории">
-              <h3>История аудитории</h3>
-              <p>
-                {profileUnavailable
-                  ? 'История пока недоступна.'
-                  : !stats || stats.state === 'PENDING'
-                    ? 'История загружается.'
-                    : stats.state === 'AVAILABLE'
-                      ? `Дней со статистикой: ${stats.observedDays}`
-                      : 'За последние 90 дней статистики пока нет.'}
-              </p>
-              {stats?.from && stats.to && !profileUnavailable && (
-                <p className="marketplace-profile-card__intro">
-                  Период:{' '}
-                  {new Intl.DateTimeFormat('ru-RU', {
-                    dateStyle: 'medium',
-                    timeZone: 'UTC',
-                  }).format(new Date(stats.from))}{' '}
-                  —{' '}
-                  {new Intl.DateTimeFormat('ru-RU', {
-                    dateStyle: 'medium',
-                    timeZone: 'UTC',
-                  }).format(new Date(stats.to))}
+          {canManage && state.listing && view.active && (
+            <details className="marketplace-profile__history">
+              <summary>История аудитории</summary>
+              <div className="marketplace-profile__section">
+                <p>
+                  {profileUnavailable
+                    ? 'История пока недоступна.'
+                    : !stats || stats.state === 'PENDING'
+                      ? 'История загружается.'
+                      : stats.state === 'AVAILABLE'
+                        ? `Дней со статистикой: ${stats.observedDays}`
+                        : 'За последние 90 дней статистики пока нет.'}
                 </p>
-              )}
-              {stats?.lastObservedAt && !profileUnavailable && (
-                <p className="marketplace-profile-card__intro">
-                  Обновлено:{' '}
-                  {new Intl.DateTimeFormat('ru-RU', {
-                    dateStyle: 'medium',
-                    timeStyle: 'short',
-                    timeZone: 'Europe/Moscow',
-                  }).format(new Date(stats.lastObservedAt))}{' '}
-                  МСК
-                </p>
-              )}
-            </section>
+                {stats?.from && stats.to && !profileUnavailable && (
+                  <p className="marketplace-profile-card__intro">
+                    Период:{' '}
+                    {new Intl.DateTimeFormat('ru-RU', {
+                      dateStyle: 'medium',
+                      timeZone: 'UTC',
+                    }).format(new Date(stats.from))}{' '}
+                    —{' '}
+                    {new Intl.DateTimeFormat('ru-RU', {
+                      dateStyle: 'medium',
+                      timeZone: 'UTC',
+                    }).format(new Date(stats.to))}
+                  </p>
+                )}
+                {stats?.lastObservedAt && !profileUnavailable && (
+                  <p className="marketplace-profile-card__intro">
+                    Обновлено:{' '}
+                    {new Intl.DateTimeFormat('ru-RU', {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                      timeZone: 'Europe/Moscow',
+                    }).format(new Date(stats.lastObservedAt))}{' '}
+                    МСК
+                  </p>
+                )}
+              </div>
+            </details>
           )}
-          <div className="marketplace-profile__actions">
-            <button
-              className="button button--ghost"
-              disabled={busy || !view.canEdit}
-              onClick={() => setEditing(true)}
-            >
-              Изменить профиль
-            </button>
-            {published && (
+          {published && (
+            <div className="marketplace-profile__actions">
               <button
                 className="button button--ghost"
-                disabled={busy || !view.canPause}
+                disabled={busy || dirty || !view.canPause}
                 onClick={() => mutation.mutate({ action: 'pause' })}
               >
                 Скрыть профиль
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </>
       )}
       {notice && <p role="status">{notice}</p>}

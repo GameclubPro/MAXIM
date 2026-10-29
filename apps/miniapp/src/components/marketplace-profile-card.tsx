@@ -22,6 +22,8 @@ const Panel = lazy(() => import('./marketplace-profile-panel'));
 export type MarketplaceProfileCardProps = {
   api: ApiTransport;
   entityId: string;
+  entityTitle?: string;
+  entityAvatarUrl?: string | null;
   entityType: 'chat' | 'channel';
   profile: 'moderation' | 'publisher';
 };

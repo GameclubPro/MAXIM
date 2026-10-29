@@ -12,20 +12,26 @@ import { ApiRequestError } from '../lib/api-request-error';
 import MarketplaceProfileWorkspace from './marketplace-profile-workspace';
 import MarketplaceButtonPolicy from './marketplace-button-policy';
 import type { MarketplaceProfileCardProps } from './marketplace-profile-card';
-import type { MarketplaceScreen } from './marketplace-profile-panel';
+import type { MarketplaceDrafts, MarketplaceScreen } from './marketplace-profile-panel';
 import { AppIcon } from './ui/app-icon';
 import { EntityAvatar } from './ui/entity-avatar';
 import { SkeletonCard } from './ui/skeleton';
 
 export default function MarketplaceEntryWorkspace({
   onBusyChange,
-  onDirtyChange,
+  onDraftsChange,
+  onDraftChange,
+  resetDraftVersion,
+  onRequestExternalNavigation,
   screen,
   onScreenChange,
   ...props
 }: MarketplaceProfileCardProps & {
   onBusyChange: (busy: boolean) => void;
-  onDirtyChange: (dirty: boolean) => void;
+  onDraftsChange: (drafts: MarketplaceDrafts) => void;
+  onDraftChange: (screen: 'profile' | 'buttons') => void;
+  resetDraftVersion: number;
+  onRequestExternalNavigation: (navigate: () => void) => void;
   screen: MarketplaceScreen;
   onScreenChange: (screen: MarketplaceScreen, opener?: HTMLElement) => void;
 }) {
@@ -33,8 +39,8 @@ export default function MarketplaceEntryWorkspace({
   const [profileDirty, setProfileDirty] = useState(false);
   const [policyDirty, setPolicyDirty] = useState(false);
   useEffect(
-    () => onDirtyChange(profileDirty || policyDirty),
-    [profileDirty, policyDirty, onDirtyChange],
+    () => onDraftsChange({ profile: profileDirty, buttons: policyDirty }),
+    [profileDirty, policyDirty, onDraftsChange],
   );
   const [profileBusy, setProfileBusy] = useState(false);
   const [policyBusy, setPolicyBusy] = useState(false);
@@ -51,9 +57,9 @@ export default function MarketplaceEntryWorkspace({
   useEffect(
     () => () => {
       onBusyChange(false);
-      onDirtyChange(false);
+      onDraftsChange({ profile: false, buttons: false });
     },
-    [onBusyChange, onDirtyChange],
+    [onBusyChange, onDraftsChange],
   );
   useEffect(() => {
     let frame: number | null = null;
@@ -191,16 +197,24 @@ export default function MarketplaceEntryWorkspace({
               onOpenProfile={(opener) => onScreenChange('profile', opener)}
               onBusyChange={setProfileBusy}
               onDirtyChange={setProfileDirty}
+              onDraftChange={() => onDraftChange('profile')}
+              resetDraftVersion={resetDraftVersion}
+              onPublished={() => onScreenChange('overview')}
+              onRequestExternalNavigation={onRequestExternalNavigation}
             />
           </div>
         )}
         {!owner && screen !== 'profile' && (
           <div className="marketplace-profile">
             <div className="marketplace-profile__hero">
-              <EntityAvatar title={state.listing?.title || 'Профиль'} entityType={entityType} />
+              <EntityAvatar
+                title={props.entityTitle || state.listing?.title || 'Площадка'}
+                entityType={entityType}
+                avatarUrl={props.entityAvatarUrl}
+              />
               <div>
-                <strong>{state.listing?.title || 'Профиль'}</strong>
-                <small>{publicNow ? 'Опубликован' : 'Профиль недоступен'}</small>
+                <strong>{props.entityTitle || state.listing?.title || 'Площадка'}</strong>
+                <small>{publicNow ? 'Профиль опубликован' : 'Профиль недоступен'}</small>
               </div>
             </div>
             {publicNow && state.listing && (
@@ -209,16 +223,18 @@ export default function MarketplaceEntryWorkspace({
                 className="button button--accent"
                 disabled={linkBusy}
                 onClick={() => {
-                  setLinkError(false);
-                  setLinkBusy(true);
-                  void openMarketplace(api, {
-                    target: 'listing',
-                    kind: state.kind,
-                    entityId: state.entityId,
-                    listingId: state.listing!.id,
-                  })
-                    .catch(() => setLinkError(true))
-                    .finally(() => setLinkBusy(false));
+                  onRequestExternalNavigation(() => {
+                    setLinkError(false);
+                    setLinkBusy(true);
+                    void openMarketplace(api, {
+                      target: 'listing',
+                      kind: state.kind,
+                      entityId: state.entityId,
+                      listingId: state.listing!.id,
+                    })
+                      .catch(() => setLinkError(true))
+                      .finally(() => setLinkBusy(false));
+                  });
                 }}
               >
                 Посмотреть профиль <AppIcon icon="ArrowUpRight" aria-hidden />
@@ -263,6 +279,14 @@ export default function MarketplaceEntryWorkspace({
       </div>
       {policyVisited && (
         <div hidden={screen !== 'buttons'}>
+          <div className="marketplace-workspace-identity">
+            <EntityAvatar
+              title={props.entityTitle || state.listing?.title || 'Площадка'}
+              entityType={entityType}
+              avatarUrl={props.entityAvatarUrl}
+            />
+            <strong>{props.entityTitle || state.listing?.title || 'Площадка'}</strong>
+          </div>
           <MarketplaceButtonPolicy
             {...props}
             canEnable={publicNow}
@@ -271,6 +295,10 @@ export default function MarketplaceEntryWorkspace({
             recheckingProfile={query.isFetching}
             onBusyChange={setPolicyBusy}
             onDirtyChange={setPolicyDirty}
+            onDraftChange={() => onDraftChange('buttons')}
+            resetDraftVersion={resetDraftVersion}
+            active={screen === 'buttons'}
+            onOpenProfile={canManage ? () => onScreenChange('profile') : undefined}
           />
         </div>
       )}

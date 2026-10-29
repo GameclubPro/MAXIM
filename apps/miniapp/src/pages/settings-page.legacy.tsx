@@ -6294,6 +6294,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsOverviewEntry order={32}>
                 <MarketplaceProfileCard
                   api={api}
+                  entityTitle={chatTitle}
+                  entityAvatarUrl={chatHeaderQuery.data?.avatarUrl ?? null}
                   entityId={chatId ?? ''}
                   entityType="chat"
                   profile="moderation"
