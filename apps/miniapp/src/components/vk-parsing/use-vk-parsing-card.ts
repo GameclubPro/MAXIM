@@ -434,13 +434,13 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     mutationFn: (postId: string) => publishVkParsingPostNow(api, entityType, chatId, postId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
-      pushToast({ tone: 'success', title: 'Поставлено сейчас' });
+      pushToast({ tone: 'success', title: 'Публикация запущена' });
       maxNotify('success');
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не поставлено',
+        title: 'Не удалось запустить публикацию',
         description: normalizeApiError(error),
       });
       maxNotify('error');

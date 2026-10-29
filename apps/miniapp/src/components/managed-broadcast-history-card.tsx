@@ -4,6 +4,7 @@ import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { ManagedBroadcastDeliveryMeter } from './managed-broadcast-delivery-meter';
 import { cn } from '../lib/cn';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import './managed-broadcast-history-card.css';
 
 type ManagedBroadcastHistoryTone = 'active' | 'warning' | 'danger' | 'muted';
@@ -48,6 +49,9 @@ export function ManagedBroadcastHistoryCard({
   onRetry,
   onDelete,
 }: ManagedBroadcastHistoryCardProps) {
+  const errorMessage = broadcast.lastError
+    ? describeUserFacingError(new Error(broadcast.lastError), 'Не удалось выполнить отправку.')
+    : null;
   const disablePrimary = isBusy || isDeleting;
   const hasDeliveryMeter =
     broadcast.status === 'COMPLETED' ||
@@ -102,9 +106,9 @@ export function ManagedBroadcastHistoryCard({
 
       {hasDeliveryMeter ? <ManagedBroadcastDeliveryMeter broadcast={broadcast} /> : null}
 
-      {broadcast.lastError ? (
-        <small className="managed-broadcast-card__error" title={broadcast.lastError}>
-          {broadcast.lastError}
+      {errorMessage ? (
+        <small className="managed-broadcast-card__error" title={errorMessage}>
+          {errorMessage}
         </small>
       ) : null}
     </>

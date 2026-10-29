@@ -64,7 +64,10 @@ try {
           /При сбое или занятости ИИ сообщение остаётся/u,
         );
         await panel.getByRole('button', { name: 'Как работает фильтр рекламы' }).click();
-        assert.match(await panel.locator('.commercial-studio__hero').innerText(), /вторая модель/u);
+        assert.match(
+          await panel.locator('.commercial-studio__hero').innerText(),
+          /дополнительную проверку/u,
+        );
         await panel.getByRole('button', { name: 'Как работает фильтр рекламы' }).click();
         await page.screenshot({ path: join(screenshots, `${device}-${theme}.png`) });
         assert.equal(

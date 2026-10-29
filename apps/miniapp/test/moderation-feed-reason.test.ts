@@ -8,7 +8,7 @@ test('shows allowlist link reason instead of only message excerpt', () => {
       ruleCode: 'LINK_BLOCKED_DELETE',
       metadata: { reason: 'Link https://spam.example is not in allowlist' },
     }),
-    'Ссылка https://spam.example не входит в разрешенный список.',
+    'Ссылка https://spam.example не входит в разрешённый список.',
   );
 });
 
@@ -45,11 +45,11 @@ test('preserves standalone moderation delete rule codes', () => {
         nightModeTimezone: 'Europe/Moscow',
       },
     }),
-    'Чат закрыт по ночному режиму 20:00-06:00 (Europe/Moscow).',
+    'Чат закрыт на ночь: 20:00–06:00 (Московское время).',
   );
   assert.equal(
     resolveModerationFeedReason({ ruleCode: 'MUTE_ACTIVE_DELETE', metadata: {} }),
-    'Сообщение отправлено во время активного мута участника.',
+    'На момент отправки участнику было запрещено писать.',
   );
   assert.equal(
     resolveModerationFeedReason({ ruleCode: 'MANUAL_GROUP_CLOSE_DELETE', metadata: {} }),
@@ -136,7 +136,7 @@ test('renders image OCR sentinels as their privacy-safe stop-list reason', () =>
         blockedDomain: 'spam.example',
       },
     }),
-    'Запрещенный домен: spam.example.',
+    'Запрещённый домен: spam.example.',
   );
 });
 

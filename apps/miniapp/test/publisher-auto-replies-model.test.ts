@@ -69,7 +69,7 @@ test('auto-reply draft requires phrases and content and validates fuzzy phrase s
   assert.deepEqual(
     validateAutoReplyDraft({ ...empty, phrases: ['Цена'], fuzzyMatch: true, text: 'Ответ' }),
     {
-      fuzzyMatch: `Для опечаток в каждой фразе нужно минимум ${AUTO_REPLY_FUZZY_MIN_ALNUM_COUNT} букв или цифр.`,
+      fuzzyMatch: `Чтобы учитывать опечатки, в каждой фразе нужно минимум ${AUTO_REPLY_FUZZY_MIN_ALNUM_COUNT} букв или цифр.`,
     },
   );
   assert.deepEqual(

@@ -2,6 +2,7 @@ import { AppIcon as IconoirSprite } from './ui/app-icon';
 import type { ManagedAutopostRuleSummary } from '@maxim/contracts';
 
 import { cn } from '../lib/cn';
+import { describeUserFacingError } from '../lib/user-facing-error';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import './managed-broadcast-history-card.css';
 
@@ -62,6 +63,9 @@ export function ManagedAutopostRuleCard({
   onPause,
   onDelete,
 }: ManagedAutopostRuleCardProps) {
+  const errorMessage = rule.lastError
+    ? describeUserFacingError(new Error(rule.lastError), 'Не удалось выполнить отправку.')
+    : null;
   const tone = resolveRuleTone(rule.status);
   const badge = resolveRuleBadge(rule.status);
   const title = resolveRuleTitle(rule, nextLabel);
@@ -102,9 +106,9 @@ export function ManagedAutopostRuleCard({
           </div>
         ) : null}
 
-        {rule.lastError ? (
-          <small className="managed-broadcast-card__error" title={rule.lastError}>
-            {rule.lastError}
+        {errorMessage ? (
+          <small className="managed-broadcast-card__error" title={errorMessage}>
+            {errorMessage}
           </small>
         ) : null}
       </div>

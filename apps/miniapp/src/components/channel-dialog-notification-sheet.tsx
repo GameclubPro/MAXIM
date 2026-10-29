@@ -217,7 +217,7 @@ export default function ChannelDialogNotificationSheet({
           <div className="channel-dialog-notification-sheet__delivery">
             <p>Личные сообщения от Публика. Бот должен быть запущен и не заблокирован.</p>
             <a href={PUBLIK_BOT_URL} onClick={openPublikBot}>
-              Открыть Публик
+              Открыть Публика
             </a>
           </div>
         ) : null}

@@ -61,7 +61,7 @@ async function openAuthor(page) {
     .locator('[data-message-id="chat-comments-2"] .channel-dialog-message__bubble')
     .press('Enter');
   await page.getByRole('button', { name: 'Ограничить автора', exact: true }).click();
-  await page.getByRole('radio', { name: 'Мут', exact: true }).waitFor();
+  await page.getByRole('radio', { name: 'Запрет на комментарии', exact: true }).waitFor();
 }
 try {
   for (const device of profiles)
@@ -92,7 +92,7 @@ try {
         await page.getByRole('button', { name: 'Ограничения участников', exact: true }).waitFor();
         await applyNativeVisualMode(page, device);
         await openAuthor(page);
-        await page.getByLabel('Срок мута', { exact: true }).selectOption('3600');
+        await page.getByLabel('Срок запрета на комментарии', { exact: true }).selectOption('3600');
         await page.getByLabel('Причина', { exact: false }).fill('Повторяющийся спам');
         await layout(page);
         const prefix = `${device.name}-${colorScheme}-${profile}`;
@@ -118,27 +118,29 @@ try {
         await layout(page);
         await page.screenshot({ path: path.join(output, `${prefix}-confirm.png`) });
         await page.evaluate(() => window.commentModerationTest.failNext());
-        await page.getByRole('button', { name: 'Применить мут', exact: true }).click();
+        await page.getByRole('button', { name: 'Запретить комментировать', exact: true }).click();
         await page.getByRole('alert').filter({ hasText: 'Не удалось сохранить' }).waitFor();
         assert.equal(
           await page.getByLabel('Причина', { exact: false }).inputValue(),
           'Повторяющийся спам',
         );
         await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
-        await page.getByRole('button', { name: 'Применить мут', exact: true }).click();
+        await page.getByRole('button', { name: 'Запретить комментировать', exact: true }).click();
         await page.locator('.comment-moderation-sheet').waitFor({ state: 'detached' });
         await page.getByRole('button', { name: 'Ограничения участников', exact: true }).click();
-        await page.getByRole('button', { name: /Марина Орлова.*Мут до/ }).waitFor();
+        await page
+          .getByRole('button', { name: /Марина Орлова.*Запрет на комментарии до/ })
+          .waitFor();
         await layout(page);
         await page.screenshot({ path: path.join(output, `${prefix}-list.png`) });
-        await page.getByRole('button', { name: /Марина Орлова.*Мут до/ }).click();
+        await page.getByRole('button', { name: /Марина Орлова.*Запрет на комментарии до/ }).click();
         await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
         await page.getByRole('button', { name: 'Снять ограничение', exact: true }).click();
         await page.locator('.comment-moderation-sheet').waitFor({ state: 'detached' });
         await openAuthor(page);
-        await page.getByRole('radio', { name: 'Бан без срока', exact: true }).check();
+        await page.getByRole('radio', { name: 'Бессрочная блокировка', exact: true }).check();
         await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
-        await page.getByRole('button', { name: 'Забанить', exact: true }).click();
+        await page.getByRole('button', { name: 'Заблокировать', exact: true }).click();
         await page.locator('.comment-moderation-sheet').waitFor({ state: 'detached' });
         await page.evaluate(() => window.commentModerationTest.asReader('preview-user-8'));
         await page.locator('.channel-dialog-compose__restriction').waitFor();

@@ -73,3 +73,18 @@ test('preview exposes stop-word state and matching changes even when the phrase 
   assert.doesNotMatch(labels.after, /private-rule-id/u);
   assert.equal(labels.replacement, true);
 });
+
+test('preview translates time zone identifiers without changing authored message text', () => {
+  for (const path of ['duplicateTimezone', 'nightModeTimezone']) {
+    const labels = networkSettingsChangeLabels(
+      { path, op: 'set', value: 'UTC' },
+      { kind: 'common', value: 'Europe/Moscow' },
+    );
+    assert.equal(labels.before, 'Московское время');
+    assert.equal(labels.after, 'Всемирное время');
+  }
+  assert.equal(
+    networkSettingsChangeLabels({ path: 'text', op: 'set', value: 'Europe/Moscow' }).after,
+    'Europe/Moscow',
+  );
+});

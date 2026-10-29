@@ -585,7 +585,7 @@ export function PublicationDetailsSheet({
                       );
                     })
                   ) : (
-                    <span className="publication-details-empty">Запусков пока нет</span>
+                    <span className="publication-details-empty">Отправок пока нет</span>
                   )}
                 </div>
               </section>

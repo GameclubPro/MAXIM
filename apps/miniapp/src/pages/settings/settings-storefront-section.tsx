@@ -207,7 +207,7 @@ export function SettingsStorefrontSection({
                 </label>
               </div>
               <p className="settings-native-toggle__hint">
-                Кнопка будет доступна администраторам и выданным пользователям.
+                Кнопка будет доступна администраторам и пользователям из списка.
               </p>
             </div>
           ) : null}

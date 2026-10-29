@@ -188,11 +188,11 @@ function describeImmunity(immunity: ChatParticipantImmunityView | null): string 
   const remaining = parseNonNegativeInteger(immunity.remainingViolatingMessagesToday);
   const limit = parsePositiveInteger(immunity.dailyViolationLimit);
   if (remaining !== null && limit !== null) {
-    return `Защита: ${remaining} из ${limit} нарушающих сообщений осталось на сегодня`;
+    return `Защита: ${remaining} из ${limit} сообщений с нарушениями осталось на сегодня`;
   }
 
   if (limit !== null) {
-    return `Защита: лимит ${limit} нарушающих сообщений в день`;
+    return `Защита: лимит ${limit} сообщений с нарушениями в день`;
   }
 
   return 'Защита с дневным лимитом';

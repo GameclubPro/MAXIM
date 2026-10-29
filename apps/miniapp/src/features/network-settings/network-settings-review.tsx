@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { networkSettingsChangeLabels } from './network-settings-product-labels';
 import type { useNetworkSettingsController } from './network-settings-controller';
+import { formatNavigationAllowlistEntryTarget } from '../../pages/settings/settings-link-allowlist';
 
 export type NetworkSettingsReviewProps = {
   controller: Pick<
@@ -71,7 +72,13 @@ export function NetworkSettingsReview({ controller, recipientTitles }: NetworkSe
             {controller.navigationAllowlist.mode === 'replace'
               ? controller.navigationAllowlist.entries.map((entry, index) => (
                   <li key={index}>
-                    {entry.value} ·{' '}
+                    {formatNavigationAllowlistEntryTarget({
+                      kind: entry.kind,
+                      domain: entry.value,
+                      target: entry.value,
+                      normalizedValue: entry.value,
+                    })}{' '}
+                    ·{' '}
                     {entry.removeAfterAt
                       ? 'до ' + new Date(entry.removeAfterAt).toLocaleString('ru-RU')
                       : 'без срока'}
@@ -84,7 +91,13 @@ export function NetworkSettingsReview({ controller, recipientTitles }: NetworkSe
                       : action.op === 'remove'
                         ? 'Удалить'
                         : 'Изменить срок'}
-                    : {action.target.value}
+                    :{' '}
+                    {formatNavigationAllowlistEntryTarget({
+                      kind: action.target.kind,
+                      domain: action.target.value,
+                      target: action.target.value,
+                      normalizedValue: action.target.value,
+                    })}
                     {action.op !== 'remove'
                       ? ' · ' +
                         (action.removeAfterAt

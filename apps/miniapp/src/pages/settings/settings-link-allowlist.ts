@@ -123,10 +123,10 @@ export function formatNavigationAllowlistEntryKindLabel(
 }
 
 export function formatNavigationAllowlistEntryTarget(
-  entry: Pick<DomainAllowlistEntry, 'domain' | 'target' | 'normalizedValue'>,
+  entry: Pick<DomainAllowlistEntry, 'domain' | 'target' | 'normalizedValue' | 'kind'>,
 ): string {
   const parsed = parseStoredAllowlistEntry(entry.normalizedValue);
-  const kind = parsed?.kind;
+  const kind = entry.kind ?? parsed?.kind;
   const target = entry.target ?? parsed?.target ?? entry.domain;
 
   if (kind === 'MAX_PROFILE') {
@@ -142,7 +142,7 @@ export function formatNavigationAllowlistEntryTarget(
       return target.slice('url:'.length);
     }
     if (target.startsWith('chat-id:')) {
-      return `Старый ID чата: ${target.slice('chat-id:'.length)}`;
+      return `Прежний номер чата: ${target.slice('chat-id:'.length)}`;
     }
   }
   if (kind === 'MINI_APP') {
