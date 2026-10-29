@@ -218,13 +218,11 @@ describe('NightModeTransitionSchedulerService', () => {
       );
       const prisma = {
         chat: {
-          findUnique: jest
-            .fn()
-            .mockResolvedValue({
-              entityType: ChatEntityType.CHAT,
-              settings,
-              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
-            }),
+          findUnique: jest.fn().mockResolvedValue({
+            entityType: ChatEntityType.CHAT,
+            settings,
+            botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+          }),
         },
         maxActionLedgerEntry: {
           findUnique: jest.fn(async ({ where }: { where: { jobId: string } }) =>
@@ -834,6 +832,53 @@ describe('NightModeTransitionSchedulerService', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('retires a legacy second-fold job without treating its old sticky marker as new-send authority', async () => {
+    const settings = {
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 150,
+      nightModeEndTimeMinutes: 480,
+      nightModeTimezone: 'Europe/Berlin',
+    };
+    const sessionKey = 'v1:Europe/Berlin:02:30:08:00:2026-10-25';
+    const scheduledFor = '2026-10-25T01:30:00.000Z';
+    const fingerprint = buildNightModeTransitionScheduleFingerprint(settings);
+    const job: NightModeTransitionJob = {
+      chatId: 'fold-chat',
+      transition: 'close',
+      sessionKey,
+      scheduledFor,
+      transitionRuntimeVersion: 4,
+      scheduleFingerprint: fingerprint,
+      stickyRouteProbe: {
+        kind: 'future_night_close',
+        version: 1,
+        authorizedAt: '2026-10-24T20:00:00.000Z',
+        sessionKey,
+        scheduledFor,
+        scheduleFingerprint: fingerprint,
+      },
+    };
+    const jobId = buildNightModeTransitionJobId(
+      job.chatId,
+      job.transition,
+      scheduledFor,
+      sessionKey,
+    );
+    const service = new NightModeTransitionSchedulerService({
+      chat: { findUnique: jest.fn() },
+    } as never);
+    await seedRegisteredJob(service, {
+      chatId: job.chatId,
+      jobId,
+      transition: job.transition,
+      sessionKey,
+      scheduledFor,
+      scheduleFingerprint: fingerprint,
+      runtimeVersion: 4,
+    });
+    await expect(service.inspectTransitionExecution(job, jobId)).resolves.toBe('retire');
   });
 
   it('retires an open occurrence after the bounded catch-up window', async () => {

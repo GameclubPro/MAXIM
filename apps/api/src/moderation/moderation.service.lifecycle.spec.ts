@@ -4479,66 +4479,77 @@ describe('ModerationService', () => {
     });
   });
 
-  it('does not send greeting while night mode closes the chat', async () => {
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings({
-            greetingEnabled: true,
-            greetingBotMessageEnabled: true,
-            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
-            nightModeEnabled: true,
-            nightModeStartTimeMinutes: 0,
-            nightModeEndTimeMinutes: 0,
+  it.each([0, 150])(
+    'does not send greeting while night mode closes the chat (start=%s)',
+    async (start) => {
+      jest
+        .useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+        .setSystemTime(new Date('2026-10-25T01:15:00Z'));
+      try {
+        const prisma = {
+          chat: {
+            upsert: jest.fn().mockResolvedValue({
+              id: 'chat-1',
+              title: 'Chat 1',
+              settings: createSettings({
+                greetingEnabled: true,
+                greetingBotMessageEnabled: true,
+                greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+                nightModeEnabled: true,
+                nightModeStartTimeMinutes: start,
+                nightModeEndTimeMinutes: start === 0 ? 0 : 480,
+                nightModeTimezone: 'Europe/Berlin',
+              }),
+              domains: [],
+              admins: [],
+            }),
+          },
+          violation: {
+            create: jest.fn(),
+          },
+          moderationEvent: {
+            findFirst: jest.fn().mockResolvedValue(null),
+            create: jest.fn(),
+          },
+          webhookEvent: {
+            findUnique: jest.fn(),
+            update: jest.fn(),
+          },
+        };
+        const ruleEngine = {
+          detect: jest.fn(),
+        };
+        const sanctionService = {
+          resolveAction: jest.fn(),
+        };
+        const maxClient = {
+          deleteMessage: jest.fn(),
+          sendMessage: jest.fn(),
+          kickMember: jest.fn(),
+          banMember: jest.fn(),
+          notifyModerators: jest.fn(),
+        };
+
+        const service = new ModerationService(
+          prisma as never,
+          ruleEngine as never,
+          sanctionService as never,
+          maxClient as never,
+        );
+
+        await service.handleUpdate(createServiceUserJoinedUpdate());
+
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            ruleCode: 'GREETING_MESSAGE',
           }),
-          domains: [],
-          admins: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn(),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-    );
-
-    await service.handleUpdate(createServiceUserJoinedUpdate());
-
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        ruleCode: 'GREETING_MESSAGE',
-      }),
-    });
-  });
+        });
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it('does not send greeting while manual group close is active', async () => {
     const prisma = {

@@ -23,7 +23,7 @@ import { cn } from '../../lib/cn';
 import { recoverableLazyNamedComponent } from '../../lib/recoverable-lazy';
 import { DeleteDelayStepper } from './settings-delete-delay-stepper';
 import { SettingsHintAnchor } from './settings-hint-anchor';
-import { RUSSIAN_TIMEZONE_OPTIONS } from './settings-timezones';
+import { getNightTimezoneOptions } from './settings-timezones';
 import { SharedSpeechField } from './shared-bot-speech-field';
 import type { SharedChatSettingsContext } from './shared-chat-settings-section';
 import type { ComponentProps } from 'react';
@@ -555,7 +555,9 @@ export function SharedNightFields({ fields, context }: LifecycleProps) {
                     {timezone.kind === 'mixed' ? 'Разные значения' : 'Загрузка…'}
                   </option>
                 ) : null}
-                {RUSSIAN_TIMEZONE_OPTIONS.map((option) => (
+                {getNightTimezoneOptions(
+                  timezone.kind === 'common' ? timezone.value : undefined,
+                ).map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>

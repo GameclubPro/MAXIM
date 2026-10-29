@@ -1,13 +1,20 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { DEFAULT_NIGHT_MODE_TIMEZONE } from './moderation.service.support';
+import {
+  resolveNightModeCalendar,
+  type NightModeCalendarGeometry,
+  type NightModeCalendarWindow,
+} from './night-mode-calendar.util';
 
 export type NightModeTransitionKind = 'close' | 'open';
-
 export type NightModeTransitionScheduleSettings = Pick<
   ChatSettings,
   'nightModeEnabled' | 'nightModeStartTimeMinutes' | 'nightModeEndTimeMinutes' | 'nightModeTimezone'
 >;
-
+export type NightModeScheduleGeometry = Omit<
+  NightModeTransitionScheduleSettings,
+  'nightModeEnabled'
+>;
 export type NightModeTransitionSnapshot = {
   status: 'open' | 'closed';
   sessionKey: string;
@@ -17,290 +24,279 @@ export type NightModeTransitionSnapshot = {
   isCloseBoundary: boolean;
   isOpenBoundary: boolean;
 };
-
 export type NightModeTransitionOccurrence = {
   transition: NightModeTransitionKind;
   dueAt: Date;
   sessionKey: string;
 };
-
 export type ParsedNightModeTransitionSession = {
   timezone: string;
   startMinutes: number;
   endMinutes: number;
   sessionDateKey: string;
 };
-
 export const NIGHT_MODE_OPEN_CATCH_UP_MAX_AGE_MS = 2 * 60 * 60 * 1_000;
-
-type ZonedDateParts = {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-};
+type ZonedDateParts = { year: number; month: number; day: number; hour: number; minute: number };
+const normalizedZones = new Map<string, string>();
 
 export function normalizeNightModeTimezone(value: string): string {
   const normalized = typeof value === 'string' ? value.trim() : '';
-  if (!normalized) {
-    return DEFAULT_NIGHT_MODE_TIMEZONE;
-  }
-
+  if (!normalized) return DEFAULT_NIGHT_MODE_TIMEZONE;
+  const cached = normalizedZones.get(normalized);
+  if (cached) return cached;
+  let result = normalized;
   try {
-    Intl.DateTimeFormat('ru-RU', { timeZone: normalized }).format(new Date());
-    return normalized;
+    Intl.DateTimeFormat('ru-RU', { timeZone: normalized }).format(0);
   } catch {
-    return DEFAULT_NIGHT_MODE_TIMEZONE;
+    result = DEFAULT_NIGHT_MODE_TIMEZONE;
   }
+  if (normalizedZones.size >= 256) normalizedZones.delete(normalizedZones.keys().next().value!);
+  normalizedZones.set(normalized, result);
+  return result;
 }
-
 export function normalizeDayMinutes(value: number, fallback: number): number {
-  if (Number.isInteger(value) && value >= 0 && value <= 1_439) {
-    return value;
-  }
-
-  return fallback;
+  return Number.isInteger(value) && value >= 0 && value <= 1_439 ? value : fallback;
 }
-
 export function formatMinutesAsTime(value: number): string {
   const normalized = normalizeDayMinutes(value, 0);
-  const hours = Math.floor(normalized / 60);
-  const minutes = normalized % 60;
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`;
 }
-
 export function getCurrentMinutesInTimeZone(timeZone: string, date = new Date()): number | null {
   const parts = getZonedDateParts(date, timeZone);
   return parts ? parts.hour * 60 + parts.minute : null;
 }
-
 export function formatDateKeyInTimeZone(date: Date, timeZone: string): string {
   const parts = getZonedDateParts(date, timeZone);
-  if (!parts) {
-    return date.toISOString().slice(0, 10);
-  }
-
-  return formatDateKey(parts.year, parts.month, parts.day);
+  return parts
+    ? formatDateKey(parts.year, parts.month, parts.day)
+    : date.toISOString().slice(0, 10);
 }
-
+function lastMatching<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1)
+    if (predicate(items[index]!)) return items[index];
+  return undefined;
+}
+function geometry(settings: NightModeScheduleGeometry): NightModeCalendarGeometry {
+  return {
+    startMinutes: normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60),
+    endMinutes: normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60),
+    timezone: normalizeNightModeTimezone(settings.nightModeTimezone),
+  };
+}
+function sessionKey(window: NightModeCalendarWindow, value: NightModeCalendarGeometry): string {
+  return buildNightModeTransitionSessionKey({ ...value, sessionDateKey: window.sessionDateKey });
+}
+function occurrence(
+  window: NightModeCalendarWindow,
+  value: NightModeCalendarGeometry,
+  transition: NightModeTransitionKind,
+): NightModeTransitionOccurrence {
+  return {
+    transition,
+    sessionKey: sessionKey(window, value),
+    dueAt: new Date(transition === 'close' ? window.closeAtMs : window.openAtMs),
+  };
+}
 export function resolveNightModeTransitionSnapshot(
   settings: NightModeTransitionScheduleSettings,
   now = new Date(),
 ): NightModeTransitionSnapshot | null {
-  if (!settings.nightModeEnabled) {
-    return null;
-  }
-
-  const startMinutes = normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
-  const endMinutes = normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
-  const timezone = normalizeNightModeTimezone(settings.nightModeTimezone);
-  const currentMinutes = getCurrentMinutesInTimeZone(timezone, now);
-  if (currentMinutes === null) {
-    return null;
-  }
-
-  const currentDateKey = formatDateKeyInTimeZone(now, timezone);
-  const previousDateKey = addDaysToDateKey(currentDateKey, -1);
-
-  if (startMinutes === endMinutes) {
+  if (!settings.nightModeEnabled || !Number.isFinite(now.getTime())) return null;
+  const value = geometry(settings);
+  if (value.startMinutes === value.endMinutes)
     return {
+      ...value,
       status: 'closed',
-      sessionKey: buildNightModeTransitionSessionKey({
-        timezone,
-        startMinutes,
-        endMinutes,
-        sessionDateKey: currentDateKey,
-      }),
-      startMinutes,
-      endMinutes,
-      timezone,
       isCloseBoundary: false,
       isOpenBoundary: false,
+      sessionKey: buildNightModeTransitionSessionKey({
+        ...value,
+        sessionDateKey: formatDateKeyInTimeZone(now, value.timezone),
+      }),
     };
-  }
-
-  const isClosed =
-    startMinutes < endMinutes
-      ? currentMinutes >= startMinutes && currentMinutes < endMinutes
-      : currentMinutes >= startMinutes || currentMinutes < endMinutes;
-  const status = isClosed ? 'closed' : 'open';
-  const sessionDateKey = resolveNightModeTransitionSessionDateKey({
-    currentDateKey,
-    previousDateKey,
-    currentMinutes,
-    startMinutes,
-    endMinutes,
-    status,
-  });
-
+  const at = now.getTime();
+  const windows = resolveNightModeCalendar(value, at);
+  const active = windows.find((window) => window.closeAtMs <= at && at < window.openAtMs);
+  const previous = lastMatching(windows, (window) => window.openAtMs <= at);
+  const window = active ?? previous;
+  if (!window) throw new Error('Night mode calendar has no prior session');
   return {
-    status,
-    sessionKey: buildNightModeTransitionSessionKey({
-      timezone,
-      startMinutes,
-      endMinutes,
-      sessionDateKey,
-    }),
-    startMinutes,
-    endMinutes,
-    timezone,
-    isCloseBoundary: currentMinutes === startMinutes,
-    isOpenBoundary: currentMinutes === endMinutes,
+    ...value,
+    status: active ? 'closed' : 'open',
+    sessionKey: sessionKey(window, value),
+    isCloseBoundary: Boolean(active && Math.floor(at / 60_000) === window.closeAtMs / 60_000),
+    isOpenBoundary: !active && Math.floor(at / 60_000) === window.openAtMs / 60_000,
   };
 }
-
 export function resolveNextNightModeTransitionOccurrences(
   settings: NightModeTransitionScheduleSettings,
   now = new Date(),
 ): NightModeTransitionOccurrence[] {
-  if (!settings.nightModeEnabled) {
-    return [];
-  }
-
-  const startMinutes = normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
-  const endMinutes = normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
-  if (startMinutes === endMinutes) {
-    return [];
-  }
-
-  const timezone = normalizeNightModeTimezone(settings.nightModeTimezone);
-  const currentMinutes = getCurrentMinutesInTimeZone(timezone, now);
-  if (currentMinutes === null) {
-    return [];
-  }
-
-  const currentDateKey = formatDateKeyInTimeZone(now, timezone);
-  const closeDateKey = resolveNextBoundaryDateKey(currentDateKey, currentMinutes, startMinutes);
-  const openDateKey = resolveNextBoundaryDateKey(currentDateKey, currentMinutes, endMinutes);
-  const closeDueAt = zonedDateTimeToUtc(closeDateKey, startMinutes, timezone);
-  const openDueAt = zonedDateTimeToUtc(openDateKey, endMinutes, timezone);
-  const closeSessionKey = buildNightModeTransitionSessionKey({
-    timezone,
-    startMinutes,
-    endMinutes,
-    sessionDateKey: closeDateKey,
-  });
-  const openSessionDateKey =
-    startMinutes < endMinutes ? openDateKey : addDaysToDateKey(openDateKey, -1);
-  const openSessionKey = buildNightModeTransitionSessionKey({
-    timezone,
-    startMinutes,
-    endMinutes,
-    sessionDateKey: openSessionDateKey,
-  });
-
-  const occurrences: NightModeTransitionOccurrence[] = [
-    {
-      transition: 'close',
-      dueAt: closeDueAt,
-      sessionKey: closeSessionKey,
-    },
-    {
-      transition: 'open',
-      dueAt: openDueAt,
-      sessionKey: openSessionKey,
-    },
-  ];
-
-  return occurrences.sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime());
+  if (!settings.nightModeEnabled) return [];
+  const value = geometry(settings);
+  if (value.startMinutes === value.endMinutes) return [];
+  const at = now.getTime();
+  const windows = resolveNightModeCalendar(value, at);
+  const close = windows.find((window) => window.closeAtMs > at);
+  const open = windows.find((window) => window.openAtMs > at);
+  return [close && occurrence(close, value, 'close'), open && occurrence(open, value, 'open')]
+    .filter((item): item is NightModeTransitionOccurrence => Boolean(item))
+    .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime());
 }
-
+/** Current saved geometry only: this is neither historical configuration nor SEND authority. */
+export function resolveLatestNightModeTransitionOccurrences(
+  settings: NightModeScheduleGeometry,
+  now = new Date(),
+): {
+  basis: 'current_schedule';
+  close: NightModeTransitionOccurrence | null;
+  open: NightModeTransitionOccurrence | null;
+} {
+  const value = geometry(settings);
+  if (value.startMinutes === value.endMinutes)
+    return { basis: 'current_schedule', close: null, open: null };
+  const at = now.getTime();
+  const windows = resolveNightModeCalendar(value, at);
+  const close = lastMatching(windows, (window) => window.closeAtMs <= at);
+  const open = lastMatching(windows, (window) => window.openAtMs <= at);
+  return {
+    basis: 'current_schedule',
+    close: close ? occurrence(close, value, 'close') : null,
+    open: open ? occurrence(open, value, 'open') : null,
+  };
+}
 export function resolveCurrentNightModeCloseOccurrence(
   settings: NightModeTransitionScheduleSettings,
   now = new Date(),
 ): NightModeTransitionOccurrence | null {
-  if (!settings.nightModeEnabled) {
-    return null;
-  }
-
-  const startMinutes = normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
-  const endMinutes = normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
-  if (startMinutes === endMinutes) {
-    return null;
-  }
-
-  const timezone = normalizeNightModeTimezone(settings.nightModeTimezone);
-  const currentMinutes = getCurrentMinutesInTimeZone(timezone, now);
-  if (currentMinutes === null) {
-    return null;
-  }
-
-  const currentDateKey = formatDateKeyInTimeZone(now, timezone);
-  const previousDateKey = addDaysToDateKey(currentDateKey, -1);
-  const isClosed =
-    startMinutes < endMinutes
-      ? currentMinutes >= startMinutes && currentMinutes < endMinutes
-      : currentMinutes >= startMinutes || currentMinutes < endMinutes;
-  if (!isClosed) {
-    return null;
-  }
-
-  const sessionDateKey = resolveNightModeTransitionSessionDateKey({
-    currentDateKey,
-    previousDateKey,
-    currentMinutes,
-    startMinutes,
-    endMinutes,
-    status: 'closed',
-  });
-  const dueAt = zonedDateTimeToUtc(sessionDateKey, startMinutes, timezone);
-  if (dueAt.getTime() > now.getTime()) {
-    return null;
-  }
-
-  return {
-    transition: 'close',
-    dueAt,
-    sessionKey: buildNightModeTransitionSessionKey({
-      timezone,
-      startMinutes,
-      endMinutes,
-      sessionDateKey,
-    }),
-  };
+  const snapshot = resolveNightModeTransitionSnapshot(settings, now);
+  if (snapshot?.status !== 'closed' || snapshot.startMinutes === snapshot.endMinutes) return null;
+  return resolveLatestNightModeTransitionOccurrences(settings, now).close;
 }
-
 export function resolveCurrentNightModeOpenOccurrence(
   settings: NightModeTransitionScheduleSettings,
   now = new Date(),
 ): NightModeTransitionOccurrence | null {
-  if (!settings.nightModeEnabled) {
-    return null;
-  }
+  if (resolveNightModeTransitionSnapshot(settings, now)?.status !== 'open') return null;
+  const latest = resolveLatestNightModeTransitionOccurrences(settings, now).open;
+  return latest &&
+    resolveNightModeNoticeCatchUpWindow(latest, settings, now).state === 'within_window'
+    ? latest
+    : null;
+}
+export function resolveNightModeNoticeCatchUpWindow(
+  item: NightModeTransitionOccurrence,
+  settings: NightModeScheduleGeometry,
+  now = new Date(),
+): { state: 'within_window' | 'expired'; endsAt: Date } {
+  const value = geometry(settings);
+  const windows = resolveNightModeCalendar(value, item.dueAt.getTime());
+  const window = windows.find((candidate) => sessionKey(candidate, value) === item.sessionKey);
+  if (!window) return { state: 'expired', endsAt: item.dueAt };
+  const nextClose =
+    windows.find((candidate) => candidate.closeAtMs > window.openAtMs)?.closeAtMs ?? Infinity;
+  const limit =
+    item.transition === 'close'
+      ? window.openAtMs
+      : Math.min(window.openAtMs + NIGHT_MODE_OPEN_CATCH_UP_MAX_AGE_MS, nextClose);
+  const at = now.getTime();
+  const within =
+    at >= item.dueAt.getTime() &&
+    (at < limit || (item.transition === 'open' && at === limit && limit < nextClose));
+  return { state: within ? 'within_window' : 'expired', endsAt: new Date(limit) };
+}
+function absoluteSession(
+  key: string,
+): { value: NightModeCalendarGeometry; window: NightModeCalendarWindow } | null {
+  const parsed = parseNightModeTransitionSessionKey(key);
+  if (!parsed || parsed.startMinutes === parsed.endMinutes) return null;
+  const at = Date.parse(`${parsed.sessionDateKey}T12:00:00.000Z`);
+  const windows = resolveNightModeCalendar(parsed, at);
+  const window = windows.find((candidate) => candidate.sessionDateKey === parsed.sessionDateKey);
+  return window ? { value: parsed, window } : null;
+}
+export function resolveNightModeTransitionSessionCloseAt(key: string): Date | null {
+  const session = absoluteSession(key);
+  return session ? new Date(session.window.closeAtMs) : null;
+}
+export function resolveNightModeTransitionSessionOpenAt(key: string): Date | null {
+  const session = absoluteSession(key);
+  return session ? new Date(session.window.openAtMs) : null;
+}
+/** FLAG: Aliases are only negative effect fences; never use a member as SEND/retry authority. */
+export function resolveNightModeTransitionSessionAliases(key: string): readonly string[] {
+  const session = absoluteSession(key);
+  return session
+    ? session.window.memberDateKeys.map((sessionDateKey) =>
+        buildNightModeTransitionSessionKey({ ...session.value, sessionDateKey }),
+      )
+    : [key];
+}
 
-  const startMinutes = normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
-  const endMinutes = normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
-  if (startMinutes === endMinutes) {
-    return null;
-  }
-
-  const timezone = normalizeNightModeTimezone(settings.nightModeTimezone);
-  const currentMinutes = getCurrentMinutesInTimeZone(timezone, now);
-  if (currentMinutes === null) {
-    return null;
-  }
-
-  const snapshot = resolveNightModeTransitionSnapshot(settings, now);
-  if (!snapshot || snapshot.status !== 'open') {
-    return null;
-  }
-
-  const currentDateKey = formatDateKeyInTimeZone(now, timezone);
-  const openDateKey =
-    startMinutes < endMinutes && currentMinutes < startMinutes
-      ? addDaysToDateKey(currentDateKey, -1)
-      : currentDateKey;
-  const dueAt = zonedDateTimeToUtc(openDateKey, endMinutes, timezone);
-  const ageMs = now.getTime() - dueAt.getTime();
-  if (ageMs < 0 || ageMs > NIGHT_MODE_OPEN_CATCH_UP_MAX_AGE_MS) {
-    return null;
-  }
-
+type ManualClosureSettings = Pick<
+  ChatSettings,
+  'nightModeForceCloseEnabled' | 'nightModeForceCloseForever' | 'nightModeForceCloseUntil'
+>;
+export function resolveManualChatClosure(
+  settings: ManualClosureSettings,
+  now = new Date(),
+): {
+  active: boolean;
+  mode: 'forever' | 'timed' | null;
+  until: string | null;
+} {
+  const active =
+    settings.nightModeForceCloseEnabled &&
+    (settings.nightModeForceCloseForever ||
+      Date.parse(settings.nightModeForceCloseUntil) > now.getTime());
   return {
-    transition: 'open',
-    dueAt,
-    sessionKey: snapshot.sessionKey,
+    active,
+    mode: !active ? null : settings.nightModeForceCloseForever ? 'forever' : 'timed',
+    until:
+      active && !settings.nightModeForceCloseForever
+        ? new Date(settings.nightModeForceCloseUntil).toISOString()
+        : null,
+  };
+}
+export function resolveEffectiveChatClosure(
+  settings: NightModeTransitionScheduleSettings & ManualClosureSettings,
+  now = new Date(),
+) {
+  const manual = resolveManualChatClosure(settings, now);
+  const night = resolveNightModeTransitionSnapshot(settings, now);
+  const restriction = manual.active
+    ? ('manual' as const)
+    : night?.status === 'closed'
+      ? ('night' as const)
+      : ('open' as const);
+  const reference = manual.until ? new Date(manual.until) : now;
+  const then = resolveNightModeTransitionSnapshot(settings, reference);
+  const opensAt =
+    manual.mode === 'forever'
+      ? null
+      : then?.status === 'closed'
+        ? resolveNightModeTransitionSessionOpenAt(then.sessionKey)
+        : manual.until
+          ? reference
+          : null;
+  const next = resolveNextNightModeTransitionOccurrences(settings, now)[0]?.dueAt ?? null;
+  const manualUntil = manual.until ? new Date(manual.until) : null;
+  const nextTransitionAt = !next
+    ? manualUntil
+    : manualUntil && manualUntil < next
+      ? manualUntil
+      : next;
+  return {
+    closed: restriction !== 'open',
+    restriction,
+    manual,
+    night,
+    opensAt,
+    nextTransitionAt,
+    boundary:
+      geometry(settings).startMinutes === geometry(settings).endMinutes
+        ? ('continuous' as const)
+        : ('daily' as const),
   };
 }
 
@@ -356,89 +352,6 @@ export function parseNightModeTransitionSessionKey(
   return buildNightModeTransitionSessionKey(parsed) === value.trim() ? parsed : null;
 }
 
-export function resolveNightModeTransitionSessionCloseAt(sessionKey: string): Date | null {
-  const parsed = parseNightModeTransitionSessionKey(sessionKey);
-  return parsed
-    ? zonedDateTimeToUtc(parsed.sessionDateKey, parsed.startMinutes, parsed.timezone)
-    : null;
-}
-
-export function resolveNightModeTransitionSessionOpenAt(sessionKey: string): Date | null {
-  const parsed = parseNightModeTransitionSessionKey(sessionKey);
-  if (!parsed || parsed.startMinutes === parsed.endMinutes) return null;
-  const openDateKey =
-    parsed.startMinutes < parsed.endMinutes
-      ? parsed.sessionDateKey
-      : addDaysToDateKey(parsed.sessionDateKey, 1);
-  return zonedDateTimeToUtc(openDateKey, parsed.endMinutes, parsed.timezone);
-}
-
-function resolveNightModeTransitionSessionDateKey(params: {
-  currentDateKey: string;
-  previousDateKey: string;
-  currentMinutes: number;
-  startMinutes: number;
-  endMinutes: number;
-  status: 'open' | 'closed';
-}): string {
-  if (params.startMinutes < params.endMinutes) {
-    if (params.status === 'closed') {
-      return params.currentDateKey;
-    }
-    return params.currentMinutes < params.startMinutes
-      ? params.previousDateKey
-      : params.currentDateKey;
-  }
-
-  if (params.status === 'closed') {
-    return params.currentMinutes < params.endMinutes
-      ? params.previousDateKey
-      : params.currentDateKey;
-  }
-
-  return params.previousDateKey;
-}
-
-function resolveNextBoundaryDateKey(
-  currentDateKey: string,
-  currentMinutes: number,
-  boundaryMinutes: number,
-): string {
-  return currentMinutes < boundaryMinutes ? currentDateKey : addDaysToDateKey(currentDateKey, 1);
-}
-
-function zonedDateTimeToUtc(dateKey: string, minutes: number, timeZone: string): Date {
-  const [year, month, day] = dateKey.split('-').map((item) => Number(item));
-  const hour = Math.floor(minutes / 60);
-  const minute = minutes % 60;
-  let utcMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
-
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const parts = getZonedDateParts(new Date(utcMs), timeZone);
-    if (!parts) {
-      return new Date(utcMs);
-    }
-
-    const actualLocalMs = Date.UTC(
-      parts.year,
-      parts.month - 1,
-      parts.day,
-      parts.hour,
-      parts.minute,
-      0,
-      0,
-    );
-    const targetLocalMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
-    const diffMs = targetLocalMs - actualLocalMs;
-    if (diffMs === 0) {
-      break;
-    }
-    utcMs += diffMs;
-  }
-
-  return new Date(utcMs);
-}
-
 function getZonedDateParts(date: Date, timeZone: string): ZonedDateParts | null {
   try {
     const parts = new Intl.DateTimeFormat('en-GB', {
@@ -476,12 +389,6 @@ function getZonedDateParts(date: Date, timeZone: string): ZonedDateParts | null 
   } catch {
     return null;
   }
-}
-
-function addDaysToDateKey(dateKey: string, days: number): string {
-  const [year, month, day] = dateKey.split('-').map((item) => Number(item));
-  const date = new Date(Date.UTC(year, month - 1, day + days));
-  return date.toISOString().slice(0, 10);
 }
 
 function formatDateKey(year: number, month: number, day: number): string {

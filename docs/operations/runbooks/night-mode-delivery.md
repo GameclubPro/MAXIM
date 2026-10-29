@@ -43,10 +43,53 @@ Record the exact complaint time, chat, bot, expected transition and relevant com
 the private incident record. Check settings, route eligibility, durable intent, execution and
 accepted SEND separately. Current settings cannot establish historical intent after an edit.
 
-The reviewed `night-mode:audit-close-notices` command runs in `api-admin` without MAX requests or
-mutations. Use bounded keyset pages and `--sample-limit 0` for aggregate-only reporting. A complete
-close census does not cover opening-only settings, prove Redis payload health or prove delivery
-of future jobs. Historical same-day incidents may predate the current container's log window.
+The reviewed `night-mode:audit-notices` command (also available under the older
+`night-mode:audit-close-notices` name) runs in `api-admin` without MAX requests or mutations.
+Schema v2 covers every enabled night schedule, including opening-only schedules and schedules
+whose notification switches are both off. `notices.close` and `notices.open` each show the latest
+expected boundary under the current saved schedule and the next boundary. Latest evidence remains
+visible after the night or the two-hour opening window ends. Equal start/end means continuously
+closed, with no daily boundary; no notice is invented for that state.
+
+Use `--page-size 100 --max-chats 5000 --sample-limit 0 --json` for a bounded aggregate read.
+`--max-chats` now limits **all scanned settings rows**, before filtering enabled schedules;
+`scan.scannedSettings` counts that work and `scan.scannedChats` counts eligible rows. If
+`scan.complete` is false, resume with its exact `scan.nextAfter` using `--after`. A disabled page
+still advances the cursor. Each page performs bounded exact-key details, registry and ledger
+reads sequentially. The old `coverage.current`/`coverage.next` CLOSE counters retain their
+current-close-switch population; new both-notice counters are under `notices`. Latest counters
+use `expectationBasis: historical_unknown`: raw `absentRegistryAndLedger` is an observation,
+not `missingDurable` work. Completed jobs are normally retired and may never have required a
+notification. Only current/future scheduling counters use current eligibility.
+
+Successful exact receipts establish accepted sends even when today's switch is off or today's
+route is unavailable. Pristine unattempted SEND intents may be pending; attempted, ambiguous or
+incomplete-success records remain unknown. Only a certified refusal before dispatch establishes
+`not_sent`. Missing records mean no confirmation, including after the send window expires.
+Settings audit rows contain changed key names, not historical values: the current schedule,
+notification switches, manual closure or access cannot establish the cause of an older absence.
+Scheduling coverage is not notification intent or delivery proof. `sendRouteNow` respects the
+fixed moderator independently of legacy per-membership health counters. SQL registry coverage
+does not inspect Redis payloads. Historical incidents may predate the current container logs.
+
+The settings screen shows both observations and separately scoped recovery work. Event repair or
+closing-message cleanup cannot downgrade a successful opening. Delayed reconciliation and work
+requiring intervention have distinct states. Focus, visibility and the next saved boundary
+refresh the status without replacing unsaved edits.
+
+## Calendar boundaries
+
+Enforcement, scheduling and diagnostics share absolute intervals. At a repeated local time use
+the first occurrence; a nonexistent local time moves forward by the clock-change gap. Merge
+overlapping or touching intervals and omit empty intervals so notifications describe the same
+restriction as moderation. Russian zones retain their existing boundaries. Calendar caching is
+bounded by geometry and an absolute validity interval, never by a cached open/closed boolean.
+
+Persisted v1 session keys and SEND idempotency keys remain valid. Prior member keys of a merged
+interval are negative no-send fences for both transitions, never replacement authority or a
+reason to rename a receipt. Event-only recovery can restore an exact old accepted receipt;
+cleanup accepts supported legacy timestamps but still checks the current restriction and exact
+message authority. Both rollback paths require the calendar-aware night recovery reader floor.
 
 Do not repair a missing result by clearing queues, removing manual-review fences, changing bot
 assignments or replaying an ambiguous send. Preserve unknown outcomes and report missing evidence.

@@ -1,3 +1,7 @@
+import {
+  resolveNightModeTransitionSessionAliases,
+  type NightModeTransitionKind,
+} from '../moderation/night-mode-transition-time.util';
 import { beginMaxSendLedgerObservation } from './max-send-observation';
 import {
   isMaxMutationOutcomeAmbiguous,
@@ -348,6 +352,30 @@ export class MaxActionLedgerService {
     private readonly prisma: PrismaService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {}
+
+  // FLAG: Existing member intents/receipts only deny a new merged-session SEND.
+  // They never transfer success, retry authority or event identity to the owner key.
+  async hasNightModeAliasSendProvenance(params: {
+    chatId: string;
+    transition: NightModeTransitionKind;
+    sessionKey: string;
+  }): Promise<boolean> {
+    const aliases = resolveNightModeTransitionSessionAliases(params.sessionKey).filter(
+      (key) => key !== params.sessionKey,
+    );
+    if (!aliases.length) return false;
+    const row = await this.prisma.maxActionLedgerEntry.findFirst({
+      where: {
+        jobId: {
+          in: aliases.map((key) =>
+            buildNightModeNoticeIdempotencyKey(params.transition, params.chatId, key),
+          ),
+        },
+      },
+      select: { id: true },
+    });
+    return row !== null;
+  }
 
   async hasSucceededDelete(chatId: string, messageId: string): Promise<boolean> {
     const normalizedChatId = this.nullableString(chatId);

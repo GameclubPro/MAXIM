@@ -12,6 +12,7 @@ import {
   formatMinutesAsTime,
   resolveNextNightModeTransitionOccurrences,
   resolveNightModeTransitionSnapshot,
+  resolveManualChatClosure,
 } from './night-mode-transition-time.util';
 
 export const CLOSED_CHAT_DELETE_RULE_CODES = new Set([
@@ -177,7 +178,7 @@ export class ClosedChatDeleteGuardService {
     const metadata = record(reason.metadata);
     if (reason.ruleCode === 'MANUAL_GROUP_CLOSE_DELETE') {
       return (
-        settings.nightModeForceCloseEnabled &&
+        resolveManualChatClosure(settings, new Date(now)).active &&
         (settings.nightModeForceCloseForever
           ? metadata.closeMode === 'forever' && metadata.closeUntil === null
           : metadata.closeMode === 'timed' &&

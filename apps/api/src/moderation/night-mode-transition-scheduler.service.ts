@@ -1,3 +1,8 @@
+import { matchesNightModeTransitionFenceAlias } from './night-mode-transition-fence-alias.util';
+import {
+  matchesNightModeRecoveryBoundaryTime,
+  resolveNightModeLegacyRecoveryTime,
+} from './night-mode-recovery-time-compat.util';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -611,6 +616,12 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         return 'unsafe';
       }
     }
+    if (!parseNightModeTransitionSessionKey(job.sessionKey)) return 'unsafe';
+    const canonical =
+      job.transition === 'close'
+        ? resolveNightModeTransitionSessionCloseAt(job.sessionKey)
+        : resolveNightModeTransitionSessionOpenAt(job.sessionKey);
+    if (canonical?.toISOString() !== job.scheduledFor) return 'retire';
     const stickyRouteProbe = parseNightModeStickyRouteProbe(job.stickyRouteProbe);
     if (
       job.stickyRouteProbe !== undefined &&
@@ -742,7 +753,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     recovery: NightModeTransitionRecoveryObligation,
     reconcileFence?: NightModeTransitionReconcileFence,
   ): Promise<void> {
-    const job = this.buildRecoveryObligationJob(chatId, recovery);
+    const existing = await this.findScheduledJobRegistryRow(
+      chatId,
+      buildNightModeTransitionRecoveryJobId(chatId, recovery),
+    );
+    const job = this.buildRecoveryObligationJob(chatId, recovery, existing ?? undefined);
     await this.upsertScheduledJobRegistryIntent(
       {
         chat_id: chatId,
@@ -788,8 +803,15 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     // event beyond the send deadline. This receipt-only handoff never authorizes another SEND.
     if (job.transition !== 'open' || job.recoveryOnly) return false;
     const session = parseNightModeTransitionSessionKey(job.sessionKey);
-    const openAt = resolveNightModeTransitionSessionOpenAt(job.sessionKey);
-    if (!session || openAt?.toISOString() !== job.scheduledFor) return false;
+    if (
+      !session ||
+      !matchesNightModeRecoveryBoundaryTime({
+        sessionKey: job.sessionKey,
+        transition: 'open',
+        scheduledFor: job.scheduledFor,
+      })
+    )
+      return false;
     const ledger = await this.readNoticeLedger(job.chatId, job.sessionKey, 'open');
     if (
       !ledger ||
@@ -823,13 +845,19 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   private buildRecoveryObligationJob(
     chatId: string,
     recovery: NightModeTransitionRecoveryObligation,
+    persisted?: Pick<NightModeScheduledJobRegistryRow, 'scheduled_for' | 'runtime_version'>,
   ): NightModeTransitionJob {
     const transition =
       recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY ? 'close' : 'open';
-    const dueAt =
-      transition === 'close'
-        ? resolveNightModeTransitionSessionCloseAt(recovery.sessionKey)
-        : resolveNightModeTransitionSessionOpenAt(recovery.sessionKey);
+    // FLAG: Retain the exact persisted recovery time; it is metadata, never SEND authority.
+    const dueAt = persisted
+      ? persisted.scheduled_for
+      : recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY
+        ? new Date(recovery.openScheduledFor)
+        : ((transition === 'close'
+            ? resolveNightModeTransitionSessionCloseAt(recovery.sessionKey)
+            : resolveNightModeTransitionSessionOpenAt(recovery.sessionKey)) ??
+          resolveNightModeLegacyRecoveryTime(recovery.sessionKey, transition));
     const fingerprint = this.buildRecoveryScheduleFingerprint(
       recovery.timezone,
       recovery.startMinutes,
@@ -837,6 +865,11 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     );
     if (
       !dueAt ||
+      !matchesNightModeRecoveryBoundaryTime({
+        sessionKey: recovery.sessionKey,
+        transition,
+        scheduledFor: dueAt.toISOString(),
+      }) ||
       (recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY &&
         recovery.scheduleFingerprint !== fingerprint)
     ) {
@@ -898,7 +931,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       }
       let job: NightModeTransitionJob;
       try {
-        job = this.buildRecoveryObligationJob(chatId, recovery);
+        job = this.buildRecoveryObligationJob(chatId, recovery, row);
       } catch {
         review ??= this.recoveryObligationManualReview(
           row,
@@ -997,8 +1030,15 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return (
       row?.manualBlockedAt instanceof Date &&
       this.isManualBlockCategory(row.manualBlockedCategory) &&
-      row.manualBlockedJobId === actualJobId &&
-      row.manualBlockedSessionKey === job.sessionKey &&
+      matchesNightModeTransitionFenceAlias(
+        {
+          chatId: normalizedChatId,
+          transition: job.transition,
+          sessionKey: job.sessionKey,
+          jobId: actualJobId,
+        },
+        { sessionKey: row.manualBlockedSessionKey, jobId: row.manualBlockedJobId },
+      ) &&
       (fingerprint === null || row.manualBlockedFingerprint === fingerprint)
     );
   }
@@ -1937,9 +1977,19 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     });
     if (
       !row?.manualBlockedAt ||
+      !row.manualBlockedJobId ||
+      !row.manualBlockedSessionKey ||
       !this.isManualBlockCategory(row.manualBlockedCategory) ||
-      row.manualBlockedJobId !== params.jobId ||
-      row.manualBlockedSessionKey !== params.sessionKey ||
+      (!(['close', 'open'] as const).some(
+        (transition) =>
+          params.jobId.includes(`__${transition}__`) &&
+          matchesNightModeTransitionFenceAlias(
+            { ...params, transition },
+            { sessionKey: row.manualBlockedSessionKey, jobId: row.manualBlockedJobId },
+          ),
+      ) &&
+        (row.manualBlockedJobId !== params.jobId ||
+          row.manualBlockedSessionKey !== params.sessionKey)) ||
       row.manualBlockedFingerprint !== params.fingerprint ||
       (params.category !== undefined && row.manualBlockedCategory !== params.category)
     ) {
@@ -2027,7 +2077,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         blocksCurrentCatchUp: true,
       };
     }
-    const closeAt = resolveNightModeTransitionSessionCloseAt(recovery.sessionKey);
+    const closeAt =
+      resolveNightModeTransitionSessionCloseAt(recovery.sessionKey) ??
+      resolveNightModeLegacyRecoveryTime(recovery.sessionKey, 'close');
     if (!closeAt) {
       const blocked = this.blockRecovery(
         chatId,
@@ -2162,8 +2214,10 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       const fallbackJobId = buildNightModeTransitionJobId(
         chatId,
         'close',
-        resolveNightModeTransitionSessionCloseAt(state.sessionKey)?.toISOString() ??
-          state.sessionKey,
+        (
+          resolveNightModeTransitionSessionCloseAt(state.sessionKey) ??
+          resolveNightModeLegacyRecoveryTime(state.sessionKey, 'close')
+        )?.toISOString() ?? state.sessionKey,
         state.sessionKey,
       );
       if (
@@ -2213,7 +2267,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
     if (state && !seenSessions.has(state.sessionKey)) {
       const parsed = parseNightModeTransitionSessionKey(state.sessionKey);
-      const closeAt = resolveNightModeTransitionSessionCloseAt(state.sessionKey);
+      const closeAt =
+        resolveNightModeTransitionSessionCloseAt(state.sessionKey) ??
+        resolveNightModeLegacyRecoveryTime(state.sessionKey, 'close');
       if (parsed && closeAt) {
         const stateResolution = await this.inspectMarkerlessRegistryRecovery(chatId, {
           chat_id: chatId,
@@ -2289,7 +2345,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         }
         seenSessions.add(sessionKey);
         const parsed = parseNightModeTransitionSessionKey(sessionKey);
-        const closeAt = resolveNightModeTransitionSessionCloseAt(sessionKey);
+        const closeAt =
+          resolveNightModeTransitionSessionCloseAt(sessionKey) ??
+          resolveNightModeLegacyRecoveryTime(sessionKey, 'close');
         const messageId = ledger.remoteMessageId?.trim() ?? '';
         const botId = ledger.dispatchBotId?.trim() ?? '';
         if (!parsed || !closeAt) {
@@ -2418,8 +2476,14 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   }
 
   private compareRecoverySessions(leftSessionKey: string, rightSessionKey: string): number {
-    const leftAt = resolveNightModeTransitionSessionCloseAt(leftSessionKey)?.getTime();
-    const rightAt = resolveNightModeTransitionSessionCloseAt(rightSessionKey)?.getTime();
+    const leftAt = (
+      resolveNightModeTransitionSessionCloseAt(leftSessionKey) ??
+      resolveNightModeLegacyRecoveryTime(leftSessionKey, 'close')
+    )?.getTime();
+    const rightAt = (
+      resolveNightModeTransitionSessionCloseAt(rightSessionKey) ??
+      resolveNightModeLegacyRecoveryTime(rightSessionKey, 'close')
+    )?.getTime();
     return (leftAt ?? Number.NEGATIVE_INFINITY) - (rightAt ?? Number.NEGATIVE_INFINITY);
   }
 

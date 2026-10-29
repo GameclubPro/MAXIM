@@ -1830,3 +1830,46 @@ describe('NightModeTransitionDeliveryService', () => {
     expect(accessLoss.recordManagedEntityAccessLost).not.toHaveBeenCalled();
   });
 });
+
+describe('merged-session notice delivery', () => {
+  it.each(['close', 'open'] as const)(
+    'refuses a second %s with an old member effect',
+    async (transition) => {
+      const maxClient = { sendMessage: jest.fn(), deleteMessage: jest.fn() };
+      const eventService = createEventService();
+      const ledger = { hasNightModeAliasSendProvenance: jest.fn().mockResolvedValue(true) };
+      const service = new NightModeTransitionDeliveryService(
+        maxClient as never,
+        {
+          resolveMedia: jest.fn().mockReturnValue(null),
+          withMediaOptions: jest.fn(async (options) => options),
+        } as never,
+        eventService as never,
+        undefined,
+        undefined,
+        undefined,
+        ledger as never,
+      );
+      const snapshot = {
+        startMinutes: 180,
+        endMinutes: 150,
+        timezone: 'Europe/Berlin',
+        sessionKey: 'v1:Europe/Berlin:03:00:02:30:2026-03-28',
+      };
+      const result =
+        transition === 'close'
+          ? service.sendClosedNotice(createSettings(), snapshot, createAdapters())
+          : service.sendOpenedNotice(createSettings(), snapshot, createAdapters());
+      await expect(result).rejects.toThrow('retains another SEND identity');
+      expect(ledger.hasNightModeAliasSendProvenance).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 'chat-1',
+          transition,
+          sessionKey: snapshot.sessionKey,
+        }),
+      );
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(eventService.createTransitionEvent).not.toHaveBeenCalled();
+    },
+  );
+});

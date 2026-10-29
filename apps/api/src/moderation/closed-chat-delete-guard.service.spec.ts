@@ -288,6 +288,54 @@ describe('closed-chat final delete authority', () => {
     });
   });
 
+  it('keeps deletion authorized through a repeated hour and caps it at the union opening', async () => {
+    const h = fixture();
+    Object.assign(h.settings, {
+      nightModeTimezone: 'Europe/Berlin',
+      nightModeStartTimeMinutes: 150,
+      nightModeEndTimeMinutes: 480,
+    });
+    const repeatedNow = Date.parse('2026-10-25T01:15:00Z');
+    jest.setSystemTime(repeatedNow);
+    const source = new Date(repeatedNow - 60_000);
+    h.row.timestamp = source.getTime();
+    const reasons = [
+      {
+        ...nightReason,
+        metadata: {
+          nightModeTimezone: 'Europe/Berlin',
+          nightModeStartTime: '02:30',
+          nightModeEndTime: '08:00',
+        },
+      },
+    ];
+    await expect(
+      h.guard.authorize({ ...input, sourceMessageAt: source, reasons }),
+    ).resolves.toMatchObject({ reasonKeys: ['night'] });
+    Object.assign(h.settings, { nightModeStartTimeMinutes: 180, nightModeEndTimeMinutes: 150 });
+    const unionNow = Date.parse('2026-03-30T00:29:30Z');
+    jest.setSystemTime(unionNow);
+    const unionSource = new Date(unionNow - 60_000);
+    h.row.timestamp = unionSource.getTime();
+    const unionReasons = [
+      {
+        ...nightReason,
+        metadata: {
+          nightModeTimezone: 'Europe/Berlin',
+          nightModeStartTime: '03:00',
+          nightModeEndTime: '02:30',
+        },
+      },
+    ];
+    await expect(
+      h.guard.authorize({ ...input, sourceMessageAt: unionSource, reasons: unionReasons }),
+    ).resolves.toMatchObject({ deadlineAtMs: unionNow + 30_000 });
+    jest.setSystemTime(unionNow + 30_000);
+    await expect(
+      h.guard.authorize({ ...input, sourceMessageAt: unionSource, reasons: unionReasons }),
+    ).rejects.toMatchObject({ code: 'closed_chat_delete_no_longer_authorized' });
+  });
+
   it('keeps the timed manual end independent of the longer night authorization', async () => {
     const h = fixture();
     h.settings.nightModeForceCloseEnabled = true;
