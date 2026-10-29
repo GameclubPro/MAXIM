@@ -4076,12 +4076,83 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
+  it.each(['269798165', 'id613000037577_3_bot'])(
+    'does not moderate Birzhik messages using the real registry: %s',
+    async (userId) => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({
+              removeBotsFromGroupEnabled: true,
+              deleteBotMessagesEnabled: true,
+            }),
+            domains: [],
+            admins: [],
+          }),
+        },
+        violation: { create: jest.fn() },
+        moderationEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+        webhookEvent: { findUnique: jest.fn(), update: jest.fn() },
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
+      };
+      const registry = new MaxBotRegistryService(
+        new ConfigService({
+          MAX_BOT_ID: '777000_bot',
+          MAX_BOT_TOKEN: 'test-token',
+          MAX_WEBHOOK_SECRET_PATH: 'secret-path',
+          MAX_WEBHOOK_HEADER_SECRET: 'header-secret',
+        }),
+      );
+      const botIdentity = {
+        isKnownBotUserId: registry.isKnownBotUserId.bind(registry),
+        resolveBotIdFromUserId: registry.resolveBotIdFromUserId.bind(registry),
+      } satisfies Pick<MaxBotLinkService, 'isKnownBotUserId' | 'resolveBotIdFromUserId'>;
+      const ruleEngine = { detect: jest.fn() };
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      Object.assign(service, { maxBotLinkService: botIdentity });
+      installStateDeleteExecutorFixture(service);
+      const update = createBotAuthoredUpdate();
+      update.message!.senderId = userId;
+      update.raw = {
+        message: { sender: { user_id: userId, name: 'Биржик', is_bot: true } },
+      };
+
+      await service.handleUpdate(update);
+
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
+    { userId: '269798165', protected: true },
+    { userId: 'id613000037577_3_bot', protected: true },
+    { userId: '269798166', protected: false },
     { userId: MAX_ERASER_BOT_CONTACT_ID, protected: true },
     { userId: MAX_ERASER_BOT_ID, protected: true },
     { userId: '281772329', protected: false },
   ])(
-    'applies real Lastik identity immunity to bot joins: $userId protected=$protected',
+    'applies real service bot identity immunity to bot joins: $userId protected=$protected',
     async ({ userId, protected: isProtected }) => {
       const settings = createSettings({ removeBotsFromGroupEnabled: true });
       const prisma = {

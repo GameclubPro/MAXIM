@@ -6,6 +6,9 @@ import {
   NIGHT_MODE_ROUTE_VERIFICATION_KIND,
   NIGHT_MODE_STICKY_ROUTE_PROBE_KIND,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+  parseNightModeTransitionRecoveryObligation,
   parseNightModeRouteVerification,
   parseNightModeStickyRouteProbe,
   parseNightModeTransitionRecoveryOnly,
@@ -35,6 +38,48 @@ const STICKY_ROUTE_PROBE = {
 };
 
 describe('night mode transition queue', () => {
+  it('keeps opening receipts and cleanup obligations distinct from legacy closing recovery', () => {
+    const receipt = {
+      kind: NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+      version: 1 as const,
+      sessionKey: STICKY_ROUTE_PROBE.sessionKey,
+      messageId: 'message-1',
+      botId: 'bot-1',
+      timezone: 'Europe/Moscow',
+      startMinutes: 1380,
+      endMinutes: 480,
+    };
+    const cleanup = {
+      kind: NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+      version: 1 as const,
+      sessionKey: receipt.sessionKey,
+      timezone: receipt.timezone,
+      startMinutes: 1380,
+      endMinutes: 480,
+      openScheduledFor: '2026-05-31T05:00:00.000Z',
+      scheduleFingerprint: `sha256:${'a'.repeat(64)}`,
+      sideEffectFingerprint: `sha256:${'b'.repeat(64)}`,
+    };
+    expect(parseNightModeTransitionRecoveryObligation(receipt)).toEqual(receipt);
+    expect(parseNightModeTransitionRecoveryOnly(receipt)).toBeNull();
+    expect(parseNightModeTransitionRecoveryObligation(cleanup)).toEqual(cleanup);
+    expect(
+      parseNightModeTransitionRecoveryObligation({
+        ...cleanup,
+        openScheduledFor: '2026-05-31T05:01:00.000Z',
+      }),
+    ).toBeNull();
+    expect(
+      parseNightModeTransitionRecoveryObligation({ ...cleanup, sideEffectFingerprint: '' }),
+    ).toBeNull();
+    const ids = [
+      receipt,
+      cleanup,
+      { ...receipt, kind: NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY },
+    ].map((recovery) => buildNightModeTransitionRecoveryJobId('chat-1', recovery));
+    expect(new Set(ids).size).toBe(3);
+  });
+
   it('builds BullMQ-safe custom job ids', () => {
     const jobId = buildNightModeTransitionJobId(
       'chat-1',

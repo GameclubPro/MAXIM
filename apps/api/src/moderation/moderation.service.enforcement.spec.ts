@@ -33,6 +33,7 @@ import {
   type MaxUpdate,
 } from './moderation.service.spec-support';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
+import type { AdminService } from '../admin/admin.service';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { classifyDuplicateEventTime } from './duplicate-enforcement-safety';
 import { CommercialDeleteGuardRejectedError } from './commercial/commercial-delete-guard.service';
@@ -43,6 +44,9 @@ import {
   ClosedChatDeleteGuardService,
 } from './closed-chat-delete-guard.service';
 import type { EnsureModerationDeleteIntentInput } from './moderation-delete-intent.types';
+import type { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
+import { NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY } from './night-mode-transition.queue';
+import type { Prisma } from '../prisma/prisma-client';
 
 // FLAG: These legacy transport mocks verify templates and hot-path orchestration only.
 // Native multibot/queue fixtures and the real notice-guard suites own v3 receipt authority.
@@ -251,14 +255,42 @@ function installNightModeSideEffectFence<T extends { chat?: Record<string, unkno
 function createNightModeOpenEventStore() {
   return {
     create: jest.fn(),
-    findFirst: jest
-      .fn()
-      .mockResolvedValueOnce({
-        id: 'night-close-event-1',
-        messageId: 'night-close-1',
-        botId: 'bot-1',
-      })
-      .mockResolvedValue(null),
+    findFirst: jest.fn(async (query: Prisma.ModerationEventFindFirstArgs) =>
+      query.where?.ruleCode === 'NIGHT_MODE_CLOSE_NOTICE'
+        ? { id: 'night-close-event-1', messageId: 'night-close-1', botId: 'bot-1' }
+        : null,
+    ),
+  };
+}
+
+function installNightModeRecoveryFixture(service: ModerationService) {
+  const scheduler = {
+    scheduleRecoveryObligation: jest
+      .fn<
+        ReturnType<NightModeTransitionSchedulerService['scheduleRecoveryObligation']>,
+        Parameters<NightModeTransitionSchedulerService['scheduleRecoveryObligation']>
+      >()
+      .mockResolvedValue(undefined),
+  } satisfies Pick<NightModeTransitionSchedulerService, 'scheduleRecoveryObligation'>;
+  Object.assign(service, { nightModeTransitionScheduler: scheduler });
+  return {
+    scheduler,
+    processCleanup: async () => {
+      const handoff = scheduler.scheduleRecoveryObligation.mock.calls.find(
+        ([, recovery]) => recovery.kind === NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY,
+      );
+      if (!handoff || handoff[1].kind !== NIGHT_MODE_TRANSITION_CLOSE_CLEANUP_RECOVERY)
+        throw new Error('Expected a separate close notice cleanup handoff');
+      const [chatId, recovery] = handoff;
+      return service.processNightModeTransitionJob({
+        ...NIGHT_MODE_V4_JOB_METADATA,
+        chatId,
+        transition: 'open',
+        scheduledFor: recovery.openScheduledFor,
+        sessionKey: recovery.sessionKey,
+        recoveryOnly: recovery,
+      });
+    },
   };
 }
 
@@ -1099,16 +1131,33 @@ describe('ModerationService', () => {
         resolveBotRoute: jest.fn().mockResolvedValue({ botId: 'bot-1' }),
       };
       const maxActionLedgerService = {
-        inspectCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
-          kind: 'missing',
-          jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-05-30',
-        }),
-        getExactCompletedNightModeCloseNoticeDispatch: jest.fn().mockResolvedValue({
-          jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-05-30',
-          remoteMessageId: 'night-close-accepted-1',
-          dispatchBotId: 'bot-1',
-        }),
-      };
+        inspectCompletedNightModeCloseNoticeDispatch: jest
+          .fn<
+            ReturnType<MaxActionLedgerService['inspectCompletedNightModeCloseNoticeDispatch']>,
+            Parameters<MaxActionLedgerService['inspectCompletedNightModeCloseNoticeDispatch']>
+          >()
+          .mockResolvedValue({
+            kind: 'missing',
+            jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-05-30',
+          }),
+        getExactCompletedNightModeCloseNoticeDispatch: jest
+          .fn<
+            ReturnType<MaxActionLedgerService['getExactCompletedNightModeCloseNoticeDispatch']>,
+            Parameters<MaxActionLedgerService['getExactCompletedNightModeCloseNoticeDispatch']>
+          >()
+          .mockResolvedValue({
+            jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-05-30',
+            remoteMessageId: 'night-close-accepted-1',
+            dispatchBotId: 'bot-1',
+            completedAt: new Date('2026-05-30T20:12:10.000Z'),
+            routeHalfOpenProbe: false,
+            stickyRouteHalfOpenProbe: false,
+          }),
+      } satisfies Pick<
+        MaxActionLedgerService,
+        | 'inspectCompletedNightModeCloseNoticeDispatch'
+        | 'getExactCompletedNightModeCloseNoticeDispatch'
+      >;
       const service = new ModerationService(
         prisma as never,
         {} as never,
@@ -1124,6 +1173,7 @@ describe('ModerationService', () => {
         maxBotLinkService as never,
       );
       (service as any).maxActionLedgerService = maxActionLedgerService;
+      const recovery = installNightModeRecoveryFixture(service);
       const closeJob = {
         ...NIGHT_MODE_V4_JOB_METADATA,
         chatId: 'chat-1',
@@ -1176,6 +1226,19 @@ describe('ModerationService', () => {
         }),
       ).resolves.toEqual({ shouldEnqueueNext: true });
 
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(moderationEvent.create).toHaveBeenCalledTimes(3);
+      maxActionLedgerService.inspectCompletedNightModeCloseNoticeDispatch.mockResolvedValue({
+        kind: 'completed',
+        jobId: 'night-mode:close:chat-1:session:v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        remoteMessageId: 'night-close-accepted-1',
+        dispatchBotId: 'bot-1',
+        completedAt: new Date('2026-05-30T20:12:10.000Z'),
+        routeHalfOpenProbe: false,
+        stickyRouteHalfOpenProbe: false,
+      });
+      await expect(recovery.processCleanup()).resolves.toEqual({ shouldEnqueueNext: true });
+
       expect(maxClient.deleteMessage).toHaveBeenCalledWith(
         'chat-1',
         'night-close-accepted-1',
@@ -1185,7 +1248,7 @@ describe('ModerationService', () => {
       expect(moderationEvent.create).toHaveBeenCalledTimes(4);
       expect(
         maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch,
-      ).toHaveBeenCalledTimes(3);
+      ).toHaveBeenCalledTimes(2);
       expect(
         maxActionLedgerService.getExactCompletedNightModeCloseNoticeDispatch,
       ).toHaveBeenLastCalledWith({
@@ -1313,7 +1376,7 @@ describe('ModerationService', () => {
     }
   });
 
-  it('deletes the close notice and sends the open notice when the open job runs late', async () => {
+  it('sends the open notice and separately cleans up when the open job runs late', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:12:10.000Z'));
     try {
       const prisma = {
@@ -1369,6 +1432,7 @@ describe('ModerationService', () => {
         undefined,
         maxBotLinkService as never,
       );
+      const recovery = installNightModeRecoveryFixture(service);
 
       await service.processNightModeTransitionJob({
         ...NIGHT_MODE_V4_JOB_METADATA,
@@ -1378,6 +1442,8 @@ describe('ModerationService', () => {
         sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
       });
 
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      await recovery.processCleanup();
       expect(maxClient.deleteMessage).toHaveBeenCalledWith(
         'chat-1',
         'night-close-1',
@@ -1424,17 +1490,7 @@ describe('ModerationService', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:00:10.000Z'));
     try {
       const prisma = {
-        moderationEvent: {
-          create: jest.fn(),
-          findFirst: jest
-            .fn()
-            .mockResolvedValueOnce({
-              id: 'night-close-event-1',
-              messageId: 'night-close-1',
-              botId: 'bot-1',
-            })
-            .mockResolvedValue(null),
-        },
+        moderationEvent: createNightModeOpenEventStore(),
       };
       const maxClient = {
         sendMessage: jest
@@ -1478,6 +1534,7 @@ describe('ModerationService', () => {
         undefined,
         managedEntityAccessLossService as never,
       );
+      const recovery = installNightModeRecoveryFixture(service);
 
       const result = await (service as any).processNightModeTransitionForChat(
         installNightModeSideEffectFence(prisma, {
@@ -1497,16 +1554,8 @@ describe('ModerationService', () => {
         }),
       );
 
-      expect(maxClient.deleteMessage).toHaveBeenCalledWith(
-        'chat-1',
-        'night-close-1',
-        expect.objectContaining({
-          immediate: true,
-          trafficClass: 'background',
-          actionHealthLane: 'background',
-          sourceTag: 'night_mode_transition',
-        }),
-      );
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(recovery.scheduler.scheduleRecoveryObligation).toHaveBeenCalledTimes(1);
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
       expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
@@ -1528,7 +1577,7 @@ describe('ModerationService', () => {
     }
   });
 
-  it('retries instead of opening when close-notice cleanup lacks admin permission', async () => {
+  it('opens independently while separate close-notice cleanup retries a permission error', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:00:10.000Z'));
     try {
       const prisma = {
@@ -1562,6 +1611,7 @@ describe('ModerationService', () => {
         { get: jest.fn().mockReturnValue('bot-1') } as never,
         redisCounter as never,
       );
+      const recovery = installNightModeRecoveryFixture(service);
 
       await expect(
         (service as any).processNightModeTransitionForChat(
@@ -1581,20 +1631,23 @@ describe('ModerationService', () => {
             },
           }),
         ),
-      ).rejects.toThrow('User is not an admin');
+      ).resolves.toEqual({ shouldEnqueueNext: true });
 
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      await expect(recovery.processCleanup()).rejects.toThrow('User is not an admin');
       expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
       expect(redisCounter.stringCache.get('night-mode-transition-state:v1:chat-1')).toContain(
-        '"status":"closed"',
+        '"status":"open"',
       );
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('deletes the close notice and sends the open notice from the schedule transition', async () => {
+  it('sends the open notice before separate close-notice cleanup from the schedule transition', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:00:10.000Z'));
     try {
       const prisma = {
@@ -1633,6 +1686,7 @@ describe('ModerationService', () => {
         undefined,
         maxBotLinkService as never,
       );
+      const recovery = installNightModeRecoveryFixture(service);
 
       await (service as any).processNightModeTransitionForChat(
         installNightModeSideEffectFence(prisma, {
@@ -1652,6 +1706,8 @@ describe('ModerationService', () => {
         }),
       );
 
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      await recovery.processCleanup();
       expect(maxClient.deleteMessage).toHaveBeenCalledWith(
         'chat-1',
         'night-close-1',
@@ -1676,8 +1732,8 @@ describe('ModerationService', () => {
           botId: 'bot-1',
         }),
       );
-      expect(maxClient.deleteMessage.mock.invocationCallOrder[0]).toBeLessThan(
-        maxClient.sendMessage.mock.invocationCallOrder[0],
+      expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        maxClient.deleteMessage.mock.invocationCallOrder[0],
       );
       expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
@@ -3573,7 +3629,10 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
-  it('lets chat admins open the chat from a group command', async () => {
+  it.each([
+    'Чат открыт. Для сообщений снова действуют обычные правила.',
+    'Ручное закрытие снято. Чат остаётся закрыт по ночному расписанию.',
+  ])('passes the effective group opening result through unchanged: %s', async (message) => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -3613,10 +3672,12 @@ describe('ModerationService', () => {
     const adminService = {
       enqueueManualGroupModerationCommand: jest.fn(),
       applyManualChatSilenceCommand: jest.fn(),
-      applyManualOpenChatCommand: jest.fn().mockResolvedValue({
-        ok: true,
-        message: 'Чат открыт. Для сообщений снова действуют обычные правила.',
-      }),
+      applyManualOpenChatCommand: jest
+        .fn<
+          ReturnType<AdminService['applyManualOpenChatCommand']>,
+          Parameters<AdminService['applyManualOpenChatCommand']>
+        >()
+        .mockResolvedValue({ ok: true, message }),
     };
 
     const service = createModerationServiceWithManualBridge({
@@ -3663,7 +3724,7 @@ describe('ModerationService', () => {
     );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Чат открыт. Для сообщений снова действуют обычные правила.',
+      message,
       expect.any(Object),
       expect.objectContaining({
         immediate: true,

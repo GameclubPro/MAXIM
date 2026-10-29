@@ -7,7 +7,7 @@ import { MaxBotRegistryService } from '../../max/max-bot-registry.service';
 import { karavanHash } from './karavan-marketplace-authority.service';
 import type { Prisma } from '../../prisma/prisma-client';
 
-const requestSchema = z
+export const karavanMarketplaceBindingStatusRequestSchema = z
   .object({
     chatId: z.string().regex(/^-?\d{1,24}$/u),
     botId: z.string().min(1).max(128),
@@ -15,7 +15,7 @@ const requestSchema = z
     verifiedAt: z.string().datetime(),
   })
   .strict();
-type Request = z.infer<typeof requestSchema>;
+type Request = z.infer<typeof karavanMarketplaceBindingStatusRequestSchema>;
 type Status = {
   active: boolean;
   checkedAt: string;
@@ -37,7 +37,7 @@ export class KaravanMarketplaceBindingStatusService {
   async status(raw: unknown): Promise<Status> {
     if (!this.config.get<boolean>('KARAVAN_MARKETPLACE_ENABLED'))
       throw new ServiceUnavailableException('Модуль магазина недоступен.');
-    const input = requestSchema.parse(raw);
+    const input = karavanMarketplaceBindingStatusRequestSchema.parse(raw);
     const local = await this.local(input);
     if (!local) return this.result(false, 'binding_changed');
     const key = karavanHash(input);

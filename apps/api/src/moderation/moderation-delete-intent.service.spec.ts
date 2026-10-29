@@ -513,6 +513,9 @@ function nightModeCleanupSettings(overrides: Record<string, unknown> = {}) {
     nightModeCommentsEnabled: false,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: '',
+    nightModeForceCloseEnabled: false,
+    nightModeForceCloseForever: false,
+    nightModeForceCloseUntil: '',
     nightModeBotButtons: null,
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',
@@ -6154,6 +6157,17 @@ describe('ModerationDeleteIntentService', () => {
       { nightModeStartTimeMinutes: 22 * 60, nightModeEndTimeMinutes: 7 * 60 },
     ],
     ['the close notice content changes', { nightModeBotMessageText: 'Updated close notice' }],
+    [
+      'manual closure is enabled indefinitely',
+      { nightModeForceCloseEnabled: true, nightModeForceCloseForever: true },
+    ],
+    [
+      'a timed manual closure is still active',
+      {
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseUntil: '2026-05-31T07:00:00.000Z',
+      },
+    ],
   ])('terminalizes a delayed night cleanup when %s', async (_label, relevantChange) => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T06:12:00.000Z'));
     const originalSettings = nightModeCleanupSettings();

@@ -11,6 +11,7 @@ import {
   buildNightModeTransitionJobId,
   buildNightModeTransitionRecoveryJobId,
   NIGHT_MODE_TRANSITION_CLOSE_EVENT_RECOVERY,
+  NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
   NIGHT_MODE_TRANSITION_JOB_NAME,
   NIGHT_MODE_TRANSITION_POST_EXECUTION_CLEANUP_FAILURE_PREFIX,
   type NightModeTransitionJob,
@@ -188,6 +189,170 @@ async function seedRegisteredJob(
 }
 
 describe('NightModeTransitionSchedulerService', () => {
+  it('keeps the exact current OPEN scheduled while CLOSE recovery is manually blocked', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:10:00.000Z'));
+    try {
+      const chatId = 'chat-independent-open';
+      const settings = {
+        chatId,
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 1380,
+        nightModeEndTimeMinutes: 480,
+        nightModeTimezone: 'Europe/Moscow',
+      };
+      const jobs = buildExactFutureJobs(chatId, settings);
+      const open = {
+        chatId,
+        transition: 'open' as const,
+        scheduledFor: '2026-05-31T05:00:00.000Z',
+        sessionKey: CLOSE_SESSION_A,
+        transitionRuntimeVersion: 4 as const,
+        scheduleFingerprint: SCHEDULE_FINGERPRINT,
+        createdAt: '2026-05-30T19:00:00.000Z',
+      };
+      const openId = buildNightModeTransitionJobId(
+        chatId,
+        open.transition,
+        open.scheduledFor,
+        open.sessionKey,
+      );
+      const prisma = {
+        chat: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue({
+              entityType: ChatEntityType.CHAT,
+              settings,
+              botMemberships: [ACTIVE_TRANSITION_MEMBERSHIP],
+            }),
+        },
+        maxActionLedgerEntry: {
+          findUnique: jest.fn(async ({ where }: { where: { jobId: string } }) =>
+            where.jobId.startsWith('night-mode:close:')
+              ? {
+                  chatId,
+                  actionType: 'SEND_MESSAGE',
+                  sourceTag: 'night_mode_transition',
+                  status: MaxActionLedgerStatus.IN_PROGRESS,
+                  ambiguous: true,
+                  terminal: false,
+                  completedAt: null,
+                  dispatchBotId: 'bot-1',
+                  remoteMessageId: null,
+                }
+              : null,
+          ),
+        },
+      };
+      const currentJob = {
+        id: openId,
+        data: open,
+        getState: jest.fn().mockResolvedValue('waiting'),
+        remove: jest.fn(),
+        updateData: jest.fn(),
+      };
+      const queue = {
+        getJob: jest.fn(async (id: string) =>
+          id === openId ? currentJob : (jobs.get(id) ?? null),
+        ),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const redis = {
+        getString: jest.fn().mockResolvedValue(
+          JSON.stringify({
+            status: 'closed',
+            sessionKey: CLOSE_SESSION_A,
+            closeNoticeMessageId: 'close-uncertain',
+            closeNoticeBotId: 'bot-1',
+            closeNoticeEventRecovery: {
+              version: 2,
+              pending: true,
+              timezone: 'Europe/Moscow',
+              startMinutes: 1380,
+              endMinutes: 480,
+            },
+          }),
+        ),
+      };
+      const scheduler = new NightModeTransitionSchedulerService(
+        prisma as never,
+        queue as never,
+        undefined,
+        undefined,
+        redis as never,
+      );
+      await seedFutureJobRegistries(scheduler, jobs);
+      await seedRegisteredJob(scheduler, {
+        chatId,
+        jobId: openId,
+        transition: 'open',
+        scheduledFor: open.scheduledFor,
+        sessionKey: open.sessionKey,
+        scheduleFingerprint: SCHEDULE_FINGERPRINT,
+        createdAt: open.createdAt,
+      });
+
+      const result = await scheduler.repairAccessSchedule(chatId);
+      expect(result.manualReview?.sessionKey).toBe(CLOSE_SESSION_A);
+      expect(result.manualReview?.jobId).not.toBe(openId);
+      expect(queue.add).toHaveBeenCalledWith(
+        NIGHT_MODE_TRANSITION_JOB_NAME,
+        expect.objectContaining({ transition: 'open', sessionKey: CLOSE_SESSION_A }),
+        expect.objectContaining({ jobId: openId }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('hands off only an exact accepted OPEN receipt before retiring its expired occurrence', async () => {
+    const chatId = 'chat-expired-accepted-open';
+    const prisma = {
+      maxActionLedgerEntry: {
+        findUnique: jest.fn().mockResolvedValue({
+          chatId,
+          actionType: 'SEND_MESSAGE',
+          sourceTag: 'night_mode_transition',
+          status: MaxActionLedgerStatus.SUCCEEDED,
+          ambiguous: false,
+          terminal: true,
+          completedAt: new Date('2026-05-31T05:00:01.000Z'),
+          dispatchBotId: 'bot-1',
+          remoteMessageId: 'open-accepted',
+        }),
+      },
+      moderationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const scheduler = new NightModeTransitionSchedulerService(prisma as never);
+    const handoff = jest
+      .spyOn(scheduler, 'scheduleRecoveryObligation')
+      .mockResolvedValue(undefined);
+    const reconcile = jest.spyOn(scheduler, 'requestJobReconcile').mockResolvedValue(undefined);
+    const job: NightModeTransitionJob = {
+      chatId,
+      transition: 'open',
+      sessionKey: CLOSE_SESSION_A,
+      scheduledFor: '2026-05-31T05:00:00.000Z',
+    };
+    await scheduler.retireTransition(job);
+    expect(handoff).toHaveBeenCalledWith(
+      chatId,
+      expect.objectContaining({
+        kind: NIGHT_MODE_TRANSITION_OPEN_EVENT_RECOVERY,
+        sessionKey: CLOSE_SESSION_A,
+        messageId: 'open-accepted',
+        botId: 'bot-1',
+      }),
+    );
+    expect(reconcile).toHaveBeenCalledWith(job);
+    prisma.maxActionLedgerEntry.findUnique.mockResolvedValueOnce({
+      ...(await prisma.maxActionLedgerEntry.findUnique()),
+      ambiguous: true,
+    });
+    handoff.mockClear();
+    await scheduler.retireTransition(job);
+    expect(handoff).not.toHaveBeenCalled();
+  });
   it.each([
     {
       name: 'all memberships are removed',
