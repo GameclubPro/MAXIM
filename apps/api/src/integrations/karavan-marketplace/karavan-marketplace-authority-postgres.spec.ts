@@ -459,6 +459,23 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     expect(max.getChatMemberAccess).not.toHaveBeenCalled();
   });
 
+  it('checks only Major and the human when Karavan has no chat membership', async () => {
+    const input = await accessInput();
+    expect(
+      await db.chatBotMembership.findMany({ where: { chatId }, select: { botId: true } }),
+    ).toEqual([{ botId }]);
+    expect(await actorAccess().check(input)).toMatchObject({ allowed: true, reason: 'admin' });
+    expect(max.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      chatId,
+      expect.objectContaining({ botId }),
+    );
+    expect(max.getChatMemberAccess).toHaveBeenCalledWith(
+      chatId,
+      actorMaxUserId,
+      expect.objectContaining({ botId, bypassCache: true }),
+    );
+  });
+
   it('admits another current chat admin using the original binding witness without creating a command or owner grant', async () => {
     await db.managedEntityAccessEdge.create({
       data: {
