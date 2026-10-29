@@ -255,20 +255,22 @@ test('Lastik preserves protected messages and works in a chat without a pin', ()
 
 test('Lastik progress uses the actual details labels without claiming live visibility', () => {
   const answer = fact('lastik-progress');
-  const editor = source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
+  const ui = source('apps/miniapp/src/pages/settings/settings-message-retention-editor.tsx');
   const model = source('apps/miniapp/src/pages/settings/settings-message-retention-model.ts');
   assert.match(
-    editor,
-    /import \{[^}]*retentionHistoryLabel[^}]*\} from '\.\/settings-message-retention-model'/u,
+    ui,
+    /import\s*\{[^}]*\bretentionHistoryLabel\b[^}]*\}\s*from '\.\/settings-message-retention-model'/u,
   );
-  assert.match(editor, /retentionHistoryLabel\(state\)/u);
-  const ui = `${editor}\n${model}`;
+  assert.match(ui, /<dd>\{retentionHistoryLabel\(state\)\}<\/dd>/u);
   for (const label of [
-    'История чата',
     'Ожидает очистки',
     'Очищается',
     'Проверена',
     'Часть истории отложена',
+  ])
+    assert.ok(answer.includes(label) && model.includes(label), label);
+  for (const label of [
+    'История чата',
     'Подробности очистки',
     'Ожидают',
     'Больше нет в чате',
