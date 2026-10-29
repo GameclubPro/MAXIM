@@ -66,6 +66,12 @@ export const NETWORK_SETTINGS_V2_SOURCE_CHECKS = Object.freeze([
       'export const networkNavigationAllowlistWitnessSchema = z',
     ],
   ],
+  [
+    'apps/api/src/message-retention/eraser-control.service.ts',
+    [
+      'function canonicalRequest(value: UpdateMessageRetention & { operationId: string }) { return { enabled: value.enabled, hours: value.hours, expectedRevision: value.expectedRevision, operationId: value.operationId, connectWhenReady: value.connectWhenReady === true, }; }',
+    ],
+  ],
 ]);
 
 // FLAG: Match the actual parser or writer boundary. A response or neighboring method
@@ -180,6 +186,9 @@ export const NETWORK_SETTINGS_V2_SCOPED_CHECKS = Object.freeze([
     'private async writeOne(',
     'async tick(',
     [
+      'const eraserOperationId = retentionOperationId(request.operationId, recipient.entityId);',
+      'const resumed = await this.retention.resumeEraserOperation(recipient.entityId, user, eraserOperationId, options,);',
+      'if (resumed) return;',
       'currentRecipient.rulesRevision !== recipient.rulesRevision',
       'currentRecipient.messageRetentionRevision !== recipient.messageRetentionRevision',
       'currentRecipient.advertisingRevision !== recipient.advertisingRevision',
@@ -233,18 +242,81 @@ export const NETWORK_SETTINGS_V2_SCOPED_CHECKS = Object.freeze([
   [
     'apps/api/src/admin/admin-message-retention.service.ts',
     'async update(',
-    'private async authorize(',
+    'async resumeEraserOperation(',
     [
-      'if (networkWrite?.validateOnly)',
-      '(current?.revision ?? 0) !== request.expectedRevision',
-      'await this.prisma.$transaction(async (tx) => { await networkWrite?.beforeWrite?.(tx);',
-      'SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${chatId} FOR UPDATE',
-      'current.revision !== request.expectedRevision',
-      "code: 'MESSAGE_RETENTION_REVISION_CONFLICT'",
-      'await tx.messageRetentionPolicy.update({',
-      'revision: { increment: 1 },',
+      'await this.authorize(chatId, user);',
+      'const parsed = updateMessageRetentionSchema.safeParse(body);',
+      'if (!parsed.success) throw new BadRequestException(parsed.error.flatten());',
+      'return this.requireEraser().update(chatId, user.userId, request, networkWrite);',
+    ],
+  ],
+  [
+    'apps/api/src/admin/admin-message-retention.service.ts',
+    'async resumeEraserOperation(',
+    'private async useEraser(',
+    [
+      'await this.authorize(chatId, user);',
+      'return this.requireEraser().resume(chatId, user.userId, operationId, options);',
+      "if (!this.eraser) throw new ServiceUnavailableException('Ластик временно недоступен.');",
+      'return this.eraser;',
+    ],
+  ],
+  [
+    'apps/api/src/message-retention/eraser-control.service.ts',
+    'async resume(',
+    'async update(',
+    [
+      'const saved = await this.operation(operationId);',
+      'if (!saved) return null;',
+      'if (saved.chatId !== chatId || saved.actorUserId !== actorUserId) throw new ConflictException(',
+      'return this.dispatch(saved, options);',
+    ],
+  ],
+  [
+    'apps/api/src/message-retention/eraser-control.service.ts',
+    'async update(',
+    'private async operation(',
+    [
+      'this.assertExecution(); if (options?.validateOnly) { const current = await this.read(chatId);',
+      'if (current.revision !== input.expectedRevision) throw new ConflictException(',
+      'return current;',
+      'const request = { ...input, operationId: input.operationId ?? randomUUID() };',
+      'await this.prisma.$executeRaw` INSERT INTO eraser_control_operations(id, chat_id, actor_user_id, request) VALUES(${request.operationId}, ${chatId}, ${actorUserId}, ${JSON.stringify(request)}::jsonb) ON CONFLICT (id) DO NOTHING`;',
+      'const saved = await this.operation(request.operationId);',
+      '!saved || saved.chatId !== chatId || saved.actorUserId !== actorUserId ||',
+      'JSON.stringify(canonicalRequest(saved.request)) !== JSON.stringify(canonicalRequest(request))',
+      'throw new ConflictException(',
+      'return this.dispatch(saved, options);',
+    ],
+  ],
+  [
+    'apps/api/src/message-retention/eraser-control.service.ts',
+    'private async operation(',
+    'private async dispatch(',
+    [
+      'const rows = await this.prisma.$queryRaw<StoredOperation[]>` SELECT id, chat_id AS "chatId", actor_user_id AS "actorUserId", request, result FROM eraser_control_operations WHERE id = ${id}`;',
+      'return rows[0] ?? null;',
+    ],
+  ],
+  [
+    'apps/api/src/message-retention/eraser-control.service.ts',
+    'private async dispatch(',
+    'private async takeOwnership(',
+    [
+      'if (operation.result) { const result = messageRetentionStateSchema.parse(operation.result);',
+      'if (options?.onCommitted) await this.prisma.$transaction(async (tx) => { await options.onCommitted!(tx, String(result.revision)); }); return result;',
+      'this.assertExecution(); if (options?.beforeWrite) await this.prisma.$transaction(options.beforeWrite);',
+      'await this.takeOwnership(operation.chatId);',
+      'await this.readState(operation.chatId, true);',
+      'await this.syncChat(operation.chatId);',
+      'await this.syncGlobalHolds();',
+      'if (options?.beforeWrite) await this.prisma.$transaction(options.beforeWrite); const state = messageRetentionStateSchema.parse(',
+      "await this.request(`/chats/${encodeURIComponent(operation.chatId)}/policy`, 'PUT', { ...operation.request, actorUserId: operation.actorUserId, }),",
+      'await this.prisma.$transaction(async (tx) => { await tx.$executeRaw`UPDATE eraser_control_operations SET result = ${JSON.stringify(state)}::jsonb, confirmed_at = CURRENT_TIMESTAMP WHERE id = ${operation.id}`;',
+      'await tx.auditLog.create({',
       "action: 'UPDATE_MESSAGE_RETENTION'",
-      'await networkWrite?.onCommitted?.(tx, String(current.revision + 1)); });',
+      "payload: { ...operation.request, executor: 'eraser', revision: state.revision },",
+      'await options?.onCommitted?.(tx, String(state.revision)); }); return state;',
     ],
   ],
   [
@@ -283,6 +355,16 @@ export const NETWORK_SETTINGS_V2_SCOPED_CHECKS = Object.freeze([
 
 export const NETWORK_SETTINGS_V2_RUNTIME_IMPORTS = Object.freeze([
   [
+    'apps/api/src/admin/admin-message-retention.service.ts',
+    '../message-retention/eraser-control.service',
+    ['EraserControlService'],
+  ],
+  [
+    'apps/api/src/message-retention/eraser-control.service.ts',
+    '@maxim/contracts/settings',
+    ['messageRetentionStateSchema'],
+  ],
+  [
     'packages/contracts/src/network-settings-actions.ts',
     './network-settings-read.js',
     [
@@ -296,12 +378,62 @@ export const NETWORK_SETTINGS_V2_RUNTIME_IMPORTS = Object.freeze([
   ],
 ]);
 
-const executable = (source) =>
-  source
-    .replace(/\/\*[\s\S]*?\*\//gu, '')
-    .replace(/^\s*(?:\/\/|--).*$/gmu, '')
-    .replace(/\s+/gu, '');
+function executable(source) {
+  const characters = [];
+  const active = [];
+  let quote = null;
+  let escaped = false;
+  let blockComment = false;
+  let lineComment = false;
+  for (let at = 0; at < source.length; at++) {
+    const char = source[at];
+    const next = source[at + 1];
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        at++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (!/\s/u.test(char)) {
+        characters.push(char);
+        active.push(false);
+      }
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      at++;
+    } else if (
+      (char === '/' && next === '/') ||
+      (char === '-' &&
+        next === '-' &&
+        /^\s*$/u.test(source.slice(source.lastIndexOf('\n', at) + 1, at)))
+    ) {
+      lineComment = true;
+      at++;
+    } else if (['"', "'", '`'].includes(char)) {
+      quote = char;
+      characters.push(char);
+      active.push(false);
+    } else if (!/\s/u.test(char)) {
+      characters.push(char);
+      active.push(true);
+    }
+  }
+  return { source: characters.join(''), active };
+}
 const normalizedFragment = (fragment) => fragment.replace(/\s+/gu, '');
+const RETENTION_FACADE = 'apps/api/src/admin/admin-message-retention.service.ts';
+const RETENTION_BRIDGE = 'apps/api/src/message-retention/eraser-control.service.ts';
 const failure = (path, detail = '') =>
   new Error(
     `Rollback target lacks network settings v2+ readers/writers: ${path}${detail ? ` (${detail})` : ''}`,
@@ -331,24 +463,55 @@ export function assertNetworkSettingsV2Source(
     }
     return sources.get(path);
   };
-  const requireFragments = (path, source, fragments) => {
-    const missing = fragments.find((fragment) => !source.includes(normalizedFragment(fragment)));
+  const findFragment = (value, fragment, from = 0, requireActive = false) => {
+    const needle = normalizedFragment(fragment);
+    for (
+      let at = value.source.indexOf(needle, from);
+      at >= 0;
+      at = value.source.indexOf(needle, at + 1)
+    )
+      if (!requireActive || value.active[at]) return at;
+    return -1;
+  };
+  const requireFragments = (path, value, fragments) => {
+    const executableRetention = path === RETENTION_FACADE || path === RETENTION_BRIDGE;
+    const missing = fragments.find(
+      (fragment) => findFragment(value, fragment, 0, executableRetention) < 0,
+    );
     if (missing) throw failure(path, missing);
   };
   for (const [path, fragments] of NETWORK_SETTINGS_V2_SOURCE_CHECKS)
     requireFragments(path, sourceFor(path), fragments);
   for (const [path, start, end, fragments] of NETWORK_SETTINGS_V2_SCOPED_CHECKS) {
-    const source = sourceFor(path);
-    const first = source.indexOf(normalizedFragment(start));
+    const value = sourceFor(path);
+    const first = findFragment(value, start, 0, true);
     const last =
-      first < 0
-        ? -1
-        : source.indexOf(normalizedFragment(end), first + normalizedFragment(start).length);
+      first < 0 ? -1 : findFragment(value, end, first + normalizedFragment(start).length, true);
     if (first < 0 || last < 0) throw failure(path, `Missing boundary: ${start}`);
-    requireFragments(path, source.slice(first, last), fragments);
+    const scope = {
+      source: value.source.slice(first, last),
+      active: value.active.slice(first, last),
+    };
+    requireFragments(path, scope, fragments);
+    if (path === RETENTION_FACADE && start === 'async update(') {
+      // FLAG: The sole return must be unconditional delegation after authorization and parsing.
+      // A nearby marker, quoted body or conditional legacy fallback cannot prove this contract.
+      const body = scope.source.slice(scope.source.indexOf('{') + 1, -1);
+      const expected = normalizedFragment(`
+        await this.authorize(chatId, user);
+        const parsed = updateMessageRetentionSchema.safeParse(body);
+        if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+        const request = parsed.data;
+        return this.requireEraser().update(chatId, user.userId, request, networkWrite);
+      `);
+      if (body !== expected) throw failure(path, 'Unconditional Lastik settings delegation');
+    }
   }
   for (const [path, module, names] of NETWORK_SETTINGS_V2_RUNTIME_IMPORTS) {
-    const imports = [...sourceFor(path).matchAll(/\bimport\{([^}]*)\}from(['"])([^'"]+)\2/gu)];
+    const value = sourceFor(path);
+    const imports = [...value.source.matchAll(/\bimport\{([^}]*)\}from(['"])([^'"]+)\2/gu)].filter(
+      (entry) => value.active[entry.index],
+    );
     const runtime = imports.find((entry) => entry[3] === module)?.[1].split(',') ?? [];
     const missing = names.find((name) => !runtime.includes(name));
     if (missing) throw failure(path, `Missing runtime import: ${module} ${missing}`);

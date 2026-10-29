@@ -88,6 +88,7 @@ maxim_topology_require_stop_words_policy_guard "$TARGET_FULL_SHA"
 maxim_topology_require_traffic_protection_guard "$TARGET_FULL_SHA"
 maxim_topology_require_participant_report_guard "$TARGET_FULL_SHA"
 maxim_topology_require_message_retention_guard "$TARGET_FULL_SHA"
+maxim_topology_require_retired_message_retention "$TARGET_FULL_SHA" all
 maxim_topology_require_eraser_bridge "$TARGET_FULL_SHA"
 maxim_topology_require_karavan_marketplaces "$TARGET_FULL_SHA"
 maxim_topology_require_eraser_connection_requests "$TARGET_FULL_SHA" all

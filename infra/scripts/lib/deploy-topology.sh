@@ -1077,11 +1077,15 @@ maxim_topology_require_message_retention_guard() {
   fi
   if ! printf '%s' "$executor_source" | node -e '
     const source = require("node:fs").readFileSync(0).toString("utf8");
-    process.exit(source.includes("await this.messageRetentionGuard.assertAllowed(") &&
+    const finalGuard = source.includes("await this.messageRetentionGuard.assertAllowed(") &&
       source.includes("intent.\"retention_owned\" = FALSE") &&
       source.includes("Retention delete guard unavailable") &&
       source.includes("async reconcileRetentionIntent(") &&
-      source.includes("guardError instanceof MessageRetentionGuardError && latest.retentionOwned") ? 0 : 1);
+      source.includes("guardError instanceof MessageRetentionGuardError && latest.retentionOwned");
+    const retired = source.includes("if (intent.retentionOwned) return false;") &&
+      !source.includes("async ensureRetentionIntent(") && !source.includes("async attemptRetentionIntent(");
+    process.exit(finalGuard || (retired && source.includes("async reconcileRetentionIntent(") &&
+      source.includes("intent.\"retention_owned\" = FALSE")) ? 0 : 1);
   '; then
     echo "Rollback target predates isolated message retention receipt recovery." >&2
     return 1
@@ -2527,4 +2531,13 @@ maxim_topology_require_eraser_rate_limit_reader() {
   [[ -e "$marker" || -L "$marker" ]] || return 0
   node infra/scripts/assert-eraser-source.mjs "$source_sha" --validate-rate-limit-reader-floor || return
   node infra/scripts/assert-eraser-source.mjs "$source_sha" --rate-limit-reader "$component"
+}
+
+# FLAG: Once retired, neither a disabled bridge nor old journals restore Major age deletion.
+maxim_topology_require_retired_message_retention() {
+  local source_sha="$1" component="${2:-all}"
+  local marker=/var/lib/maxim-deploy/legacy-message-retention-retirement-version
+  [[ -e "$marker" || -L "$marker" ]] || return 0
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --validate-retention-retirement-floor || return
+  node infra/scripts/assert-eraser-source.mjs "$source_sha" --retention-retirement "$component"
 }

@@ -176,6 +176,76 @@ test('v2+ scoped readers retain every own-revision and transactional writer witn
   }
 });
 
+test('retention settings require unconditional delegation and the actual durable Lastik bridge', () => {
+  const facade = 'apps/api/src/admin/admin-message-retention.service.ts';
+  const bridge = 'apps/api/src/message-retention/eraser-control.service.ts';
+  const delegate =
+    'return this.requireEraser().update(chatId, user.userId, request, networkWrite);';
+  const conditional = read(facade).replace(
+    delegate,
+    `if (this.config.get('ERASER_ENABLED')) ${delegate}\nreturn this.snapshot(chatId);`,
+  );
+  assert.notEqual(conditional, read(facade));
+  for (const [path, changed] of [
+    [facade, conditional],
+    [facade, JSON.stringify(read(facade))],
+    [bridge, JSON.stringify(read(bridge))],
+    [bridge, 'export class EraserControlService {}'],
+  ]) {
+    assert.throws(
+      () =>
+        assertNetworkSettingsV2Source('a'.repeat(40), (candidate) =>
+          candidate === path ? changed : read(candidate),
+        ),
+      failure,
+      path,
+    );
+  }
+  assert.throws(
+    () =>
+      assertNetworkSettingsV2Source('a'.repeat(40), (candidate) => {
+        if (candidate === bridge) throw new Error('Lastik bridge missing');
+        return read(candidate);
+      }),
+    failure,
+  );
+});
+
+test('quoted bridge callbacks and revision checks cannot replace active transactional code', () => {
+  const path = 'apps/api/src/message-retention/eraser-control.service.ts';
+  const original = read(path);
+  const witnesses = [
+    'if (options?.beforeWrite) await this.prisma.$transaction(options.beforeWrite);',
+    'await options.onCommitted!(tx, String(result.revision));',
+    'await options?.onCommitted?.(tx, String(state.revision));',
+    'if (current.revision !== input.expectedRevision)',
+  ];
+  for (const witness of witnesses) {
+    assert.ok(original.includes(witness));
+    const quoted = original.replaceAll(witness, `${JSON.stringify(witness)};`);
+    assert.throws(
+      () =>
+        assertNetworkSettingsV2Source('a'.repeat(40), (candidate) =>
+          candidate === path ? quoted : read(candidate),
+        ),
+      failure,
+      witness,
+    );
+  }
+  for (const field of ['expectedRevision', 'operationId']) {
+    const changed = original.replace(`    ${field}: value.${field},`, '');
+    assert.notEqual(changed, original);
+    assert.throws(
+      () =>
+        assertNetworkSettingsV2Source('a'.repeat(40), (candidate) =>
+          candidate === path ? changed : read(candidate),
+        ),
+      failure,
+      field,
+    );
+  }
+});
+
 test('v2+ runtime imports retain every canonical schema without pinning unrelated imports', () => {
   for (const [path, module, names] of NETWORK_SETTINGS_V2_RUNTIME_IMPORTS) {
     const original = read(path);

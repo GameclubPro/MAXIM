@@ -1061,11 +1061,13 @@ sync_branch() {
   require_market_statistics_lock_dispatch "origin/$BRANCH" || return 2
   maxim_topology_require_eraser_bridge "$(git rev-parse "origin/$BRANCH")" || return 2
   maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse "origin/$BRANCH")" tooling || return 2
+  maxim_topology_require_retired_message_retention "$(git rev-parse "origin/$BRANCH")" tooling || return 2
 
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
     require_market_statistics_lock_dispatch "refs/heads/$BRANCH" || return 2
     maxim_topology_require_eraser_bridge "$(git rev-parse "refs/heads/$BRANCH")" || return 2
     maxim_topology_require_eraser_rate_limit_reader "$(git rev-parse "refs/heads/$BRANCH")" tooling || return 2
+    maxim_topology_require_retired_message_retention "$(git rev-parse "refs/heads/$BRANCH")" tooling || return 2
     git checkout "$BRANCH"
   else
     git checkout -b "$BRANCH" "origin/$BRANCH"
@@ -1628,6 +1630,9 @@ if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
 fi
 
 TARGET_SHA="$(git rev-parse HEAD)"
+if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  maxim_eraser_install_retired_message_retention_floor "$TARGET_SHA"
+fi
 if [[ "$BUILD_API_IMAGE" -eq 1 ]] || contains_service eraser "${SERVICES[@]}"; then
   maxim_eraser_install_connection_request_floor "$TARGET_SHA"
 fi

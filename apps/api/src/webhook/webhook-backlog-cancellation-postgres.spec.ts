@@ -665,7 +665,7 @@ native('operator backlog cancellation with native PostgreSQL and Redis', () => {
       const originalMessageId = (original.normalizedPayload as { message: { messageId: string } })
         .message.messageId;
       Object.assign(h.ingress, {
-        messageRetention: new MessageRetentionStore(h.prisma as never, h.config, h.legacyHolds),
+        messageRetention: new MessageRetentionStore(h.prisma as never, h.config),
       });
       const removal = new WebhookParser().parse(
         {

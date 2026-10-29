@@ -20,14 +20,8 @@ function setup() {
   const store = {
     allows: jest.fn().mockReturnValue(true),
     mode: 'off',
-    reopenTerminalCandidate: jest.fn().mockResolvedValue(true),
   };
-  const capabilities = { assertChatSettingsBotCapabilities: jest.fn() };
-  const service = new SafetyDeskRetentionService(
-    prisma as never,
-    store as never,
-    capabilities as never,
-  );
+  const service = new SafetyDeskRetentionService(prisma as never, store as never);
   const body = {
     messageId: 'mid',
     activationId: 'activation',
@@ -36,7 +30,7 @@ function setup() {
     expectedIntentUpdatedAt: '2026-10-01T10:00:00.000Z',
     expectedAttemptCount: 3,
   };
-  return { service, prisma, store, capabilities, body };
+  return { service, prisma, store, body };
 }
 describe('closed retention operator boundary', () => {
   it('preserves native diagnostic flags while redacting an unknown upstream error', async () => {
@@ -81,7 +75,7 @@ describe('closed retention operator boundary', () => {
         })),
       }),
     };
-    const { prisma, store, capabilities } = setup();
+    const { prisma, store } = setup();
     prisma.$queryRaw
       .mockReset()
       .mockResolvedValueOnce([
@@ -91,7 +85,6 @@ describe('closed retention operator boundary', () => {
     const service = new SafetyDeskRetentionService(
       prisma as unknown as PrismaService,
       store as never,
-      capabilities as never,
       eraser as unknown as EraserControlService,
     );
 
@@ -109,7 +102,7 @@ describe('closed retention operator boundary', () => {
   });
 
   it('forwards opaque Lastik review cursors and exact microsecond retry versions', async () => {
-    const { prisma, store, capabilities, body } = setup();
+    const { prisma, store, body } = setup();
     const preview = {
       chatId: '-1',
       revision: 5,
@@ -130,7 +123,6 @@ describe('closed retention operator boundary', () => {
     const service = new SafetyDeskRetentionService(
       prisma as unknown as PrismaService,
       store as never,
-      capabilities as never,
       eraser as unknown as EraserControlService,
     );
     const cursor = Buffer.from(
@@ -157,11 +149,10 @@ describe('closed retention operator boundary', () => {
         actorUserId: 'operator',
       }),
     );
-    expect(store.reopenTerminalCandidate).not.toHaveBeenCalled();
   });
 
-  it('keeps unowned legacy retries on their saved source even with the Lastik flag enabled', async () => {
-    const { prisma, store, capabilities, body } = setup();
+  it('rejects an unowned legacy retry even when Lastik onboarding is enabled', async () => {
+    const { prisma, store, body } = setup();
     const eraser: jest.Mocked<Pick<EraserControlService, 'enabled' | 'owns' | 'request'>> = {
       enabled: true,
       owns: jest.fn().mockResolvedValue(false),
@@ -170,15 +161,11 @@ describe('closed retention operator boundary', () => {
     const service = new SafetyDeskRetentionService(
       prisma as unknown as PrismaService,
       store as never,
-      capabilities as never,
       eraser as unknown as EraserControlService,
     );
-    jest
-      .spyOn(service, 'preview')
-      .mockResolvedValue({ chatId: '-1', revision: 5, activationId: 'activation', items: [] });
-    await service.retry('-1', 'operator', body);
-    expect(store.reopenTerminalCandidate).toHaveBeenCalledTimes(1);
+    await expect(service.retry('-1', 'operator', body)).rejects.toMatchObject({ status: 400 });
     expect(eraser.request).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('uses two bounded queries for an empty legacy page', async () => {
@@ -192,45 +179,16 @@ describe('closed retention operator boundary', () => {
   });
 
   it('refuses invalid identifiers and unknown input before reads or access probes', async () => {
-    const { service, store, capabilities, body, prisma } = setup();
+    const { service, body, prisma } = setup();
     await expect(service.runtime('bad')).rejects.toMatchObject({ status: 400 });
     await expect(service.retry('-1', 'owner', { ...body, force: true })).rejects.toMatchObject({
       status: 400,
     });
-    expect(store.reopenTerminalCandidate).not.toHaveBeenCalled();
-    expect(capabilities.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
     expect(prisma.messageRetentionPolicy.findMany).not.toHaveBeenCalled();
   });
-  it('does not reopen outside current execution authority', async () => {
-    const { service, store, capabilities, body } = setup();
-    store.allows.mockReturnValue(false);
+  it('never reopens a historical Major journal without an owned Lastik source', async () => {
+    const { service, body, prisma } = setup();
     await expect(service.retry('-1', 'owner', body)).rejects.toMatchObject({ status: 400 });
-    expect(capabilities.assertChatSettingsBotCapabilities).not.toHaveBeenCalled();
-    expect(store.reopenTerminalCandidate).not.toHaveBeenCalled();
-  });
-  it('forces fresh capability checks and delegates exact versions to the atomic store', async () => {
-    const { service, store, capabilities, body } = setup();
-    jest
-      .spyOn(service, 'preview')
-      .mockResolvedValue({ chatId: '-1', revision: 5, activationId: 'activation', items: [] });
-    await service.retry('-1', 'owner', body);
-    expect(capabilities.assertChatSettingsBotCapabilities).toHaveBeenCalledWith(
-      '-1',
-      expect.any(Array),
-      { forceLive: true },
-    );
-    expect(store.reopenTerminalCandidate).toHaveBeenCalledWith({
-      ...body,
-      chatId: '-1',
-      expectedIntentUpdatedAt: new Date(body.expectedIntentUpdatedAt),
-      actorUserId: 'owner',
-    });
-  });
-  it('preserves a conflict and does not publish a success snapshot when CAS fails', async () => {
-    const { service, store, body } = setup();
-    const preview = jest.spyOn(service, 'preview');
-    store.reopenTerminalCandidate.mockResolvedValue(false);
-    await expect(service.retry('-1', 'owner', body)).rejects.toMatchObject({ status: 409 });
-    expect(preview).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 });

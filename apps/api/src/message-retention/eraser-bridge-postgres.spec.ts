@@ -271,12 +271,7 @@ native('independent Lastik bridge with PostgreSQL', () => {
         tx as unknown as PrismaService,
         new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
       );
-      const desk = new SafetyDeskRetentionService(
-        tx as unknown as PrismaService,
-        store,
-        {} as never,
-        eraser,
-      );
+      const desk = new SafetyDeskRetentionService(tx as unknown as PrismaService, store, eraser);
       const request = jest.spyOn(eraser, 'request');
       const ids: string[] = [];
       let cursor: string | undefined;
@@ -285,6 +280,7 @@ native('independent Lastik bridge with PostgreSQL', () => {
         const page = await desk.preview(chatId, cursor);
         expect(page.items.length).toBeLessThanOrEqual(20);
         expect(page.source).toBe('legacy');
+        expect(page.items.every((row) => row.retryAllowed === false)).toBe(true);
         ids.push(...page.items.map((row) => row.messageId));
         cursor = page.nextAfter ?? undefined;
         first ??= cursor;
@@ -293,6 +289,25 @@ native('independent Lastik bridge with PostgreSQL', () => {
       expect(ids).toHaveLength(201);
       expect(new Set(ids).size).toBe(201);
       expect(ids).toEqual([...ids].sort());
+      const beforeRetry = await tx.messageRetentionCandidate.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId, messageId: ids[0]! } },
+      });
+      await expect(
+        desk.retry(chatId, 'operator', {
+          messageId: ids[0],
+          activationId: policy.activationId,
+          expectedRevision: policy.revision,
+          intentId: randomUUID(),
+          expectedIntentUpdatedAt: new Date().toISOString(),
+          expectedAttemptCount: 0,
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(
+        await tx.messageRetentionCandidate.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId, messageId: ids[0]! } },
+        }),
+      ).toEqual(beforeRetry);
+      expect(request).not.toHaveBeenCalled();
       const decoded = JSON.parse(Buffer.from(first!, 'base64url').toString('utf8'));
       for (const changed of [
         { source: 'eraser' },
@@ -384,7 +399,6 @@ native('independent Lastik bridge with PostgreSQL', () => {
           const desk = new SafetyDeskRetentionService(
             traced as unknown as PrismaService,
             store,
-            {} as never,
             control,
           );
           const page = await desk.runtime();
@@ -448,7 +462,6 @@ native('independent Lastik bridge with PostgreSQL', () => {
       const desk = new SafetyDeskRetentionService(
         traced as unknown as PrismaService,
         store,
-        {} as never,
         eraser,
       );
       const result = await desk.runtime();
@@ -472,12 +485,7 @@ native('independent Lastik bridge with PostgreSQL', () => {
         tx as unknown as PrismaService,
         new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
       );
-      const desk = new SafetyDeskRetentionService(
-        tx as unknown as PrismaService,
-        store,
-        {} as never,
-        eraser,
-      );
+      const desk = new SafetyDeskRetentionService(tx as unknown as PrismaService, store, eraser);
       const result = await desk.runtime();
       expect(result.items.some((item) => item.chatId === chatId)).toBe(false);
       expect(result.unavailableSources).toContainEqual({

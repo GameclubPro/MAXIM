@@ -5,17 +5,14 @@ import { createPrismaClient, Prisma, type PrismaClient } from '../prisma/prisma-
 import { ModerationDeleteIntentService } from '../moderation/moderation-delete-intent.service';
 import { WebhookParser } from '../webhook/webhook.parser';
 import { WebhookService } from '../webhook/webhook.service';
-import {
-  WebhookLegacyHoldRejectedError,
-  WebhookLegacyHoldService,
-} from '../webhook/webhook-legacy-hold.service';
+import { WebhookLegacyHoldService } from '../webhook/webhook-legacy-hold.service';
 import { MessageRetentionStore } from './message-retention-store.service';
 import { MESSAGE_RETENTION_SHARD_LIMIT } from './message-retention.policy';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgres = databaseUrl ? describe : describe.skip;
 
-describePostgres('native retention admission under permanent automatic holds', () => {
+describePostgres('retired retention intake and preserved receipts under automatic holds', () => {
   let prisma: PrismaClient;
   let holds: WebhookLegacyHoldService;
 
@@ -88,7 +85,6 @@ describePostgres('native retention admission under permanent automatic holds', (
           const store = new MessageRetentionStore(
             scopedPrisma as never,
             new ConfigService({ MESSAGE_RETENTION_MODE: 'on' }),
-            holds,
           );
           const deletes = Object.create(
             ModerationDeleteIntentService.prototype,
@@ -183,7 +179,7 @@ describePostgres('native retention admission under permanent automatic holds', (
   }
 
   it.each(['message', 'member', 'global'] as const)(
-    'preserves the raw %s-held receipt without exhausting the last shared admission slot',
+    'preserves held and unheld raw receipts without creating obsolete history candidates under %s holds',
     async (scope) =>
       isolated(async (f) => {
         await installHold(f, scope);
@@ -194,7 +190,10 @@ describePostgres('native retention admission under permanent automatic holds', (
         });
         const ingress = Object.create(WebhookService.prototype) as any;
         Object.assign(ingress, {
-          prisma: { $transaction: (work: (tx: Prisma.TransactionClient) => unknown) => work(f.tx) },
+          prisma: {
+            $transaction: (work: (tx: Prisma.TransactionClient) => unknown) => work(f.tx),
+            webhookEvent: f.tx.webhookEvent,
+          },
           messageRetention: f.store,
         });
         const update = createdUpdate(f);
@@ -211,22 +210,22 @@ describePostgres('native retention admission under permanent automatic holds', (
         expect(
           await f.tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: f.chatId } }),
         ).toMatchObject({ pendingCount: 0, skippedCount: 0, pausedAt: null });
-        // FLAG: A held user's arrival must not consume another chat's last slot.
+        // FLAG: Neither held nor unrelated sources acquire retired automatic deletion authority.
         const independent = createdUpdate(f, f.independentChatId, `${f.userId}:unheld`);
         await ingress.persistReceipt(independent, null, independent.raw);
         expect(
           await f.tx.messageRetentionCandidate.count({
             where: { chatId: f.independentChatId },
           }),
-        ).toBe(1);
+        ).toBe(0);
         expect(
           await f.tx.messageRetentionPolicy.findUniqueOrThrow({
             where: { chatId: f.independentChatId },
           }),
-        ).toMatchObject({ pendingCount: 1, pausedAt: null, lastStatus: 'running' });
+        ).toMatchObject({ pendingCount: 0, pausedAt: null, lastStatus: 'running' });
         expect(
           await f.tx.messageRetentionQuota.findUniqueOrThrow({ where: { shard: 31 } }),
-        ).toMatchObject({ pendingCount: boundary, pausedAt: null });
+        ).toMatchObject({ pendingCount: boundary - 1, pausedAt: null });
         expect(
           await f.tx.auditLog.count({
             where: {
@@ -235,29 +234,6 @@ describePostgres('native retention admission under permanent automatic holds', (
             },
           }),
         ).toBe(0);
-      }),
-  );
-
-  it.each(['message', 'member', 'global'] as const)(
-    'creates no new retention intent or reason for an existing %s-held candidate',
-    async (scope) =>
-      isolated(async (f) => {
-        const pending = await candidate(f);
-        await installHold(f, scope);
-        await expect(f.deletes.ensureRetentionIntent(pending)).rejects.toBeInstanceOf(
-          WebhookLegacyHoldRejectedError,
-        );
-        expect(await f.tx.moderationDeleteIntent.count({ where: { chatId: f.chatId } })).toBe(0);
-        expect(
-          await f.tx.moderationDeleteIntentReason.count({
-            where: { intent: { chatId: f.chatId } },
-          }),
-        ).toBe(0);
-        expect(
-          await f.tx.messageRetentionCandidate.findUniqueOrThrow({
-            where: { chatId_messageId: { chatId: f.chatId, messageId: f.messageId } },
-          }),
-        ).toMatchObject({ intentId: null, status: 'pending' });
       }),
   );
 
@@ -280,7 +256,10 @@ describePostgres('native retention admission under permanent automatic holds', (
       await installHold(f, 'global');
       const ingress = Object.create(WebhookService.prototype) as any;
       Object.assign(ingress, {
-        prisma: { $transaction: (work: (tx: Prisma.TransactionClient) => unknown) => work(f.tx) },
+        prisma: {
+          $transaction: (work: (tx: Prisma.TransactionClient) => unknown) => work(f.tx),
+          webhookEvent: f.tx.webhookEvent,
+        },
         messageRetention: f.store,
       });
       const update = new WebhookParser().parse(
@@ -312,6 +291,83 @@ describePostgres('native retention admission under permanent automatic holds', (
       ).toMatchObject({ pendingCount: 0 });
     }));
 
+  it.each(['success_at', 'success_bot'] as const)(
+    'rejects an unpaired %s receipt at the database constraint',
+    async (kind) => {
+      await expect(
+        isolated(async (f) => {
+          await f.tx.moderationDeleteIntent.create({
+            data: {
+              id: randomUUID(),
+              chatId: f.chatId,
+              messageId: f.messageId,
+              subjectUserId: f.userId,
+              retentionOwned: true,
+              status: 'AMBIGUOUS',
+              retryUntilAt: new Date('9999-01-01T00:00:00Z'),
+              remoteDeleteSucceededAt: kind === 'success_at' ? new Date() : null,
+              remoteDeleteSucceededBotId: kind === 'success_bot' ? 'major' : null,
+            },
+          });
+        }),
+      ).rejects.toThrow('moderation_delete_intents_remote_success_pair_check');
+    },
+  );
+
+  it.each(['dispatch', 'no_marker', 'independent'] as const)(
+    'never claims or changes a %s receipt without paired owned success evidence',
+    async (kind) =>
+      isolated(async (f) => {
+        const intent = await f.tx.moderationDeleteIntent.create({
+          data: {
+            id: randomUUID(),
+            chatId: f.chatId,
+            messageId: f.messageId,
+            subjectUserId: f.userId,
+            retentionOwned: kind !== 'independent',
+            status: 'AMBIGUOUS',
+            attemptCount: 3,
+            retryUntilAt: new Date('9999-01-01T00:00:00Z'),
+            deleteDispatchStartedAt: kind === 'dispatch' ? new Date() : null,
+            deleteDispatchStartedBotId: kind === 'dispatch' ? 'major' : null,
+            remoteDeleteSucceededAt: kind === 'independent' ? new Date() : null,
+            remoteDeleteSucceededBotId: kind === 'independent' ? 'major' : null,
+          },
+        });
+        await candidate(f, intent.id);
+        const previousRole = process.env.APP_ROLE;
+        try {
+          process.env.APP_ROLE = 'message-retention';
+          const result = await f.deletes.reconcileRetentionIntent(intent.id);
+          if (kind === 'no_marker' || kind === 'independent') expect(result).toBeNull();
+          else expect(result).toMatchObject({ status: 'AMBIGUOUS', confirmed: false });
+          // FLAG: Exercise the actual atomic SQL gate, including a stale caller that
+          // bypassed its positive-receipt precheck. Unknown effects must not gain a lease.
+          const claim = f.deletes as unknown as {
+            claimOne(
+              intentId: string,
+              retentionOnly: boolean,
+              receiptOnly: boolean,
+            ): Promise<unknown>;
+          };
+          expect(await claim.claimOne(intent.id, true, true)).toBeNull();
+        } finally {
+          if (previousRole === undefined) delete process.env.APP_ROLE;
+          else process.env.APP_ROLE = previousRole;
+        }
+        expect(
+          await f.tx.moderationDeleteIntent.findUniqueOrThrow({ where: { id: intent.id } }),
+        ).toEqual(intent);
+        expect(await f.tx.moderationDeleteIntent.count({ where: { chatId: f.chatId } })).toBe(1);
+        expect(
+          await f.tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: f.chatId } }),
+        ).toMatchObject({ pendingCount: 1, deletedCount: 0, skippedCount: 0 });
+        expect(
+          await f.tx.messageRetentionQuota.findUniqueOrThrow({ where: { shard: 31 } }),
+        ).toMatchObject({ pendingCount: 1 });
+      }),
+  );
+
   it('keeps a paired remote-success receipt readable and settles its candidate in SQL', async () =>
     isolated(async (f) => {
       const intent = await f.tx.moderationDeleteIntent.create({
@@ -327,14 +383,13 @@ describePostgres('native retention admission under permanent automatic holds', (
           remoteDeleteSucceededBotId: 'major',
         },
       });
-      const pending = await candidate(f);
+      const pending = await candidate(f, intent.id);
       await installHold(f, 'global');
-      expect(await f.deletes.ensureRetentionIntent(pending)).toBe(intent.id);
       expect(
         await f.tx.messageRetentionCandidate.findUniqueOrThrow({
           where: { chatId_messageId: { chatId: f.chatId, messageId: f.messageId } },
         }),
-      ).toMatchObject({ intentId: null, status: 'pending' });
+      ).toMatchObject({ intentId: intent.id, status: 'pending' });
       expect(
         await f.tx.moderationDeleteIntentReason.count({ where: { intentId: intent.id } }),
       ).toBe(0);
@@ -342,14 +397,19 @@ describePostgres('native retention admission under permanent automatic holds', (
       const previousRole = process.env.APP_ROLE;
       try {
         process.env.APP_ROLE = 'message-retention';
-        expect(
-          await f.deletes.reconcileRetentionIntent(intent.id, { allowRead: false }),
-        ).toMatchObject({ status: 'SUCCEEDED', botId: 'major' });
+        expect(await f.deletes.reconcileRetentionIntent(intent.id)).toMatchObject({
+          status: 'SUCCEEDED',
+          botId: 'major',
+        });
       } finally {
         if (previousRole === undefined) delete process.env.APP_ROLE;
         else process.env.APP_ROLE = previousRole;
       }
-      await f.store.finish(pending, 'deleted');
+      await f.tx.messageRetentionCandidate.update({
+        where: { chatId_messageId: { chatId: f.chatId, messageId: f.messageId } },
+        data: { outcomeCode: 'reconciliation', reconcileAfter: new Date() },
+      });
+      await f.store.settleReconciliation(pending, 'deleted');
       expect(
         await f.tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: f.chatId } }),
       ).toMatchObject({ pendingCount: 0, deletedCount: 1 });

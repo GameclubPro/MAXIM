@@ -74,7 +74,7 @@ native('native post-seal held message removal without replay', () => {
     await h.pause();
     Object.assign(h.ingress, {
       rawPayloadSampleRate: 1,
-      messageRetention: new MessageRetentionStore(h.prisma as never, h.config, h.legacyHolds),
+      messageRetention: new MessageRetentionStore(h.prisma as never, h.config),
     });
     const [identity] = await h.prisma.$queryRaw<Array<{ version: string; timezone: string }>>`
       SELECT version(), current_setting('TimeZone') AS timezone`;

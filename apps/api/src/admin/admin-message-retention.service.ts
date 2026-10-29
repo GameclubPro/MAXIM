@@ -1,13 +1,11 @@
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
 import {
   updateMessageRetentionSchema,
   messageRetentionSummarySchema,
@@ -17,11 +15,9 @@ import {
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessageRetentionStore } from '../message-retention/message-retention-store.service';
-import { retentionQuotaShard } from '../message-retention/message-retention.policy';
 import { retentionStatus } from '../message-retention/message-retention-status';
 import { buildPublisherBotDescriptor } from '../publisher/publisher-bot-descriptor';
 import { ManagedEntitiesService } from './managed-entities.service';
-import { AdminSettingsBotCapabilityService } from './admin-settings-bot-capability.service';
 import type { NetworkSettingsWriteOptions } from './network-settings-write';
 import { EraserControlService } from '../message-retention/eraser-control.service';
 
@@ -30,7 +26,6 @@ export class AdminMessageRetentionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly access: ManagedEntitiesService,
-    private readonly capabilities: AdminSettingsBotCapabilityService,
     private readonly store: MessageRetentionStore,
     private readonly config: ConfigService,
     @Optional() private readonly eraser?: EraserControlService,
@@ -61,75 +56,9 @@ export class AdminMessageRetentionService {
     const parsed = updateMessageRetentionSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const request = parsed.data;
-    if (await this.useEraser(chatId))
-      return this.requireEraser().update(chatId, user.userId, request, networkWrite);
-    if (request.connectWhenReady)
-      throw new ServiceUnavailableException('Подключение Ластика временно недоступно.');
-    if (request.hours === 168)
-      throw new ServiceUnavailableException('Подключите Ластика, чтобы выбрать срок 1 неделя.');
-    if (request.enabled) {
-      if (!this.store.allows(chatId))
-        throw new BadRequestException('Модуль пока недоступен в этом чате.');
-      await this.capabilities.assertChatSettingsBotCapabilities(chatId, [
-        { permission: 'write', featureKeys: ['messageRetention'] },
-      ]);
-    }
-    if (networkWrite?.validateOnly) {
-      const current = await this.prisma.messageRetentionPolicy.findUnique({ where: { chatId } });
-      if ((current?.revision ?? 0) !== request.expectedRevision)
-        throw new ConflictException('Настройки удаления сообщений уже изменены.');
-      return this.snapshot(chatId);
-    }
-    await this.prisma.$transaction(async (tx) => {
-      await networkWrite?.beforeWrite?.(tx);
-      await tx.messageRetentionPolicy.createMany({
-        data: [{ chatId, activationId: randomUUID(), quotaShard: retentionQuotaShard(chatId) }],
-        skipDuplicates: true,
-      });
-      await tx.$queryRaw`SELECT "chat_id" FROM "message_retention_policies" WHERE "chat_id" = ${chatId} FOR UPDATE`;
-      const current = await tx.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId } });
-      if (current.revision !== request.expectedRevision)
-        throw new ConflictException({
-          code: 'MESSAGE_RETENTION_REVISION_CONFLICT',
-          message: 'Настройки уже изменены. Обновите их перед сохранением.',
-        });
-      const now = new Date();
-      const activationChanged = current.enabled !== request.enabled;
-      await tx.messageRetentionPolicy.update({
-        where: { chatId },
-        data: {
-          enabled: request.enabled,
-          hours: request.hours,
-          revision: { increment: 1 },
-          updatedAt: now,
-          ...(activationChanged
-            ? {
-                activationId: randomUUID(),
-                enabledAt: request.enabled ? now : current.enabledAt,
-                captureAfter: request.enabled ? now : null,
-              }
-            : {}),
-          // FLAG: Ended receipts retain their own schedule after active credit reaches zero.
-          // A DB-only visit recomputes the next due receipt even when this policy is disabled.
-          nextRunAt: now,
-          lastStatus: request.enabled ? 'running' : 'off',
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          chatId,
-          actorUserId: user.userId,
-          action: 'UPDATE_MESSAGE_RETENTION',
-          payload: {
-            enabled: request.enabled,
-            hours: request.hours,
-            revision: current.revision + 1,
-          },
-        },
-      });
-      await networkWrite?.onCommitted?.(tx, String(current.revision + 1));
-    });
-    return this.snapshot(chatId);
+    // FLAG: Lastik is the sole age-based executor. Availability loss cannot create
+    // or change a retired Major activation, even for a previously unowned chat.
+    return this.requireEraser().update(chatId, user.userId, request, networkWrite);
   }
 
   async resumeEraserOperation(

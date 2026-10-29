@@ -123,7 +123,6 @@ type ServiceInternals = {
   resolveDeleteRouteWithRefresh(
     intent: Record<string, unknown>,
     heartbeat: { renew: () => Promise<boolean>; stop: () => void },
-    canRead?: () => Promise<boolean>,
   ): Promise<unknown>;
   finishRetryableAttempt(
     intent: Record<string, unknown>,
@@ -1548,41 +1547,26 @@ describe('ModerationDeleteIntentService', () => {
     await service.executeLeasedIntent('intent-1', 'lease-1');
     expect(events).toEqual(['prepare', 'delete-budget', 'final', 'final']);
   });
-  it('prepares retention remote evidence before the DELETE budget and keeps final checks local', async () => {
-    const events: string[] = [];
+  it('releases a saved retention lease without reading MAX or dispatching DELETE', async () => {
     const leased = {
       ...baseIntent,
       retentionOwned: true,
       leaseExpiresAt: new Date(Date.now() + 60_000),
     };
     const { service, maxClient } = createService({ MESSAGE_RETENTION_MODE: 'on' });
-    maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
-      events.push('delete-budget');
-      await options?.beforeImmediateDeleteMutation?.();
-    });
+    const releasePausedLease = jest.fn();
+    const route = jest.fn();
     Object.assign(service, {
       loadIntent: jest.fn().mockResolvedValue(leased),
-      startLeaseHeartbeat: () => ownedHeartbeat,
-      assertLeaseForExternalCall: jest.fn(),
-      finishProtectedManagedBotMessageAutoDelete: jest.fn().mockResolvedValue(null),
-      resolveDeleteRouteWithRefresh: jest.fn().mockResolvedValue(confirmedRoute),
-      filterAndOrderRouteCandidates: () => ['bot-1'],
-      recordAttemptBot: jest.fn().mockResolvedValue(true),
-      markDeleteDispatchStarted: jest.fn().mockResolvedValue(true),
-      messageRetentionGuard: {
-        assertAllowed: async (_id: string, _bot: string, phase: string) => {
-          events.push(phase);
-        },
-      },
-      recordRemoteSuccessAndFinalize: jest.fn().mockResolvedValue({
-        kind: 'confirmed',
-        status: 'SUCCEEDED',
-        confirmed: true,
-        intentId: 'intent-1',
-      }),
+      loadRequiredIntent: jest.fn().mockResolvedValue(leased),
+      releasePausedLease,
+      resolveDeleteRouteWithRefresh: route,
     });
     await service.executeLeasedIntent('intent-1', 'lease-1');
-    expect(events).toEqual(['prepare', 'delete-budget', 'dispatch', 'dispatch']);
+    expect(releasePausedLease).toHaveBeenCalledWith('intent-1', 'lease-1');
+    expect(route).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.getExactMessagePresence).not.toHaveBeenCalled();
   });
   it('never lets a retention worker execute ordinary moderation after ownership changes', () => {
     const previous = process.env.APP_ROLE;
@@ -1593,7 +1577,7 @@ describe('ModerationDeleteIntentService', () => {
         isExecutionEnabledForIntent(intent: unknown): boolean;
       };
       expect(internal.isExecutionEnabledForIntent({ ...baseIntent, retentionOwned: true })).toBe(
-        true,
+        false,
       );
       expect(internal.isExecutionEnabledForIntent({ ...baseIntent, retentionOwned: false })).toBe(
         false,
@@ -4711,7 +4695,7 @@ describe('ModerationDeleteIntentService', () => {
     expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
-  it('fences rotated probes on a lost lease and preserves read-only reconciliation permission', async () => {
+  it('fences rotated probes on a lost lease', async () => {
     const route = unconfirmedDeleteRoute(
       Array.from({ length: 9 }, (_, index) => `bot-${index + 1}`),
     );
@@ -4735,13 +4719,6 @@ describe('ModerationDeleteIntentService', () => {
         { renew: jest.fn().mockResolvedValue(false), stop: jest.fn() },
       ),
     ).rejects.toMatchObject({ name: 'ModerationDeleteIntentLeaseLostError' });
-    const canRead = jest.fn().mockResolvedValue(false);
-    await internals.resolveDeleteRouteWithRefresh(
-      { ...baseIntent, attemptCount: 3, leaseToken: null },
-      ownedHeartbeat,
-      canRead,
-    );
-    expect(canRead).toHaveBeenCalledTimes(4);
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
@@ -9847,7 +9824,6 @@ describe('ModerationDeleteIntentService', () => {
   it.each([
     { kind: 'typed quota', retentionOwned: false, defer: true },
     { kind: 'lookalike code', retentionOwned: false, defer: false },
-    { kind: 'retention typed quota', retentionOwned: true, defer: false },
   ])(
     'defers only an ordinary durable DELETE after $kind',
     async ({ kind, retentionOwned, defer }) => {
@@ -9878,10 +9854,6 @@ describe('ModerationDeleteIntentService', () => {
         { deleteMessage: remoteDelete },
         { resolveDeleteMessageBotRoute: jest.fn().mockResolvedValue(confirmedRoute) },
       );
-      if (retentionOwned)
-        Object.assign(service, {
-          messageRetentionGuard: { assertAllowed: jest.fn().mockRejectedValue(guardError) },
-        });
       const beforeDeleteMutation = jest
         .fn()
         .mockResolvedValueOnce(undefined)

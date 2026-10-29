@@ -120,7 +120,7 @@ describeStores('native permanent legacy effect holds', () => {
   it('keeps a prepared message_removed under a newly installed permanent hold', async () => {
     const { s, chatId } = await fixture();
     Object.assign(s.ingress, {
-      messageRetention: new MessageRetentionStore(s.prisma as never, s.config, s.legacyHolds),
+      messageRetention: new MessageRetentionStore(s.prisma as never, s.config),
     });
     const messageId = randomUUID();
     const removal = new WebhookParser().parse(

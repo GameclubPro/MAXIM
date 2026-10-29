@@ -1,5 +1,6 @@
 import { WebhookService } from './webhook.service';
 import type { MaxUpdate } from '@maxim/contracts';
+import type { MessageRetentionStore } from '../message-retention/message-retention-store.service';
 
 type ReceiptBoundary = {
   persistReceipt(update: MaxUpdate, ip: string | null, raw: unknown): Promise<string>;
@@ -14,9 +15,8 @@ function setup(count = 1) {
     webhookEvent: tx.webhookEvent,
   };
   const retention = {
-    captureInput: jest.fn().mockReturnValue(null),
     settleRemovedMessage: jest.fn(),
-  };
+  } satisfies Pick<MessageRetentionStore, 'settleRemovedMessage'>;
   const service = Object.create(WebhookService.prototype) as ReceiptBoundary;
   Object.assign(service, { prisma, messageRetention: retention });
   const update = {
@@ -30,6 +30,19 @@ function setup(count = 1) {
   return { service, prisma, retention, tx, update };
 }
 describe('authenticated retention removal receipts', () => {
+  it.each(['message_created', 'message_edited'] as const)(
+    'persists %s without accessing legacy candidates, intents or quota',
+    async (type) => {
+      const { service, retention, tx, update, prisma } = setup();
+      update.type = type;
+      update.raw = { update_type: type, timestamp: Date.now() };
+      await service.persistReceipt(update, null, update.raw);
+      expect(tx.webhookEvent.createMany).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(retention.settleRemovedMessage).not.toHaveBeenCalled();
+      expect(tx.$executeRaw).not.toHaveBeenCalled();
+    },
+  );
   it('settles exact removal in the deduplicated receipt transaction without author inference', async () => {
     const { service, retention, tx, update, prisma } = setup();
     await service.persistReceipt(update, null, update.raw);

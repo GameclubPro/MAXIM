@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
+import { Queue, Worker } from 'bullmq';
+import Redis from 'ioredis';
 import {
   ChatEntityType,
   ModerationDeleteIntentStatus,
@@ -15,9 +17,27 @@ import {
 } from '../src/prisma/prisma-client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { MessageRetentionStore } from '../src/message-retention/message-retention-store.service';
-import { AdminMessageRetentionService } from '../src/admin/admin-message-retention.service';
+import {
+  MessageRetentionRuntime,
+  type MessageRetentionJob,
+} from '../src/message-retention/message-retention-runtime.service';
+import type { ModerationDeleteIntentService } from '../src/moderation/moderation-delete-intent.service';
+import { MESSAGE_RETENTION_QUEUE } from '../src/message-retention/message-retention.policy';
 
 const postgresUrl = process.env.MAXIM_TEST_POSTGRES_URL;
+const redisUrl = process.env.MAXIM_TEST_REDIS_URL;
+if (redisUrl) {
+  const url = new URL(redisUrl);
+  if (
+    url.protocol !== 'redis:' ||
+    !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+    url.search ||
+    url.hash
+  )
+    throw new Error(
+      'Retention lifecycle queue tests require an explicit local Redis URL without options',
+    );
+}
 let localUrl: URL | null = null;
 if (postgresUrl) {
   localUrl = new URL(postgresUrl);
@@ -146,28 +166,33 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
       intentStatus?: ModerationDeleteIntentStatus;
       retentionOwned?: boolean;
       attached?: boolean;
+      createIntent?: boolean;
+      shadowOnly?: boolean;
     } = {},
   ): Promise<MessageRetentionCandidate> {
     const status = options.status ?? 'pending';
     const active = status === 'pending' || status === 'retry';
-    await prisma.moderationDeleteIntent.create({
-      data: {
-        id: 'i',
-        chatId: '-1',
-        messageId: 'm',
-        subjectUserId: 'u',
-        entityType: 'CHAT',
-        messageAuthorKind: 'user',
-        originBotId: 'bot',
-        retentionOwned: options.retentionOwned ?? true,
-        status: options.intentStatus ?? 'FAILED_TERMINAL',
-        retryUntilAt: new Date('9999-01-01T00:00:00.000Z'),
-        attemptCount: 1,
-      },
-    });
-    await db.query(
-      "INSERT INTO moderation_delete_intent_reasons(id,intent_id,rule_code) VALUES ('reason','i','MESSAGE_RETENTION_DELETE')",
-    );
+    const createIntent = options.createIntent !== false;
+    if (createIntent) {
+      await prisma.moderationDeleteIntent.create({
+        data: {
+          id: 'i',
+          chatId: '-1',
+          messageId: 'm',
+          subjectUserId: 'u',
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          originBotId: 'bot',
+          retentionOwned: options.retentionOwned ?? true,
+          status: options.intentStatus ?? 'FAILED_TERMINAL',
+          retryUntilAt: new Date('9999-01-01T00:00:00.000Z'),
+          attemptCount: 1,
+        },
+      });
+      await db.query(
+        "INSERT INTO moderation_delete_intent_reasons(id,intent_id,rule_code) VALUES ('reason','i','MESSAGE_RETENTION_DELETE')",
+      );
+    }
     const candidate = await prisma.messageRetentionCandidate.create({
       data: {
         chatId: '-1',
@@ -177,7 +202,8 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
         sourceAt: new Date(Date.now() - 25 * 3_600_000),
         activationId: options.activationId ?? 'current',
         status,
-        intentId: options.attached === false ? null : 'i',
+        shadowOnly: options.shadowOnly ?? false,
+        intentId: !createIntent || options.attached === false ? null : 'i',
         outcomeCode: options.outcomeCode ?? null,
         completedAt: active ? null : new Date(),
         reconcileAfter: options.reconcile ? new Date() : null,
@@ -207,17 +233,23 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     };
   }
 
-  async function reviewedInput() {
-    const intent = await prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: 'i' } });
+  function runtimeWithoutEffects(currentStore = store, queue = {} as Queue<MessageRetentionJob>) {
+    let receiptCalls = 0;
+    const deletes = {
+      reconcileRetentionIntent: async () => {
+        receiptCalls++;
+        throw new Error('A stale current-generation job must not acquire any effect authority');
+      },
+    } satisfies Pick<ModerationDeleteIntentService, 'reconcileRetentionIntent'>;
     return {
-      chatId: '-1',
-      messageId: 'm',
-      activationId: 'current',
-      expectedRevision: 1,
-      intentId: 'i',
-      expectedIntentUpdatedAt: intent.updatedAt,
-      expectedAttemptCount: intent.attemptCount,
-      actorUserId: 'operator',
+      runtime: new MessageRetentionRuntime(
+        prisma as PrismaService,
+        currentStore,
+        deletes as unknown as ModerationDeleteIntentService,
+        {} as never,
+        queue,
+      ),
+      receiptCalls: () => receiptCalls,
     };
   }
 
@@ -263,19 +295,33 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     }
   }
 
-  it('settles six duplicate finish calls once under a real quota-lock race', async () => {
-    const candidate = await seed();
+  it('settles six duplicate authenticated receipts once under a real quota-lock race', async () => {
+    await seed({ intentStatus: 'PENDING' });
     const settled = await race('quota', () =>
-      Promise.all(Array.from({ length: 6 }, () => store.finish(candidate, 'deleted'))),
+      Promise.all(
+        Array.from({ length: 6 }, () =>
+          prisma.$transaction((tx) =>
+            store.settleRemovedMessage(tx, { chatId: '-1', messageId: 'm' }),
+          ),
+        ),
+      ),
     );
     assert.equal(settled.filter(Boolean).length, 1);
     assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 1, skipped: 0 });
   });
 
-  it('reconciles cancellation racing with a successful worker without releasing credit twice', async () => {
-    const candidate = await seed({ activationId: 'previous', intentStatus: 'SUCCEEDED' });
+  it('reconciles cancellation racing with a saved successful receipt without releasing credit twice', async () => {
+    const candidate = await seed({
+      activationId: 'previous',
+      intentStatus: 'SUCCEEDED',
+      reconcile: true,
+      outcomeCode: 'reconciliation',
+    });
     await race('quota', () =>
-      Promise.all([store.cancelInactive([candidate]), store.finish(candidate, 'deleted')]),
+      Promise.all([
+        store.cancelInactive([candidate]),
+        store.settleReconciliation(candidate, 'deleted'),
+      ]),
     );
     const current = await prisma.messageRetentionCandidate.findUniqueOrThrow({
       where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
@@ -284,19 +330,25 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 1, skipped: 0 });
   });
 
-  it('refuses stale cancellation of the current activation', async () => {
-    const candidate = await seed();
-    assert.equal(await store.finish(candidate, 'cancelled'), false);
+  it('refuses stale cancellation and reconciliation of the current activation', async () => {
+    const candidate = await seed({
+      intentStatus: 'PENDING',
+      reconcile: true,
+      outcomeCode: 'reconciliation',
+    });
+    await store.settleReconciliation(candidate, 'cancelled');
     await store.cancelInactive([candidate]);
+    const current = await prisma.messageRetentionCandidate.findUniqueOrThrow({
+      where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
+    });
+    assert.equal(current.status, 'pending');
+    assert.ok(current.reconcileAfter && current.reconcileAfter > candidate.reconcileAfter!);
     assert.deepEqual(await counts(), { pending: 1, quota: 1, deleted: 0, skipped: 0 });
   });
 
   it('keeps a producer-cancelled receipt schedulable with DELETE off', async () => {
     const candidate = await seed({ activationId: 'previous', intentStatus: 'AMBIGUOUS' });
-    assert.equal(
-      await store.finish(candidate, 'cancelled', { outcomeCode: 'cancelled', reconcile: true }),
-      true,
-    );
+    await store.cancelInactive([candidate]);
     await store.scheduleNext('-1');
     const offStore = new MessageRetentionStore(
       prisma as PrismaService,
@@ -309,20 +361,25 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     );
     assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 0, skipped: 1 });
   });
-  it('backs off enabled execution while keeping cancellation and due receipts schedulable', async () => {
-    await seed();
+  it('admits only DB maintenance and selects completed generations without age-based execution', async () => {
+    await seed({ createIntent: false });
     assert.equal(
-      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
-      0,
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter() }),
+      1,
     );
+    const policy = await prisma.messageRetentionPolicy.findUniqueOrThrow({
+      where: { chatId: '-1' },
+    });
+    assert.deepEqual(await store.dueInactiveCandidates(policy), []);
     await prisma.messageRetentionPolicy.update({
       where: { chatId: '-1' },
       data: { enabled: false },
     });
     assert.equal(
-      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter() }),
       1,
     );
+    await store.cancelInactive(await store.dueInactiveCandidates({ ...policy, enabled: false }));
     await prisma.messageRetentionPolicy.update({
       where: { chatId: '-1' },
       data: { enabled: true },
@@ -332,7 +389,7 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
       data: { outcomeCode: 'reconciliation', reconcileAfter: new Date(Date.now() + 60_000) },
     });
     assert.equal(
-      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter() }),
       0,
     );
     await prisma.messageRetentionCandidate.update({
@@ -340,111 +397,179 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
       data: { reconcileAfter: new Date(Date.now() - 1_000) },
     });
     assert.equal(
-      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter(false) }),
+      await prisma.messageRetentionPolicy.count({ where: store.workSchedulingFilter() }),
       1,
     );
+    assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 0, skipped: 1 });
   });
-  it('keeps future ended receipts schedulable after the administrator disables a zero-credit policy', async () => {
+  it('keeps future ended receipts scheduled after a zero-credit policy is disabled', async () => {
     await seed({
       status: 'skipped',
       outcomeCode: 'reconciliation',
       reconcile: true,
       intentStatus: 'AMBIGUOUS',
     });
+    const future = new Date(Date.now() + 60_000);
     await prisma.messageRetentionCandidate.update({
       where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
-      data: { reconcileAfter: new Date(Date.now() + 60_000) },
+      data: { reconcileAfter: future },
+    });
+    await prisma.messageRetentionPolicy.update({
+      where: { chatId: '-1' },
+      data: { enabled: false },
     });
     await store.scheduleNext('-1');
-    const service = new AdminMessageRetentionService(
-      prisma as PrismaService,
-      { assertChatAdminAccess: async () => undefined } as never,
-      {
-        assertChatSettingsBotCapabilities: async () => {
-          throw new Error('Disabling must not perform a capability probe');
-        },
-      } as never,
-      store,
-      new ConfigService({ MAX_PUBLISHER_BOT_ID: 'publisher' }),
-    );
-    await service.update(
-      '-1',
-      { userId: 'operator', username: null, displayName: null, launchBotId: 'major' },
-      { enabled: false, hours: 24, expectedRevision: 1 },
-    );
     const policy = await prisma.messageRetentionPolicy.findUniqueOrThrow({
       where: { chatId: '-1' },
     });
-    assert.equal(policy.enabled, false);
-    assert.equal(policy.pendingCount, 0);
-    assert.ok(policy.nextRunAt);
-    // Advance only the receipt's deadline to demonstrate scheduler selection once it is due.
+    assert.equal(policy.nextRunAt?.getTime(), future.getTime());
+    assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 0, skipped: 1 });
     await prisma.messageRetentionCandidate.update({
       where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
       data: { reconcileAfter: new Date(Date.now() - 1000) },
     });
-    const offStore = new MessageRetentionStore(
-      prisma as PrismaService,
-      new ConfigService({ MESSAGE_RETENTION_MODE: 'off' }),
-    );
+    await store.scheduleNext('-1');
     assert.equal(
       await prisma.messageRetentionPolicy.count({
-        where: { nextRunAt: { lte: new Date() }, AND: [offStore.workSchedulingFilter()] },
+        where: { nextRunAt: { lte: new Date() }, AND: [store.workSchedulingFilter()] },
       }),
       1,
     );
-    assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 0, skipped: 1 });
   });
 
-  it('admits only one concurrent operator reopen with one atomic audit and credit', async () => {
-    await seed({ status: 'skipped', outcomeCode: 'terminal_review' });
-    const input = await reviewedInput();
-    const changed = await race('intent', () =>
-      Promise.all(Array.from({ length: 6 }, () => store.reopenTerminalCandidate(input))),
-    );
-    assert.equal(changed.filter(Boolean).length, 1);
-    assert.deepEqual(await counts(), { pending: 1, quota: 1, deleted: 0, skipped: 0 });
-    assert.equal(
-      await prisma.auditLog.count({ where: { action: 'SAFETY_DESK_RETRY_MESSAGE_RETENTION' } }),
-      1,
-    );
-    assert.equal(
-      (await prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: 'i' } })).status,
-      'PENDING',
-    );
-  });
+  for (const mode of ['off', 'shadow', 'canary', 'on']) {
+    for (const eraserEnabled of [false, true]) {
+      it(`never creates or attempts history DELETE from a current legacy job with mode=${mode} and Lastik=${eraserEnabled}`, async () => {
+        await seed({ createIntent: false, shadowOnly: mode === 'shadow' });
+        const retired = new MessageRetentionStore(
+          prisma as PrismaService,
+          new ConfigService({
+            MESSAGE_RETENTION_MODE: mode,
+            MESSAGE_RETENTION_CANARY_CHAT_IDS: '-1',
+            ERASER_ENABLED: eraserEnabled,
+          }),
+        );
+        const visit = runtimeWithoutEffects(retired);
+        await visit.runtime.process('-1');
+        assert.equal(retired.allows('-1', true), false);
+        assert.equal(visit.receiptCalls(), 0);
+        assert.equal(await prisma.moderationDeleteIntent.count(), 0);
+        assert.equal(await prisma.moderationDeleteIntentReason.count(), 0);
+        assert.equal(await prisma.auditLog.count(), 0);
+        assert.deepEqual(await counts(), { pending: 1, quota: 1, deleted: 0, skipped: 0 });
+        assert.equal(
+          (await prisma.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: '-1' } }))
+            .nextRunAt,
+          null,
+        );
+        assert.equal(
+          (
+            await prisma.messageRetentionCandidate.findUniqueOrThrow({
+              where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
+            })
+          ).intentId,
+          null,
+        );
+      });
+    }
+  }
 
-  it('rejects changed intent versions, dispatch evidence and exhausted admission capacity', async () => {
-    await seed({ status: 'skipped', outcomeCode: 'terminal_review' });
-    const input = await reviewedInput();
-    assert.equal(
-      await store.reopenTerminalCandidate({
-        ...input,
-        expectedAttemptCount: input.expectedAttemptCount + 1,
-      }),
-      false,
-    );
-    assert.equal(
-      await store.reopenTerminalCandidate({ ...input, expectedIntentUpdatedAt: new Date(0) }),
-      false,
-    );
-    await prisma.moderationDeleteIntent.update({
-      where: { id: 'i' },
-      data: { deleteDispatchStartedAt: new Date() },
+  it(
+    'executes a persisted stale BullMQ job against PostgreSQL without creating an intent or DELETE',
+    { skip: !redisUrl, timeout: 15_000 },
+    async () => {
+      await seed({ createIntent: false });
+      const prefix = `retired-retention-${randomUUID()}`;
+      const redis = new Redis(redisUrl!, { maxRetriesPerRequest: null, connectTimeout: 3000 });
+      const connection = {
+        host: redis.options.host,
+        port: redis.options.port,
+        db: redis.options.db,
+        username: redis.options.username,
+        password: redis.options.password,
+        tls: redis.options.tls,
+        maxRetriesPerRequest: null,
+      };
+      const queue = new Queue<MessageRetentionJob>(MESSAGE_RETENTION_QUEUE, { connection, prefix });
+      const retired = new MessageRetentionStore(
+        prisma as PrismaService,
+        new ConfigService({ MESSAGE_RETENTION_MODE: 'on', ERASER_ENABLED: false }),
+      );
+      const visit = runtimeWithoutEffects(retired, queue);
+      let completed!: () => void;
+      let failed!: (error: Error) => void;
+      const completion = new Promise<void>((resolveDone, rejectDone) => {
+        completed = resolveDone;
+        failed = rejectDone;
+      });
+      void completion.catch(() => undefined);
+      let worker: Worker<MessageRetentionJob> | undefined;
+      const deadline = setTimeout(
+        () => failed(new Error('Stale BullMQ job was not completed')),
+        10_000,
+      );
+      try {
+        await queue.waitUntilReady();
+        await queue.add(
+          'chat',
+          { chatId: '-1' },
+          { jobId: 'stale-major-history', attempts: 1, removeOnComplete: true, removeOnFail: true },
+        );
+        assert.equal(await queue.getWaitingCount(), 1);
+        // FLAG: Start the retired executor only after an old-shaped job is durable in Redis.
+        worker = new Worker<MessageRetentionJob>(
+          MESSAGE_RETENTION_QUEUE,
+          async (job) => visit.runtime.process(job.data.chatId),
+          { connection, prefix },
+        );
+        worker.on('completed', () => completed());
+        worker.on('failed', (_job, error) => failed(error));
+        worker.on('error', failed);
+        await completion;
+        assert.equal(visit.receiptCalls(), 0);
+        assert.equal(await prisma.moderationDeleteIntent.count(), 0);
+        assert.equal(await prisma.moderationDeleteIntentReason.count(), 0);
+        assert.deepEqual(await counts(), { pending: 1, quota: 1, deleted: 0, skipped: 0 });
+      } finally {
+        clearTimeout(deadline);
+        await worker?.close();
+        await visit.runtime.onModuleDestroy();
+        // FLAG: Only this fixture's random BullMQ namespace may be removed.
+        await queue.obliterate({ force: true });
+        await queue.close();
+        await redis.quit();
+      }
+    },
+  );
+
+  for (const disabled of [false, true]) {
+    it(`cancels inactive SQL credit once during concurrent maintenance with disabled=${disabled}`, async () => {
+      await seed({ createIntent: false, activationId: disabled ? 'current' : 'previous' });
+      if (disabled)
+        await prisma.messageRetentionPolicy.update({
+          where: { chatId: '-1' },
+          data: { enabled: false },
+        });
+      const visit = runtimeWithoutEffects();
+      await race('quota', () =>
+        Promise.all(Array.from({ length: 4 }, () => visit.runtime.process('-1'))),
+      );
+      await visit.runtime.process('-1');
+      assert.equal(visit.receiptCalls(), 0);
+      assert.equal(await prisma.moderationDeleteIntent.count(), 0);
+      assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 0, skipped: 1 });
+      const candidate = await prisma.messageRetentionCandidate.findUniqueOrThrow({
+        where: { chatId_messageId: { chatId: '-1', messageId: 'm' } },
+      });
+      assert.equal(candidate.status, 'cancelled');
+      assert.equal(candidate.reconcileAfter, null);
+      assert.equal(
+        (await prisma.messageRetentionPolicy.findUniqueOrThrow({ where: { chatId: '-1' } }))
+          .nextRunAt,
+        null,
+      );
     });
-    assert.equal(await store.reopenTerminalCandidate(await reviewedInput()), false);
-    await prisma.moderationDeleteIntent.update({
-      where: { id: 'i' },
-      data: { deleteDispatchStartedAt: null },
-    });
-    await prisma.messageRetentionQuota.update({
-      where: { shard: 0 },
-      data: { pendingCount: 50_000 },
-    });
-    assert.equal(await store.reopenTerminalCandidate(await reviewedInput()), false);
-    assert.equal(await prisma.auditLog.count(), 0);
-    assert.equal((await counts()).pending, 0);
-  });
+  }
 
   it('settles duplicate authenticated removal events once while preserving an independent intent', async () => {
     await seed({ intentStatus: 'PENDING', retentionOwned: false });
@@ -462,24 +587,6 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     assert.equal(
       (await prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: 'i' } })).status,
       'PENDING',
-    );
-  });
-
-  it('keeps reopen and removal racing on the same receipt consistent', async () => {
-    await seed({ status: 'skipped', outcomeCode: 'terminal_review' });
-    const input = await reviewedInput();
-    await race('intent', () =>
-      Promise.all([
-        store.reopenTerminalCandidate(input),
-        prisma.$transaction((tx) =>
-          store.settleRemovedMessage(tx, { chatId: '-1', messageId: 'm' }),
-        ),
-      ]),
-    );
-    assert.deepEqual(await counts(), { pending: 0, quota: 0, deleted: 1, skipped: 0 });
-    assert.equal(
-      (await prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: 'i' } })).status,
-      'ALREADY_ABSENT',
     );
   });
 
@@ -626,26 +733,26 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
     );
   });
 
-  it('resumes a healthy capacity-paused policy once during simultaneous visits', async () => {
+  it('never resumes legacy intake or clears its saved pause during concurrent maintenance', async () => {
+    await seed({ createIntent: false });
+    const pausedAt = new Date(Date.now() - 700_000);
+    const healthySince = new Date(Date.now() - 601_000);
     await prisma.messageRetentionPolicy.update({
       where: { chatId: '-1' },
-      data: {
-        pausedAt: new Date(Date.now() - 700_000),
-        healthySince: new Date(Date.now() - 601_000),
-      },
+      data: { pausedAt, healthySince },
     });
-    await race('quota', () =>
-      Promise.all(Array.from({ length: 4 }, () => store.resumeAdmission('-1'))),
-    );
+    const visit = runtimeWithoutEffects();
+    await Promise.all(Array.from({ length: 4 }, () => visit.runtime.process('-1')));
     const policy = await prisma.messageRetentionPolicy.findUniqueOrThrow({
       where: { chatId: '-1' },
     });
-    assert.equal(policy.pausedAt, null);
-    assert.ok(policy.captureAfter);
-    assert.equal(
-      await prisma.auditLog.count({ where: { action: 'MESSAGE_RETENTION_INTAKE_RESUMED' } }),
-      1,
-    );
+    assert.equal(policy.pausedAt?.getTime(), pausedAt.getTime());
+    assert.equal(policy.healthySince?.getTime(), healthySince.getTime());
+    assert.equal(policy.captureAfter, null);
+    assert.equal(await prisma.auditLog.count(), 0);
+    assert.equal(await prisma.moderationDeleteIntent.count(), 0);
+    assert.equal(visit.receiptCalls(), 0);
+    assert.deepEqual(await counts(), { pending: 1, quota: 1, deleted: 0, skipped: 0 });
   });
 
   it('keeps current and old generations separately selectable and schedules recovery with the mode off', async () => {
@@ -654,7 +761,7 @@ describe('retention production-store PostgreSQL lifecycle races', { skip: !local
       where: { chatId: '-1' },
     });
     assert.deepEqual(
-      (await store.dueCandidates(policy)).map((row) => row.messageId),
+      (await store.dueInactiveCandidates(policy)).map((row) => row.messageId),
       ['m'],
     );
     await store.cancelInactive([candidate]);

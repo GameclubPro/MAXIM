@@ -1469,7 +1469,6 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
       normalizedPayload: storageNormalizedPayload,
       status: WebhookStatus.RECEIVED,
     };
-    const retentionInput = this.messageRetention?.captureInput(update);
     const removedInput = this.retentionRemovedInput(update);
     const voiceSourceInput = captureVoiceSourceInput(update);
     const channelPostDemand = captureChannelPostDemand(update, this.publisherBotId);
@@ -1477,7 +1476,7 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
       this.legacyHolds ||
       channelPostDemand ||
       voiceSourceInput ||
-      ((retentionInput || removedInput) && this.messageRetention)
+      (removedInput && this.messageRetention)
     ) {
       const retention = this.messageRetention;
       return this.prisma.$transaction(
@@ -1495,7 +1494,6 @@ export class WebhookService extends RuntimeWorkerOwner implements OnModuleDestro
             await persistVoiceSource(tx, voiceSourceInput, webhookEventId);
           if (disposition !== 'NOT_HELD' && disposition !== undefined) return webhookEventId;
           if (channelPostDemand && !held) await persistChannelPostDemand(tx, channelPostDemand);
-          if (retentionInput) await retention!.capture(tx, retentionInput);
           if (removedInput) await retention!.settleRemovedMessage(tx, removedInput);
           return webhookEventId;
         },
