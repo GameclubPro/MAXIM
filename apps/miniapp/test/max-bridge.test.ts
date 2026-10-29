@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { openKaravanStorefront } from '../src/lib/karavan-storefront-navigation';
 import {
   isLegacyAndroidSettingsDrilldownUserAgent,
   openLink,
@@ -501,6 +502,37 @@ test('openMaxBotLinkAndClose closes miniapp after bot start handoff bridge open'
   assert.deepEqual(opened, ['https://max.ru/777000_bot?start=broadcast_handoff']);
   assert.deepEqual(assignedUrls, []);
   assert.equal(closeCount, 1);
+});
+
+test('storefront launch never closes Major when MAX does not acknowledge navigation', async () => {
+  let closeCount = 0;
+  const opened: string[] = [];
+  setMockWindow({ openMaxLink: (url) => opened.push(url), close: () => closeCount++ }, []);
+  const url = 'https://max.ru/synthetic_buyer_bot?startapp=mh_example';
+  assert.equal(openKaravanStorefront(url), true);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(opened, [url]);
+  assert.equal(closeCount, 0);
+});
+
+test('storefront launch keeps the caller available after bridge failure or an invalid target', () => {
+  let closeCount = 0;
+  setMockWindow(
+    {
+      openMaxLink: () => {
+        throw new Error('Bridge unavailable');
+      },
+      close: () => closeCount++,
+    },
+    [],
+  );
+  assert.equal(
+    openKaravanStorefront('https://max.ru/synthetic_buyer_bot?startapp=mh_example'),
+    false,
+  );
+  assert.equal(openKaravanStorefront('https://example.com/store'), false);
+  assert.equal(openKaravanStorefront('max://user/123'), false);
+  assert.equal(closeCount, 0);
 });
 
 test('openLink opens external links through bridge browser API', () => {

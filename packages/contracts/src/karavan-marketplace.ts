@@ -217,6 +217,19 @@ export const karavanMarketplaceModuleSchema = z.object({
     chats: z.number().int().nonnegative(),
   }),
   canManage: z.boolean(),
+  access: z
+    .object({
+      reason: z.enum([
+        'allowed',
+        'unbound',
+        'not_admin',
+        'bot_unavailable',
+        'binding_changed',
+        'forbidden',
+      ]),
+      canRecover: z.boolean(),
+    })
+    .optional(),
   currentChatTitle: z.string().max(300).optional(),
   buyerUrl: z.string().url().nullable().optional(),
   previewUrl: z.string().url().nullable().optional(),
