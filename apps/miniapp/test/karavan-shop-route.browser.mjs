@@ -89,7 +89,7 @@ try {
         });
         await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
         const home = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
-        await home.getByRole('button', { name: 'Открыть магазин', exact: true }).waitFor();
+        await home.getByRole('button', { name: 'Посмотреть магазин', exact: true }).waitFor();
         assert.equal(await home.locator('.karavan-shop__menu button').count(), 6);
         assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
         await settleVisualFrame(page);

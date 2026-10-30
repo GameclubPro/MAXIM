@@ -26,7 +26,7 @@ type Props = {
   chatId: string;
   module: KaravanMarketplaceModule;
   busy: boolean;
-  open: (destination: 'view' | 'preview') => void;
+  open: () => void;
   chats: ReactNode;
   publications?: ReactNode;
   publicationsFooter?: ReactNode;
@@ -79,14 +79,11 @@ function Workspace({
             : ''}
         </p>
       </div>
-      <button
-        type="button"
-        className="karavan-module__primary"
-        disabled={busy}
-        onClick={() => open(market.status === 'active' ? 'view' : 'preview')}
-      >
-        Открыть магазин
-      </button>
+      {market.status === 'active' && module.buyerUrl ? (
+        <button type="button" className="karavan-module__primary" disabled={busy} onClick={open}>
+          Посмотреть магазин
+        </button>
+      ) : null}
       <div className="karavan-shop__menu">
         {menu.map((item) => (
           <SettingsSectionToggle
@@ -170,7 +167,10 @@ function Workspace({
               ) : null}
               {section === 'applications' ? <Applications canInvite={canManage} /> : null}
               {section === 'appearance' ? (
-                <Appearance onDirty={setDirty} onPreview={() => open('preview')} />
+                <Appearance
+                  onDirty={setDirty}
+                  onView={market.status === 'active' && module.buyerUrl ? open : undefined}
+                />
               ) : null}
               {section === 'categories' ? <Categories onDirty={setDirty} /> : null}
               {section === 'chats' ? chats : null}

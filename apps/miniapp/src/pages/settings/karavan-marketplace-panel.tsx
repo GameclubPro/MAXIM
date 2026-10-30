@@ -7,14 +7,12 @@ import {
   karavanMarketplaceSetupSchema,
   type KaravanMarketplaceSetup,
   type KaravanMarketplaceOperation,
-  type KaravanMarketplaceHandoffDestination,
 } from '@maxim/contracts/karavan-marketplace';
 import type { ApiTransport } from '../../lib/api/transport';
 import {
   getKaravanMarketplace,
   getKaravanMarketplaceOperation,
   setupKaravanMarketplace,
-  openKaravanMarketplace,
   saveKaravanPublicationChoice,
   cancelKaravanMarketplaceSetup,
 } from '../../lib/api/karavan-marketplace-client';
@@ -48,13 +46,6 @@ export default function KaravanMarketplacePanel({
   discardPublications?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const currentChat = useRef<string | null>(chatId);
-  useEffect(() => {
-    currentChat.current = chatId;
-    return () => {
-      currentChat.current = null;
-    };
-  }, [chatId]);
   const queryKey = ['karavan-marketplace', chatId] as const;
   const query = useQuery({
     queryKey,
@@ -66,8 +57,7 @@ export default function KaravanMarketplacePanel({
   const [saved, setSaved] = useState<KaravanMarketplaceSetup | null>(null);
   const [operation, setOperation] = useState<KaravanMarketplaceOperation | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [retryDestination, setRetryDestination] =
-    useState<KaravanMarketplaceHandoffDestination | null>(null);
+  const [retryOpen, setRetryOpen] = useState(false);
   const returningFromShop = useRef(false);
   const [hydrated, setHydrated] = useState(false);
   const module = query.data?.enabled ? query.data : null;
@@ -173,30 +163,11 @@ export default function KaravanMarketplacePanel({
     const timer = window.setTimeout(() => setup.mutate(saved), 1200);
     return () => window.clearTimeout(timer);
   }, [operation, saved, setup.isPending]);
-  const handoff = useMutation({
-    mutationFn: async (destination: KaravanMarketplaceHandoffDestination) => ({
-      ...(await openKaravanMarketplace(api, chatId, module!.marketplace!.id, destination)),
-      sourceChatId: chatId,
-    }),
-    onSuccess: (result) => {
-      if (currentChat.current !== result.sourceChatId) return;
-      if (!openKaravanStorefront(result.url)) {
-        setNotice('Не удалось открыть магазин. Повторите переход.');
-        return;
-      }
-      returningFromShop.current = true;
-      setNotice(null);
-    },
-    onError: (error) => {
-      if (currentChat.current !== chatId) return;
-      setNotice(describeUserFacingError(error, 'Не удалось открыть магазин. Повторите попытку.'));
-    },
-  });
   useEffect(() => {
     const refresh = () => {
       if (!returningFromShop.current || document.visibilityState === 'hidden') return;
       returningFromShop.current = false;
-      setRetryDestination(null);
+      setRetryOpen(false);
       setNotice(null);
       void queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', chatId] });
       void queryClient.invalidateQueries({ queryKey: ['karavan-shop', { chatId }] });
@@ -210,10 +181,16 @@ export default function KaravanMarketplacePanel({
       document.removeEventListener('visibilitychange', refresh);
     };
   }, [chatId, queryClient]);
-  const openShop = (destination: KaravanMarketplaceHandoffDestination) => {
-    setRetryDestination(destination);
+  const openShop = () => {
+    if (module?.marketplace?.status !== 'active' || !module.buyerUrl) return;
+    if (!openKaravanStorefront(module.buyerUrl)) {
+      setRetryOpen(true);
+      setNotice('Не удалось открыть магазин. Повторите переход.');
+      return;
+    }
+    returningFromShop.current = true;
+    setRetryOpen(false);
     setNotice(null);
-    handoff.mutate(destination);
   };
   const cancelSetup = useMutation({
     mutationFn: () => cancelKaravanMarketplaceSetup(api, chatId, saved!.operationId),
@@ -276,7 +253,7 @@ export default function KaravanMarketplacePanel({
   const marketplace = module.marketplace;
   const active = marketplace?.status === 'active';
   const canOpen = module.permissions.length > 0;
-  const busy = handoff.isPending || bind.isPending;
+  const busy = bind.isPending;
   const ready = hydrated && bind.hydrated;
   const canEnter =
     canOpen &&
@@ -298,8 +275,8 @@ export default function KaravanMarketplacePanel({
           {notice || bind.error}
         </p>
       ) : null}
-      {retryDestination && !handoff.isPending ? (
-        <button type="button" onClick={() => openShop(retryDestination)}>
+      {retryOpen ? (
+        <button type="button" onClick={openShop}>
           Повторить переход
         </button>
       ) : null}
@@ -429,7 +406,7 @@ export default function KaravanMarketplacePanel({
           ) : null}
           {canEnter && operation?.checkpoints.marketplaceId === marketplace?.id ? (
             <button type="button" disabled={busy} onClick={() => setPendingManagerOpen(true)}>
-              {handoff.isPending ? 'Открываем…' : 'Настроить черновик'}
+              Настроить черновик
             </button>
           ) : null}
         </>
@@ -515,18 +492,8 @@ export default function KaravanMarketplacePanel({
               </button>
             ) : null}
             {active && module.buyerUrl ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (!openKaravanStorefront(module.buyerUrl!)) {
-                    setNotice('Откройте магазин из MAX.');
-                  } else {
-                    returningFromShop.current = true;
-                    setNotice(null);
-                  }
-                }}
-              >
-                Открыть магазин
+              <button type="button" onClick={openShop}>
+                Посмотреть магазин
               </button>
             ) : null}
             <button type="button" onClick={() => void query.refetch()}>

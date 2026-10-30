@@ -16,6 +16,7 @@ const scenarios = [
   'preview_missing',
   'public_view',
   'switch_chat',
+  'bridge_error',
   'active',
   'error',
   'unknown',
@@ -61,11 +62,11 @@ document.documentElement.dataset.maxTheme = new URLSearchParams(location.search)
 document.body.dataset.miniappProfile = 'moderation';
 Object.assign(document.body.style,{margin:'0',padding:'20px 16px',background:'var(--color-surface)',fontFamily:'var(--font-body)'});
 const uuid='a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10';
-const marketplace={id:uuid,networkId:'c41eba17-407e-4e51-b23c-1dd3edca4e63',publicSlug:'synthetic-shop',name:'Магазин соседей — длинное название для проверки переноса',description:null,kind:'chat',status:scenario==='paused'?'paused':['active','existing','existing_unknown','existing_rules_changed','existing_options_error','choice','public_view','switch_chat'].includes(scenario)?'active':'draft',admissionPolicy:'applications',logoImageUrl:null,coverImageUrl:null,editRevision:1,policyRevision:1,orderRevision:1,visibilityRevision:1};
+const marketplace={id:uuid,networkId:'c41eba17-407e-4e51-b23c-1dd3edca4e63',publicSlug:'synthetic-shop',name:'Магазин соседей — длинное название для проверки переноса',description:null,kind:'chat',status:scenario==='paused'?'paused':['active','existing','existing_unknown','existing_rules_changed','existing_options_error','choice','public_view','switch_chat','bridge_error'].includes(scenario)?'active':'draft',admissionPolicy:'applications',logoImageUrl:null,coverImageUrl:null,editRevision:1,policyRevision:1,orderRevision:1,visibilityRevision:1};
 const binding={id:'9c9e1a8e-533f-49f8-9d5e-2bbad494bb74',chatId:'-123',chatTitle:'Соседи',state:scenario==='recovery'?'revoked':'verified',generation:1,revision:1,verifiedAt:new Date().toISOString()};
-let connected=['active','draft','draft_empty','paused','preview_missing','public_view','switch_chat','recovery','access_changed','disconnect','reviewer','choice'].includes(scenario); let reads=0; let setups=Number(sessionStorage.getItem('setups')||0); let operation=JSON.parse(sessionStorage.getItem('operation')||'null'); let chosen=false; let optionReads=0; let previewReads=0; let recovered=false;
+let connected=['active','draft','draft_empty','paused','preview_missing','public_view','switch_chat','bridge_error','recovery','access_changed','disconnect','reviewer','choice'].includes(scenario); let reads=0; let setups=Number(sessionStorage.getItem('setups')||0); let operation=JSON.parse(sessionStorage.getItem('operation')||'null'); let chosen=false; let optionReads=0; let previewReads=0; let recovered=false;
 if(scenario==='server_restore') { const request={operationId:uuid,chatIds:['-123','-456'],create:{name:'Сохранённый магазин',rules:{text:'Rules',allowedCategoryIds:['services'],allowedSubcategoryIds:[]}}}; operation={operationId:uuid,state:'partial',request,checkpoints:{marketplaceId:uuid,bindings:request.chatIds.map(chatId=>({chatId,state:'failed',bindingId:null,generation:null}))}}; }
-window.__karavanRequests=[]; window.__karavanOpened=[]; window.__karavanClosed=0; window.WebApp={openMaxLink:(url)=>window.__karavanOpened.push(url),close:()=>{window.__karavanClosed++}};
+window.__karavanRequests=[]; window.__karavanOpened=[]; window.__karavanClosed=0; window.WebApp={openMaxLink:(url)=>{if(scenario==='bridge_error'&&!window.__bridgeRetry) throw new Error('Bridge unavailable');window.__karavanOpened.push(url)},close:()=>{window.__karavanClosed++}};
 const api={request:async(path,init={})=>{
   window.__karavanRequests.push({path,body:init.body?JSON.parse(init.body):null});
   if(path.endsWith('/handoffs')) { const input=JSON.parse(init.body); const result={url:['view','preview'].includes(input.destination)?'https://max.ru/synthetic_buyer_bot?startapp=mh_'+('x'.repeat(43)):'https://max.ru/synthetic_seller_bot?startapp=community_h_'+('x'.repeat(43)),expiresAt:new Date(Date.now()+120000).toISOString()}; if(scenario==='switch_chat') return new Promise(resolve=>{window.__resolveKaravanHandoff=()=>resolve(result)}); return result; }
@@ -93,7 +94,7 @@ const api={request:async(path,init={})=>{
   if(path.includes('/operations/')) return operation;
   if(scenario==='error' && reads++===0) throw new Error('Сеть недоступна');
   if(scenario==='loading') await new Promise(resolve=>setTimeout(resolve,800));
-  return {enabled:true,actorMaxUserId:'777',sellerBotUrl:'https://max.ru/synthetic_seller_bot',setupOperation:scenario==='server_restore'?operation:null,currentChatTitle:'Соседи',buyerUrl:connected?'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop':null,previewUrl:connected&&scenario!=='preview_missing'&&['draft','paused'].includes(marketplace.status)?'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop':null,bindings:connected?[binding]:[],publicationChoices:scenario==='choice'&&!chosen?[{id:uuid,marketplaceId:uuid,marketplaceName:marketplace.name,chatId:'-123',expiresAt:new Date(Date.now()+900000).toISOString(),stores:[{id:uuid,name:'Первая витрина'},{id:'bb669048-0279-4a35-987c-60f94593163e',name:'Вторая витрина'}]}]:[],marketplace:connected?(path.includes('/-456/')?{...marketplace,name:'Другой магазин'}:marketplace):null,binding:connected?binding:null,access:{reason:!recovered&&(scenario==='access_changed'||scenario==='recovery')?'binding_changed':scenario==='public_view'?'forbidden':'allowed',canRecover:!recovered&&(scenario==='recovery'||scenario==='access_changed')},permissions:scenario==='public_view'||(!recovered&&scenario==='access_changed')?[]:scenario==='reviewer'?['review_listing']:['manage_network','bind_chat','manage_marketplace','review_listing'],counts:{listings:connected&&scenario!=='draft_empty'?12:0,pendingApplications:connected&&scenario!=='draft_empty'?3:0,chats:connected?2:0},canManage:scenario!=='reviewer'};
+  return {enabled:true,actorMaxUserId:'777',sellerBotUrl:'https://max.ru/synthetic_seller_bot',setupOperation:scenario==='server_restore'?operation:null,currentChatTitle:'Соседи',buyerUrl:connected?'https://max.ru/synthetic_buyer_bot?startapp=m_'+(path.includes('/-456/')?'other-shop':'synthetic-shop'):null,previewUrl:connected&&scenario!=='preview_missing'&&['draft','paused'].includes(marketplace.status)?'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop':null,bindings:connected?[binding]:[],publicationChoices:scenario==='choice'&&!chosen?[{id:uuid,marketplaceId:uuid,marketplaceName:marketplace.name,chatId:'-123',expiresAt:new Date(Date.now()+900000).toISOString(),stores:[{id:uuid,name:'Первая витрина'},{id:'bb669048-0279-4a35-987c-60f94593163e',name:'Вторая витрина'}]}]:[],marketplace:connected?(path.includes('/-456/')?{...marketplace,name:'Другой магазин'}:marketplace):null,binding:connected?binding:null,access:{reason:!recovered&&(scenario==='access_changed'||scenario==='recovery')?'binding_changed':scenario==='public_view'?'forbidden':'allowed',canRecover:!recovered&&(scenario==='recovery'||scenario==='access_changed')},permissions:scenario==='public_view'||(!recovered&&scenario==='access_changed')?[]:scenario==='reviewer'?['review_listing']:['manage_network','bind_chat','manage_marketplace','review_listing'],counts:{listings:connected&&scenario!=='draft_empty'?12:0,pendingApplications:connected&&scenario!=='draft_empty'?3:0,chats:connected?2:0},canManage:scenario!=='reviewer'};
 },requestKeepalive:()=>{}};
 function Harness(){const [chatId,setChatId]=React.useState('-123');window.__switchKaravanChat=()=>setChatId('-456');return <Panel key={chatId} api={api} chatId={chatId}/>;}
 createRoot(document.getElementById('test-root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}})}><Harness/></QueryClientProvider>);
@@ -383,101 +384,64 @@ try {
           }
           await page.locator('.karavan-module h3').waitFor();
           await geometry(page, `${width}-${theme}-${scenario}`);
-          if (scenario === 'draft_empty')
-            assert.equal(
-              await page.locator('.karavan-module__primary').innerText(),
-              'Открыть магазин',
-            );
-          if (scenario === 'active' || scenario === 'draft')
-            assert.equal(
-              await page.locator('.karavan-module__primary').innerText(),
-              'Открыть магазин',
-            );
-          if (['active', 'public_view'].includes(scenario)) {
-            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
-            await page.waitForFunction(() => window.__karavanOpened.length === 1);
-            const request = await page.evaluate(() =>
-              window.__karavanRequests.find((item) => item.path.endsWith('/handoffs')),
-            );
-            if (scenario === 'active') {
-              assert.equal(request.body.destination, 'view');
-              assert.match(await page.evaluate(() => window.__karavanOpened[0]), /startapp=mh_/u);
+          if (['active', 'public_view', 'bridge_error'].includes(scenario)) {
+            await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            if (scenario === 'bridge_error') {
+              await page
+                .getByRole('alert')
+                .filter({ hasText: 'Не удалось открыть магазин' })
+                .waitFor();
+              assert.equal(await page.evaluate(() => window.__karavanClosed), 0);
+              await page.evaluate(() => {
+                window.__bridgeRetry = true;
+              });
               await page.getByRole('button', { name: 'Повторить переход', exact: true }).click();
-              await page.waitForFunction(() => window.__karavanOpened.length === 2);
-              const requests = await page.evaluate(() =>
-                window.__karavanRequests.filter((item) => item.path.endsWith('/handoffs')),
-              );
-              assert.equal(requests.length, 2, 'each explicit retry must request a fresh handoff');
-              assert.notEqual(requests[0].body.commandId, requests[1].body.commandId);
-              const beforeReturn = await page.evaluate(
-                () => window.__karavanRequests.filter((item) => !item.body).length,
-              );
-              await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
-              await page.waitForFunction(
-                (before) => window.__karavanRequests.filter((item) => !item.body).length > before,
-                beforeReturn,
-              );
-              assert.equal(
-                await page.getByRole('button', { name: 'Повторить переход', exact: true }).count(),
-                0,
-              );
-            } else {
-              assert.equal(request, undefined);
-              assert.equal(
-                await page.getByRole('button', { name: 'Управлять', exact: true }).count(),
-                0,
-              );
-              assert.match(
-                await page.evaluate(() => window.__karavanOpened[0]),
-                /startapp=m_synthetic-shop$/u,
-              );
-              const beforeReturn = await page.evaluate(() => window.__karavanRequests.length);
-              await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
-              await page.waitForFunction(
-                (before) => window.__karavanRequests.length > before,
-                beforeReturn,
-              );
             }
-          }
-          if (['draft', 'draft_empty', 'paused'].includes(scenario)) {
-            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
             await page.waitForFunction(() => window.__karavanOpened.length === 1);
+            assert.equal(
+              await page.evaluate(() => window.__karavanOpened[0]),
+              'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop',
+            );
             assert.equal(
               await page.evaluate(
                 () =>
-                  window.__karavanRequests.find((item) => item.path.endsWith('/handoffs')).body
-                    .destination,
+                  window.__karavanRequests.filter((item) => item.path.endsWith('/handoffs')).length,
               ),
-              'preview',
-            );
-          }
-          if (scenario === 'preview_missing') {
-            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).waitFor();
-            assert.equal(
-              await page.getByRole('button', { name: 'Предпросмотр', exact: true }).count(),
               0,
             );
             assert.equal(
-              await page.getByRole('button', { name: 'Открыть магазин', exact: true }).count(),
-              1,
+              await page.getByRole('button', { name: 'Повторить переход', exact: true }).count(),
+              0,
+            );
+            const beforeReturn = await page.evaluate(() => window.__karavanRequests.length);
+            await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+            await page.waitForFunction(
+              (before) => window.__karavanRequests.length > before,
+              beforeReturn,
+            );
+          }
+          if (['draft', 'draft_empty', 'paused', 'preview_missing'].includes(scenario)) {
+            assert.equal(
+              await page
+                .getByRole('button', { name: /^(Посмотреть магазин|Предпросмотр)$/u })
+                .count(),
+              0,
+            );
+            assert.equal(
+              await page.evaluate(
+                () => window.__karavanRequests.filter((item) => item.body).length,
+              ),
+              0,
+              'reading a closed shop must neither activate it nor create a private preview',
             );
           }
           if (scenario === 'switch_chat') {
-            await page.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
-            await page.waitForFunction(() => typeof window.__resolveKaravanHandoff === 'function');
             await page.evaluate(() => window.__switchKaravanChat());
             await page.getByRole('heading', { name: 'Другой магазин' }).waitFor();
-            await page.evaluate(async () => {
-              window.__resolveKaravanHandoff();
-              await new Promise((resolve) =>
-                requestAnimationFrame(() => requestAnimationFrame(resolve)),
-              );
-            });
-            assert.deepEqual(
-              await page.evaluate(() => window.__karavanOpened),
-              [],
-              'old chat response must not navigate the current screen',
-            );
+            await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            assert.deepEqual(await page.evaluate(() => window.__karavanOpened), [
+              'https://max.ru/synthetic_buyer_bot?startapp=m_other-shop',
+            ]);
           }
           assert.equal(
             await page.locator('.karavan-module__metrics,.karavan-module__eyebrow').count(),
