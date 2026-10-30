@@ -68,7 +68,16 @@ export default function KaravanMarketplacePanel({
   const [hydrated, setHydrated] = useState(false);
   const module = query.data?.enabled ? query.data : null;
   const storageKey = module ? `karavan-setup:v1:${module.actorMaxUserId}:${chatId}` : null;
-  const bind = useKaravanMarketplaceBinding(api, chatId, module?.actorMaxUserId);
+  const bind = useKaravanMarketplaceBinding(
+    api,
+    chatId,
+    module?.actorMaxUserId,
+    query.isSuccess && query.isFetchedAfterMount && !query.isFetching ? module?.binding : undefined,
+  );
+  useEffect(() => {
+    if (bind.hydrated && bind.request && !query.isFetchedAfterMount && !query.isFetching)
+      void query.refetch();
+  }, [bind.hydrated, bind.request, query.isFetchedAfterMount, query.isFetching, query.refetch]);
   const [pendingManagerOpen, setPendingManagerOpen] = useState(false);
   useStorefrontBack(
     () => setPendingManagerOpen(false),
