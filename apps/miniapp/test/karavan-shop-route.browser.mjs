@@ -87,8 +87,8 @@ try {
           safeTop: 0,
           safeBottom: engineName === 'webkit' ? 34 : 24,
         });
-        await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-        const home = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+        await page.getByRole('button', { name: 'Магазин чата', exact: true }).click();
+        const home = page.getByRole('dialog', { name: 'Магазин чата', exact: true });
         await home.getByRole('button', { name: 'Посмотреть магазин чата', exact: true }).waitFor();
         assert.deepEqual(await home.locator('.karavan-shop__menu button').allTextContents(), [
           'Витрины',
@@ -143,8 +143,8 @@ try {
         });
         await settleVisualFrame(page);
         await publications.getByRole('button', { name: 'Сохранить', exact: true }).click();
-        await page.getByText('Блок «Интернет-витрина» сохранен', { exact: true }).waitFor();
-        await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+        await page.getByText('Блок «Магазин чата» сохранен', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Магазин чата', exact: true }).click();
         await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
         await publications.getByText('Изменить текст', { exact: true }).click();
         assert.equal(await message.inputValue(), 'Объявления нашего чата');

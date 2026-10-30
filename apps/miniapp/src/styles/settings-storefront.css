@@ -187,6 +187,11 @@
     background: var(--color-surface);
   }
 
+  .settings-storefront-editor__message--request {
+    margin-left: 20px;
+    background: var(--color-accent-soft);
+  }
+
   .settings-storefront-editor__sender {
     color: var(--text-secondary);
     font-size: 0.7rem;

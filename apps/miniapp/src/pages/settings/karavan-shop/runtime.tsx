@@ -1,18 +1,47 @@
 import { ApiRequestError } from '../../../lib/api-request-error';
 import { createContext, useContext } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { KaravanMarketplaceModule } from '@maxim/contracts/karavan-marketplace';
 import type { ApiTransport } from '../../../lib/api/transport';
 import {
   manageKaravanShop,
   type ShopScope,
   type ShopCommand,
+  type ShopResponse,
 } from '../../../lib/api/karavan-shop-client';
 import { describeUserFacingError } from '../../../lib/user-facing-error';
-export const ShopContext = createContext<{ api: ApiTransport; scope: ShopScope } | null>(null);
+export type ShopModule = KaravanMarketplaceModule & { sellerBotUrl?: string };
+export const ShopContext = createContext<{
+  api: ApiTransport;
+  scope: ShopScope;
+  module: ShopModule;
+} | null>(null);
 export function useShop() {
   const value = useContext(ShopContext);
   if (!value) throw new Error('Missing shop');
   return value;
+}
+export function useShopPages<K extends 'listings' | 'applications'>(
+  command: Extract<ShopCommand, { operation: 'listings' | 'applications' }> & { operation: K },
+) {
+  const { api, scope } = useShop();
+  return useInfiniteQuery({
+    queryKey: ['karavan-shop', scope, 'pages', command],
+    initialPageParam: null as string | null,
+    queryFn: ({ signal, pageParam }) =>
+      manageKaravanShop<K>(
+        api,
+        scope,
+        { ...command, input: { ...command.input, cursor: pageParam } } as Extract<
+          ShopCommand,
+          { operation: K }
+        >,
+        signal,
+      ),
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    retry: false,
+    staleTime: 10_000,
+  });
 }
 export function useShopQuery<K extends ShopCommand['operation']>(
   command: Extract<ShopCommand, { operation: K }>,
@@ -27,17 +56,19 @@ export function useShopQuery<K extends ShopCommand['operation']>(
     staleTime: 10_000,
   });
 }
-export function useShopMutation(onSuccess?: (command: ShopCommand) => void) {
+export function useShopMutation(
+  onSuccess?: (command: ShopCommand, data: ShopResponse<ShopCommand['operation']>) => void,
+) {
   const { api, scope } = useShop();
   const client = useQueryClient();
   return useMutation({
     mutationFn: (command: ShopCommand) => manageKaravanShop(api, scope, command),
-    onSuccess: async (_data, thisCommand) => {
+    onSuccess: async (data, thisCommand) => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['karavan-shop', scope] }),
         client.invalidateQueries({ queryKey: ['karavan-marketplace', scope.chatId] }),
       ]);
-      onSuccess?.(thisCommand);
+      onSuccess?.(thisCommand, data);
     },
   });
 }
