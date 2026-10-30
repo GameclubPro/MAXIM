@@ -93,12 +93,20 @@ integration('Publication send fences on real PostgreSQL and Redis', () => {
     const priorityHttpSource: MaxClientService['priorityHttpSource'] = new AsyncLocalStorage();
     const recordPriorityHttpAttempt: MaxClientService['recordPriorityHttpAttempt'] = () =>
       undefined;
+    const muteApiBudget: Pick<
+      MaxClientService['muteApiBudget'],
+      'consumeRequest' | 'assertRequestAllowed'
+    > = {
+      consumeRequest: () => undefined,
+      assertRequestAllowed: () => undefined,
+    };
     // FLAG: Exercise the production send/receipt boundary; only MAX HTTP and
     // unrelated route/rate scheduling are replaced. No network send is available.
     return Object.assign(Object.create(MaxClientService.prototype), {
       actionLedgerService: selectedLedger,
       mutationExecutionScope: new AsyncLocalStorage(),
       priorityHttpSource,
+      muteApiBudget,
       recordPriorityHttpAttempt,
       baseUrl: 'https://publication-send-harness.invalid',
       getCurrentBot: () => ({ id: botId, token: 'synthetic-no-network-token' }),

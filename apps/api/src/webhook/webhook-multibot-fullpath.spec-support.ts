@@ -204,6 +204,7 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
     MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: '*',
     MAX_ROUTED_MUTATIONS_MODE: 'on',
     MAX_CROSS_BOT_EDIT_DELETE_ENABLED: true,
+    MAX_MUTED_USER_API_PROTECTION_ENABLED: true,
     MESSAGE_DUPLICATE_ENABLED: true,
     APP_SERVICE_NAME: split?.role ?? 'api-moderation',
     MODERATION_BACKGROUND_TASKS_ENABLED: false,
@@ -337,8 +338,8 @@ export async function createMultibotHarness(options: MultibotHarnessOptions) {
             botId: bot.id,
             ...(messageId ? { messageId } : {}),
             body: request.data,
-            ...(method !== 'get' && path.endsWith('/members')
-              ? { params: { ...request.params } }
+            ...(path.endsWith('/members')
+              ? { params: { ...Object.fromEntries(url.searchParams), ...request.params } }
               : {}),
           };
           requests.push(call);
