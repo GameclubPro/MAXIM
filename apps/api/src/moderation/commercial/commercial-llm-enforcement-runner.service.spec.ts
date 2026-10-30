@@ -2,7 +2,8 @@ import { randomInt } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type Redis from 'ioredis';
-import type { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
+import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
+import type { SystemModeSnapshot } from '../../system/system-mode.service';
 import type { ModerationDeleteIntentService } from '../moderation-delete-intent.service';
 import { CommercialLlmEnforcementRunnerService } from './commercial-llm-enforcement-runner.service';
 import { CommercialLlmEnforcementService } from './commercial-llm-enforcement.service';
@@ -302,6 +303,93 @@ describe('commercial AI runner resource lifecycle', () => {
       .mock.calls.filter(([key]) => key === COMMERCIAL_LLM_ENFORCEMENT_KEYS.status)
       .map(([, value]) => JSON.parse(String(value)) as Record<string, unknown>);
   }
+
+  it.each([
+    { label: 'automatic stabilization', allowed: true },
+    { label: 'active MAX degradation', condition: 'max_api', allowed: false },
+    { label: 'mixed degradation', condition: 'mixed', allowed: false },
+    { label: 'manual maintenance', manual: true, allowed: false },
+    { label: 'fresh queue pressure', lag: 3, allowed: false },
+    { label: 'CPU pressure', load: 1.3, allowed: false },
+    { label: 'IO pressure', ioWait: 0.4, allowed: false },
+    { label: 'slow CPU admission', load: 0.9, allowed: false },
+    { label: 'background MAX traffic pressure', share: 0.8, allowed: false },
+  ] as const)(
+    'restores classification during recovery while preserving $label',
+    async (scenario) => {
+      const mode: SystemModeSnapshot = {
+        mode: 'degrade',
+        source: 'manual' in scenario ? 'manual' : 'auto',
+        condition:
+          'manual' in scenario
+            ? 'manual'
+            : 'condition' in scenario
+              ? scenario.condition
+              : 'stabilizing',
+        reason:
+          'manual' in scenario
+            ? 'maintenance'
+            : 'condition' in scenario
+              ? `${scenario.condition} pressure`
+              : 'recovery window in progress',
+        manualMode: 'manual' in scenario ? 'degrade' : null,
+        updatedAt: new Date().toISOString(),
+        queueLagSec: 0,
+        action: {
+          windowSec: 60,
+          total: 100,
+          success: 100,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        },
+      };
+      const pressure = {
+        mode,
+        queues: { operationalLagSec: 'lag' in scenario ? scenario.lag : 0 },
+        backgroundShare: 'share' in scenario ? scenario.share : 0,
+        systemPressure: {
+          enabled: true,
+          cpuCount: 24,
+          loadRatio1m: 'load' in scenario ? scenario.load : 0.1,
+          ioWaitRatio: 'ioWait' in scenario ? scenario.ioWait : 0,
+          thresholds: { loadSlow: 0.85, loadPause: 1.25, ioWaitSlow: 0.15, ioWaitPause: 0.35 },
+        },
+        workerSkew: { groupName: null, pressure: 0, totalPressure: 0, share: 0 },
+      };
+      const realGovernor = new BackgroundRuntimeGovernorService(
+        {} as never,
+        { getEffectiveSnapshot: jest.fn().mockResolvedValue(mode) } as never,
+        {} as never,
+        config,
+      );
+      jest
+        .spyOn(
+          realGovernor as unknown as { getPressureSnapshot(): Promise<typeof pressure> },
+          'getPressureSnapshot',
+        )
+        .mockResolvedValue(pressure);
+      governor.decide.mockImplementation((options) => realGovernor.decide(options));
+      const run = jest
+        .spyOn(CommercialLlmEnforcementProcessor.prototype, 'run')
+        .mockResolvedValue({ outcome: 'idle' });
+
+      runner!.onModuleInit();
+      await jest.advanceTimersByTimeAsync(500);
+
+      if (scenario.allowed) {
+        expect(mailbox.advertise).toHaveBeenCalled();
+        expect(run).toHaveBeenCalled();
+        expect(mailbox.withdraw).not.toHaveBeenCalled();
+      } else {
+        expect(mailbox.withdraw).toHaveBeenCalled();
+        expect(mailbox.advertise).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+      }
+      expect(intents.ensureIntent).not.toHaveBeenCalled();
+    },
+  );
 
   it('identifies one observation generation without exposing its worker lease or declaring initial readiness', async () => {
     const logs = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);

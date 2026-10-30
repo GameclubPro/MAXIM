@@ -2711,9 +2711,13 @@ export class ModerationDeleteIntentService {
               errorCode: 'predelete_presence_unknown',
               retryDelayMs: Math.max(details.retryDelayMs ?? 0, localRetryDelayMs),
             };
-            if (details.statusCode !== null && details.statusCode >= 500) {
-              // FLAG: A MAX server failure is not bot-specific capability evidence. Keep the
-              // dispatch marker and retry later instead of amplifying the outage across bots.
+            if (
+              details.statusCode === 429 ||
+              error instanceof MaxApiInternalRateLimitError ||
+              (details.statusCode !== null && details.statusCode >= 500)
+            ) {
+              // FLAG: Quota/server failures prove neither absence nor capability loss. Keep
+              // the dispatch marker and retry floor without more access or peer probes.
               return this.finishRetryableAttempt(
                 { ...intent, lastBotId: botId },
                 leaseToken,
@@ -2975,7 +2979,10 @@ export class ModerationDeleteIntentService {
                   {
                     ...details,
                     status: 'RETRYABLE',
-                    retryDelayMs: this.retryDelayMs(intent.attemptCount),
+                    retryDelayMs: Math.max(
+                      details.retryDelayMs ?? 0,
+                      this.retryDelayMs(intent.attemptCount),
+                    ),
                   },
                   true,
                 );
@@ -8765,7 +8772,6 @@ export class ModerationDeleteIntentService {
     const response = this.asRecord(row?.response);
     const data = this.asRecord(response?.data);
     const nestedError = this.asRecord(data?.error);
-    const headers = this.asRecord(response?.headers);
     const rawStatus = response?.status ?? row?.statusCode ?? row?.status;
     const statusCode = Number.isFinite(Number(rawStatus)) ? Number(rawStatus) : null;
     const errorCode =
@@ -8789,7 +8795,7 @@ export class ModerationDeleteIntentService {
       statusCode,
       errorCode,
       message,
-      retryDelayMs: this.extractRetryAfterMs(row, data, headers),
+      retryDelayMs: readMaxRetryAfterMs(error, Date.now()) || null,
     };
   }
 
@@ -9608,31 +9614,6 @@ export class ModerationDeleteIntentService {
     } catch {
       return JSON.stringify({ serializationError: 'metadata_not_serializable' });
     }
-  }
-
-  private extractRetryAfterMs(
-    error: Record<string, unknown> | null,
-    data: Record<string, unknown> | null,
-    headers: Record<string, unknown> | null,
-  ): number | null {
-    for (const rawValue of [error?.retryAfterMs, data?.retry_after_ms, data?.retryAfterMs]) {
-      const numeric = Number(rawValue);
-      if (Number.isFinite(numeric) && numeric > 0) {
-        return Math.ceil(numeric);
-      }
-    }
-
-    const rawHeader = headers?.['retry-after'] ?? headers?.['Retry-After'];
-    const header =
-      Array.isArray(rawHeader) && rawHeader.length > 0
-        ? String(rawHeader[0])
-        : String(rawHeader ?? '');
-    const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.max(1_000, Math.ceil(seconds * 1_000));
-    }
-    const retryAtMs = Date.parse(header);
-    return Number.isFinite(retryAtMs) ? Math.max(1_000, retryAtMs - Date.now()) : null;
   }
 
   private resolveRoutingPolicy(

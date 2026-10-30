@@ -67,7 +67,13 @@ never occupy the waiting confirmation slot. If that optional audit alone returns
 and `auditOutcome=capacity_skipped`, after fresh abort and source-ownership checks.
 This is not a completed audit. Other audit errors, cancellation and authority loss
 still fail closed; positives and uncertainty still require server confirmation.
-The governor and 12 GiB headroom guard remain. Busy, absent,
+The runner permits classification during an automatic stabilization window only
+when the governor's fresh queue and host checks allow `run`. Active MAX or mixed
+degradation, manual maintenance, queue pressure, CPU/IO pressure and background MAX
+traffic pressure still pause admission. Recovery must not require an uninterrupted
+normal-mode window before advertising model capacity. Final source-bound deletion
+checks remain independent of admission. The governor and 12 GiB headroom guard remain.
+Busy, absent,
 pressured, stale, oversized, uncertain and failed work cannot authorize deletion.
 Actual rates can be lower than the admission limits: this is **partial traffic
 coverage**, not a promise to classify every message. Failure leaves that message
