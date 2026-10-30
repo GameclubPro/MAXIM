@@ -244,7 +244,7 @@ export default function ShopAppearance({ onView }: { onView?: () => void }) {
             disabled={dirty || uploading || mutation.isPending}
             onClick={onView}
           >
-            Посмотреть магазин
+            Посмотреть магазин чата
           </button>
         ) : null}
         {!dirty && query.data.hasChanges ? (

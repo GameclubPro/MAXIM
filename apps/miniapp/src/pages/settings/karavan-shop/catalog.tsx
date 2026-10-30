@@ -1,6 +1,7 @@
 import { MoveHandle } from './move-handle';
+import { ListingContentDisclosure } from './listing-content-disclosure';
 import { useEffect, useState } from 'react';
-import { useStorefrontDirty } from '../storefront-workspace';
+import { useStorefrontDirty, useStorefrontWorkspace } from '../storefront-workspace';
 import type {
   MarketplaceOfferCard,
   MarketplaceListing,
@@ -30,10 +31,19 @@ const publicationReasons = {
   no_published_offers: 'Нет опубликованных объявлений',
 } satisfies Record<MarketplaceListing['publicationReason'], string>;
 
-function Sellers({ search, canArrange }: { search: string; canArrange: boolean }) {
+function Sellers({
+  search,
+  canArrange,
+  onEmpty,
+}: {
+  search: string;
+  canArrange: boolean;
+  onEmpty: () => void;
+}) {
   const [cursor, setCursor] = useState<string | null>(null),
     [reason, setReason] = useState('');
   const [selected, setSelected] = useState<MarketplaceListing | null>(null);
+  const [arranging, setArranging] = useState(false);
   useStorefrontDirty('catalog-seller', !!selected && !!reason.trim());
   const query = useShopQuery<'listings'>({
     operation: 'listings',
@@ -49,6 +59,13 @@ function Sellers({ search, canArrange }: { search: string; canArrange: boolean }
   return (
     <>
       <MutationFailure mutation={mutation} />
+      {canArrange &&
+      (query.data.orderableTotal ?? query.data.listings.length) > 1 &&
+      query.data.listings.some((listing) => listing.position) ? (
+        <button type="button" aria-pressed={arranging} onClick={() => setArranging(!arranging)}>
+          {arranging ? 'Готово' : 'Изменить порядок'}
+        </button>
+      ) : null}
       {query.data.listings.length ? (
         query.data.listings.map((listing, index, list) => (
           <article
@@ -59,7 +76,7 @@ function Sellers({ search, canArrange }: { search: string; canArrange: boolean }
           >
             <div className="karavan-shop__identity">
               <strong>{listing.storeName}</strong>
-              {canArrange && listing.position ? (
+              {canArrange && arranging && listing.position ? (
                 <MoveHandle
                   label={listing.storeName}
                   index={index}
@@ -81,6 +98,7 @@ function Sellers({ search, canArrange }: { search: string; canArrange: boolean }
               ) : null}
             </div>
             <p>{publicationReasons[listing.publicationReason]}</p>
+            <ListingContentDisclosure listingId={listing.id} />
             {['approved', 'suspended'].includes(listing.reviewState) ? (
               <>
                 <div className="karavan-module__entry-actions">
@@ -95,9 +113,8 @@ function Sellers({ search, canArrange }: { search: string; canArrange: boolean }
                     {listing.reviewState === 'suspended' ? 'Показать' : 'Скрыть'}
                   </button>
                 </div>
-                {canArrange ? (
-                  <details className="karavan-shop__reorder">
-                    <summary>Порядок продавца</summary>
+                {canArrange && arranging ? (
+                  <div className="karavan-shop__reorder">
                     <div className="karavan-module__entry-actions">
                       <button
                         type="button"
@@ -156,7 +173,7 @@ function Sellers({ search, canArrange }: { search: string; canArrange: boolean }
                         </button>
                       ) : null}
                     </div>
-                  </details>
+                  </div>
                 ) : null}
               </>
             ) : null}
@@ -199,7 +216,14 @@ function Sellers({ search, canArrange }: { search: string; canArrange: boolean }
           </article>
         ))
       ) : (
-        <p>Продавцов пока нет</p>
+        <div className="karavan-module__actions">
+          <p>{search ? 'Ничего не найдено' : 'Витрин пока нет'}</p>
+          {!search ? (
+            <button type="button" onClick={onEmpty}>
+              Посмотреть заявки
+            </button>
+          ) : null}
+        </div>
       )}
       {query.data.nextCursor ? (
         <button type="button" onClick={() => setCursor(query.data.nextCursor)}>
@@ -428,7 +452,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
               );
             })
           ) : (
-            <p>Объявлений пока нет</p>
+            <p>{search ? 'Ничего не найдено' : 'Товаров и услуг пока нет'}</p>
           )}
           {query.data.nextCursor ? (
             <button type="button" onClick={() => setCursor(query.data.nextCursor)}>
@@ -446,8 +470,9 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
   );
 }
 export default function ShopCatalog({ canArrange }: { canArrange: boolean }) {
-  const [tab, setTab] = useState<'offers' | 'sellers'>('offers');
-  const [visited, setVisited] = useState({ offers: true, sellers: false });
+  const workspace = useStorefrontWorkspace();
+  const [tab, setTab] = useState<'offers' | 'sellers'>('sellers');
+  const [visited, setVisited] = useState({ offers: false, sellers: true });
   const selectTab = (next: 'offers' | 'sellers') => {
     setTab(next);
     setVisited((value) => ({ ...value, [next]: true }));
@@ -463,15 +488,15 @@ export default function ShopCatalog({ canArrange }: { canArrange: boolean }) {
       <div
         className="karavan-module__entry-actions"
         role="tablist"
-        aria-label="Каталог"
+        aria-label="Витрины и предложения"
         onKeyDown={(event) => {
           if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
           event.preventDefault();
           const next =
             event.key === 'Home'
-              ? 'offers'
+              ? 'sellers'
               : event.key === 'End'
-                ? 'sellers'
+                ? 'offers'
                 : tab === 'offers'
                   ? 'sellers'
                   : 'offers';
@@ -482,24 +507,24 @@ export default function ShopCatalog({ canArrange }: { canArrange: boolean }) {
         <button
           type="button"
           role="tab"
-          id="shop-tab-offers"
-          aria-controls="shop-tabpanel-offers"
-          tabIndex={tab === 'offers' ? 0 : -1}
-          aria-selected={tab === 'offers'}
-          onClick={() => selectTab('offers')}
-        >
-          Объявления
-        </button>
-        <button
-          type="button"
-          role="tab"
           id="shop-tab-sellers"
           aria-controls="shop-tabpanel-sellers"
           tabIndex={tab === 'sellers' ? 0 : -1}
           aria-selected={tab === 'sellers'}
           onClick={() => selectTab('sellers')}
         >
-          Продавцы
+          Витрины
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="shop-tab-offers"
+          aria-controls="shop-tabpanel-offers"
+          tabIndex={tab === 'offers' ? 0 : -1}
+          aria-selected={tab === 'offers'}
+          onClick={() => selectTab('offers')}
+        >
+          Товары и услуги
         </button>
       </div>
       <label className="karavan-module__field">
@@ -528,7 +553,13 @@ export default function ShopCatalog({ canArrange }: { canArrange: boolean }) {
         hidden={tab !== 'sellers'}
         tabIndex={0}
       >
-        {visited.sellers ? <Sellers search={query} canArrange={canArrange} /> : null}
+        {visited.sellers ? (
+          <Sellers
+            search={query}
+            canArrange={canArrange}
+            onEmpty={() => workspace?.navigate('applications')}
+          />
+        ) : null}
       </div>
     </>
   );

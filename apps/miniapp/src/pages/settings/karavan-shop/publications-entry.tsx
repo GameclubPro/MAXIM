@@ -14,7 +14,7 @@ export default function ShopPublicationsEntry({
     <>
       <StorefrontScreen page="home">
         <SettingsSectionToggle
-          title="Кнопка в чате"
+          title="Кнопки в чате"
           icon="send"
           tone="sky"
           open={false}

@@ -64,6 +64,45 @@
     gap: 14px;
   }
 
+  .settings-storefront-editor__edit > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 44px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 700;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .settings-storefront-editor__edit > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .settings-storefront-editor__edit > summary::after {
+    content: '';
+    width: 8px;
+    height: 8px;
+    margin-inline-end: 3px;
+    border-right: 2px solid var(--text-secondary);
+    border-bottom: 2px solid var(--text-secondary);
+    flex-shrink: 0;
+    transform: rotate(45deg);
+  }
+
+  .settings-storefront-editor__edit[open] > summary::after {
+    transform: rotate(225deg);
+  }
+
+  .settings-storefront-editor__edit-fields {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+    padding-block: 12px;
+  }
+
   .settings-storefront-editor__label {
     align-items: baseline;
     color: var(--text-primary);
@@ -137,8 +176,7 @@
   .settings-storefront-editor__preview {
     display: grid;
     align-content: start;
-    gap: 4px;
-    min-height: 190px;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -190,7 +228,7 @@
     height: 16px;
   }
 
-  .settings-storefront-editor :is(button, input, textarea):focus-visible {
+  .settings-storefront-editor :is(button, input, textarea, summary):focus-visible {
     outline: 2px solid var(--text-secondary);
     outline-offset: 3px;
   }

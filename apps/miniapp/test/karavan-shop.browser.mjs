@@ -59,17 +59,27 @@ try {
             await page.goto(`${url}?theme=${theme}`);
             await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
             const home = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
-            await home.getByRole('button', { name: 'Каталог', exact: true }).waitFor();
+            await home.getByRole('button', { name: 'Витрины', exact: true }).waitFor();
             assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
-            assert.equal(await home.locator('.karavan-shop__menu button').count(), 6);
+            assert.deepEqual(
+              await home.locator('.karavan-shop__menu button').allTextContents(),
+              ['Витрины', 'Заявки', 'Кнопки в чате', 'Настройки'],
+              'the marketplace home has four clean navigation entries',
+            );
+            assert.equal(
+              await home.locator('.karavan-shop__menu p,.karavan-shop__menu small').count(),
+              0,
+            );
             assert.equal(
               await home
-                .getByRole('button', { name: 'Посмотреть магазин', exact: true })
+                .getByRole('button', { name: 'Посмотреть магазин чата', exact: true })
                 .evaluate((el) => getComputedStyle(el).color),
               'rgb(255, 255, 255)',
               'primary action contrast',
             );
-            await home.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            await home
+              .getByRole('button', { name: 'Посмотреть магазин чата', exact: true })
+              .click();
             await page.waitForFunction(() => window.__shopOpened.length === 1);
             assert.ok(
               (await page.evaluate(() => window.__shopOpened[0])).includes('synthetic_buyer_bot'),
@@ -99,26 +109,64 @@ try {
             const close = async (name) => {
               await page.getByRole('dialog', { name, exact: true }).waitFor();
               await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+              if (['Оформление', 'Категории и правила', 'Подключённые чаты'].includes(name)) {
+                await page.getByRole('dialog', { name: 'Настройки', exact: true }).waitFor();
+                await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+              }
               await home.waitFor();
             };
+            const openSetting = async (name) => {
+              await home.getByRole('button', { name: 'Настройки', exact: true }).click();
+              await page
+                .getByRole('dialog', { name: 'Настройки', exact: true })
+                .getByRole('button', { name, exact: true })
+                .click();
+            };
             await shot('home', home);
-            await home.getByRole('button', { name: 'Каталог', exact: true }).click();
-            let panel = page.getByRole('dialog', { name: 'Каталог', exact: true });
+            await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
+            const responsePanel = page.getByRole('dialog', { name: 'Кнопки в чате', exact: true });
+            const responseField = responsePanel.getByRole('textbox', {
+              name: /^Текст ответа бота/,
+            });
+            assert.equal(await responseField.isVisible(), false);
+            await page.evaluate(() => window.__setShopResponseError());
+            await responseField.waitFor();
+            await responseField.fill('Исправленный текст');
+            assert.equal(
+              await responsePanel
+                .locator('.settings-storefront-editor__edit')
+                .evaluate((node) => node.open),
+              true,
+              'correcting an error keeps the text editor open',
+            );
+            await responseField.fill('');
+            await responsePanel.getByText('Изменить текст', { exact: true }).click();
+            await close('Кнопки в чате');
+            await home.getByRole('button', { name: 'Витрины', exact: true }).click();
+            let panel = page.getByRole('dialog', { name: 'Витрины', exact: true });
             assert.equal(await page.getByRole('dialog').count(), 1, 'one storefront workspace');
-            await panel.getByRole('tab', { name: 'Объявления', exact: true }).focus();
-            await page.keyboard.press('ArrowRight');
             await panel
-              .getByRole('tabpanel', { name: 'Продавцы', exact: true })
-              .getByText('Продавцов пока нет')
+              .getByRole('tabpanel', { name: 'Витрины', exact: true })
+              .getByText('Витрин пока нет')
               .waitFor();
             assert.equal(
               await panel
-                .getByRole('tab', { name: 'Продавцы', exact: true })
+                .getByRole('tab', { name: 'Витрины', exact: true })
                 .getAttribute('aria-selected'),
               'true',
             );
-            await page.keyboard.press('ArrowLeft');
-            await panel.getByRole('tabpanel', { name: 'Объявления', exact: true }).waitFor();
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.__shopRequests.filter((row) => row.body?.command?.operation === 'catalog')
+                    .length,
+              ),
+              0,
+              'opening storefronts does not fetch product offers',
+            );
+            await panel.getByRole('tab', { name: 'Витрины', exact: true }).focus();
+            await page.keyboard.press('ArrowRight');
+            await panel.getByRole('tabpanel', { name: 'Товары и услуги', exact: true }).waitFor();
             await panel.getByRole('button', { name: 'Закрепить', exact: true }).click();
             await panel.getByText('Закреплённые · 1', { exact: true }).waitFor();
             await panel.getByRole('button', { name: 'Скрыть', exact: true }).click();
@@ -126,8 +174,8 @@ try {
             await panel.getByRole('button', { name: 'Подтвердить', exact: true }).click();
             await panel.getByRole('button', { name: 'Показать', exact: true }).waitFor();
             await shot('catalog', panel);
-            await close('Каталог');
-            await home.getByRole('button', { name: 'Оформление', exact: true }).click();
+            await close('Витрины');
+            await openSetting('Оформление');
             panel = page.getByRole('dialog', { name: 'Оформление', exact: true });
             await panel.getByLabel('Название', { exact: true }).waitFor();
             const swatches = await panel
@@ -141,20 +189,24 @@ try {
             assert.ok(swatches.every((value) => value !== 'rgba(0, 0, 0, 0)'));
             await panel.getByLabel('Название', { exact: true }).fill('Новая главная соседей');
             await close('Оформление');
-            await home.getByRole('button', { name: 'Оформление', exact: true }).click();
+            await openSetting('Оформление');
             assert.equal(
               await panel.getByLabel('Название', { exact: true }).inputValue(),
               'Новая главная соседей',
               'internal Back preserves unsaved design',
             );
             await close('Оформление');
-            await home.getByRole('button', { name: 'Чаты', exact: true }).click();
+            await openSetting('Подключённые чаты');
             await page.getByRole('button', { name: 'Подключить чаты', exact: true }).click();
             await page.getByRole('radio', { name: 'Выбрать существующий', exact: true }).waitFor();
+            await page.waitForFunction(() => {
+              const fields = document.querySelector('.karavan-module__wizard-fields');
+              return fields && !fields.disabled;
+            });
             await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
             await page.getByRole('button', { name: 'Подключить чаты', exact: true }).waitFor();
-            await close('Чаты');
-            await home.getByRole('button', { name: 'Оформление', exact: true }).click();
+            await close('Подключённые чаты');
+            await openSetting('Оформление');
             assert.equal(
               await panel.getByLabel('Название', { exact: true }).inputValue(),
               'Новая главная соседей',
@@ -165,7 +217,9 @@ try {
               .getByRole('button', { name: 'Применить оформление', exact: true })
               .waitFor();
             assert.equal(await page.evaluate(() => window.__shopPublished.name), 'Магазин соседей');
-            await panel.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            await panel
+              .getByRole('button', { name: 'Посмотреть магазин чата', exact: true })
+              .click();
             assert.equal(
               await page.evaluate(() => window.__shopOpened.at(-1)),
               'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop',
@@ -213,7 +267,7 @@ try {
               () => window.__shopPublished.name === 'Новая главная соседей',
             );
             await close('Оформление');
-            await home.getByRole('button', { name: 'Категории и правила', exact: true }).click();
+            await openSetting('Категории и правила');
             panel = page.getByRole('dialog', { name: 'Категории и правила', exact: true });
             await panel.getByText('Услуги', { exact: true }).first().click();
             assert.equal(
@@ -274,19 +328,159 @@ try {
               .waitFor({ state: 'detached' });
             await shot('categories', panel);
             await close('Категории и правила');
+            await home.getByRole('button', { name: 'Настройки', exact: true }).click();
+            panel = page.getByRole('dialog', { name: 'Настройки', exact: true });
+            assert.equal(
+              await panel.getByRole('radio', { name: 'Все желающие', exact: true }).isChecked(),
+              true,
+            );
+            assert.equal(
+              await panel
+                .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                .count(),
+              0,
+            );
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.__shopRequests.filter(
+                    (row) => row.body?.command?.operation === 'invitations',
+                  ).length,
+              ),
+              0,
+              'open admission does not fetch invitation controls',
+            );
+            await panel.getByRole('radio', { name: 'По приглашению', exact: true }).check();
+            assert.equal(
+              await panel
+                .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                .count(),
+              0,
+              'unsaved invitation policy cannot expose an invitation',
+            );
+            await close('Настройки');
+            await home.getByRole('button', { name: 'Настройки', exact: true }).click();
+            assert.equal(
+              await panel.getByRole('radio', { name: 'По приглашению', exact: true }).isChecked(),
+              true,
+              'internal Back preserves admission draft',
+            );
+            await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+            await panel.getByRole('button', { name: 'Повторить проверку', exact: true }).click();
+            await panel
+              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .waitFor();
+            const admissionWrites = await page.evaluate(() =>
+              window.__shopRequests.filter((row) => row.body?.command?.operation === 'settings'),
+            );
+            assert.equal(admissionWrites.length, 2);
+            assert.deepEqual(
+              admissionWrites[1].body,
+              admissionWrites[0].body,
+              'admission retry preserves the immutable command',
+            );
+            await panel
+              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .click();
+            await panel.getByRole('button', { name: 'Скопировано', exact: true }).waitFor();
+            assert.deepEqual(await page.evaluate(() => window.__shopClipboard), [
+              'https://max.ru/synthetic_seller_bot?startapp=invite_synthetic',
+            ]);
+            await panel.getByRole('button', { name: 'Скопировано', exact: true }).click();
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.__shopRequests.filter(
+                    (row) => row.body?.command?.operation === 'invitation_create',
+                  ).length,
+              ),
+              1,
+              'copying the same invitation never creates another invitation',
+            );
+            await panel.getByRole('button', { name: 'Отозвать приглашение', exact: true }).click();
+            await panel
+              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .waitFor();
+            await page.evaluate(() => {
+              window.__dropShopInvitationUrl = true;
+            });
+            await panel
+              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .click();
+            await panel.getByRole('alert').filter({ hasText: 'Ссылка не сохранилась.' }).waitFor();
+            await panel.getByRole('button', { name: 'Отозвать приглашение', exact: true }).click();
+            await panel
+              .getByRole('alert')
+              .filter({ hasText: 'Ссылка не сохранилась.' })
+              .waitFor({ state: 'detached' });
+            await panel
+              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .click();
+            await panel.getByRole('button', { name: 'Скопировано', exact: true }).waitFor();
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.__shopRequests.filter(
+                    (row) => row.body?.command?.operation === 'invitation_create',
+                  ).length,
+              ),
+              3,
+              'revoking a lost invitation allows a new invitation',
+            );
+            await panel.getByRole('radio', { name: 'Все желающие', exact: true }).check();
+            await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
+            await panel
+              .getByRole('button', { name: 'Скопировано', exact: true })
+              .waitFor({ state: 'detached' });
+            await panel
+              .getByRole('button', { name: 'Сохранить', exact: true })
+              .waitFor({ state: 'detached' });
+            await panel
+              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .waitFor({ state: 'detached' });
+            assert.equal(
+              await panel
+                .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                .count(),
+              0,
+            );
+            await shot('admission', panel);
+            await close('Настройки');
             await home.getByRole('button', { name: 'Заявки', exact: true }).click();
             panel = page.getByRole('dialog', { name: 'Заявки', exact: true });
-            await panel.getByRole('button', { name: 'Принять', exact: true }).click();
+            const applications = panel.locator('[data-storefront-screen="applications"]');
+            await applications
+              .locator('summary')
+              .filter({ hasText: /^Товары и услуги$/u })
+              .click();
+            await applications
+              .getByText('Ремонт стиральной машины с выездом на дом', { exact: true })
+              .waitFor();
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.__shopRequests.filter((row) => row.body?.command?.operation === 'decide')
+                    .length,
+              ),
+              0,
+              'reviewing application content does not approve it',
+            );
+            await panel.getByRole('button', { name: 'Одобрить', exact: true }).click();
             await panel.getByText('Новых заявок нет').waitFor();
             await close('Заявки');
-            await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
-            panel = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
+            await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
+            panel = page.getByRole('dialog', { name: 'Кнопки в чате', exact: true });
+            assert.equal(
+              await panel.getByRole('textbox', { name: /^Текст ответа бота/ }).isVisible(),
+              false,
+            );
+            await panel.getByText('Изменить текст', { exact: true }).click();
             await panel
               .getByRole('textbox', { name: /^Текст ответа бота/ })
               .fill('Магазин нашего чата');
             assert.equal(await page.evaluate(() => window.__shopSaves.length), 0);
-            await close('Кнопка в чате');
-            await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+            await close('Кнопки в чате');
+            await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
             assert.equal(
               await panel.getByRole('textbox', { name: /^Текст ответа бота/ }).inputValue(),
               'Магазин нашего чата',
@@ -297,8 +491,8 @@ try {
               await page.evaluate(() => window.__shopSaves.at(-1).karavanStorefrontMessageText),
               'Магазин нашего чата',
             );
-            await close('Кнопка в чате');
-            await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+            await close('Кнопки в чате');
+            await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
             assert.equal(
               await panel.getByRole('textbox', { name: /^Текст ответа бота/ }).inputValue(),
               'Магазин нашего чата',
@@ -307,13 +501,13 @@ try {
             await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
             assert.equal(await page.evaluate(() => window.__shopSaves.length), 2);
             await shot('publications', panel);
-            await close('Кнопка в чате');
+            await close('Кнопки в чате');
             if (width === 320) {
-              await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
-              panel = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
+              await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
+              panel = page.getByRole('dialog', { name: 'Кнопки в чате', exact: true });
               await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).check();
               const scenario = panel.getByRole('button', {
-                name: 'Нет витрины продавца',
+                name: 'Без витрины',
                 exact: true,
               });
               await scenario.click();
@@ -363,8 +557,8 @@ try {
               const scroll = await panel
                 .locator('.settings-drilldown__body')
                 .evaluate((node) => node.scrollTop);
-              await close('Кнопка в чате');
-              await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              await close('Кнопки в чате');
+              await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
               assert.equal(
                 await panel.locator('.settings-drilldown__body').evaluate((node) => node.scrollTop),
                 scroll,
@@ -374,6 +568,7 @@ try {
               await page.evaluate(() => {
                 document.documentElement.style.fontSize = '24px';
               });
+              await panel.getByText('Изменить текст', { exact: true }).click();
               const response = panel.getByRole('textbox', { name: /^Текст ответа бота/ });
               await response.fill('Несохранённый текст');
               await response.focus();
@@ -396,21 +591,192 @@ try {
               await discard.getByRole('button', { name: 'Не сохранять', exact: true }).click();
               await page.getByRole('dialog').waitFor({ state: 'detached' });
               await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-              await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
               assert.equal(
                 await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).isChecked(),
                 false,
                 'explicit discard restores saved settings',
               );
-              await close('Кнопка в чате');
+              await close('Кнопки в чате');
             }
             assert.deepEqual(errors, []);
             count++;
             console.log(`Shop journey ${engineName}/${width}/${theme}: passed (${count}).`);
             if (width === 360 && theme === 'light')
-              for (const scenario of ['empty', 'error', 'unbound']) {
+              for (const scenario of [
+                'empty',
+                'error',
+                'unbound',
+                'draft',
+                'draft_empty',
+                'invitation_paged',
+                'permission_loss',
+              ]) {
                 await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);
                 await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+                if (['draft', 'draft_empty'].includes(scenario)) {
+                  await home
+                    .getByRole('button', { name: 'Открыть для покупателей', exact: true })
+                    .waitFor();
+                  assert.equal(
+                    await home
+                      .getByRole('button', { name: 'Посмотреть магазин чата', exact: true })
+                      .count(),
+                    0,
+                  );
+                  assert.equal(
+                    await page.evaluate(
+                      () =>
+                        window.__shopRequests.filter(
+                          (row) => row.body?.command?.operation === 'status',
+                        ).length,
+                    ),
+                    0,
+                  );
+                  await home
+                    .getByRole('button', { name: 'Открыть для покупателей', exact: true })
+                    .click();
+                  if (scenario === 'draft_empty') {
+                    await home
+                      .getByText('Открыть магазин без продавцов?', { exact: true })
+                      .waitFor();
+                    await home
+                      .getByRole('button', { name: 'Открыть для покупателей', exact: true })
+                      .last()
+                      .click();
+                    await home
+                      .getByRole('button', { name: 'Повторить проверку', exact: true })
+                      .click();
+                  }
+                  await home
+                    .getByRole('button', { name: 'Посмотреть магазин чата', exact: true })
+                    .waitFor();
+                  const statusWrites = await page.evaluate(() =>
+                    window.__shopRequests.filter(
+                      (row) => row.body?.command?.operation === 'status',
+                    ),
+                  );
+                  const status = statusWrites[0].body.command.input;
+                  assert.equal(status.status, 'active');
+                  assert.equal(status.allowEmpty, scenario === 'draft_empty');
+                  if (scenario === 'draft_empty') {
+                    assert.equal(statusWrites.length, 2);
+                    assert.deepEqual(statusWrites[1].body, statusWrites[0].body);
+                    assert.equal(
+                      await home
+                        .getByText('Приостановить просмотр магазина покупателями?', {
+                          exact: true,
+                        })
+                        .count(),
+                      0,
+                      'successful activation retry closes its confirmation',
+                    );
+                  }
+                  await shot(`opened-${scenario}`, home);
+                  continue;
+                }
+                if (scenario === 'permission_loss') {
+                  await home.getByRole('button', { name: 'Настройки', exact: true }).click();
+                  panel = page.getByRole('dialog', { name: 'Настройки', exact: true });
+                  await panel.getByRole('radio', { name: 'По приглашению', exact: true }).check();
+                  await panel.getByRole('button', { name: 'Сохранить', exact: true }).waitFor();
+                  await page.evaluate(() => window.__loseShopManage());
+                  await panel
+                    .getByRole('button', { name: 'Сохранить', exact: true })
+                    .waitFor({ state: 'detached' });
+                  assert.equal(await panel.getByRole('radio').count(), 0);
+                  assert.equal(
+                    await page.evaluate(
+                      () =>
+                        window.__shopRequests.filter(
+                          (row) => row.body?.command?.operation === 'settings',
+                        ).length,
+                    ),
+                    0,
+                    'losing manage permission cannot submit an existing settings draft',
+                  );
+                  await shot(scenario, panel);
+                  continue;
+                }
+                if (scenario === 'invitation_paged') {
+                  await home.getByRole('button', { name: 'Настройки', exact: true }).click();
+                  panel = page.getByRole('dialog', { name: 'Настройки', exact: true });
+                  await panel
+                    .getByRole('button', { name: 'Следующие приглашения', exact: true })
+                    .click();
+                  await panel
+                    .getByRole('button', { name: 'В начало списка', exact: true })
+                    .waitFor();
+                  await page.evaluate(() => {
+                    window.__dropShopInvitationUrl = true;
+                  });
+                  await panel
+                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .click();
+                  const lost = panel
+                    .getByRole('alert')
+                    .filter({ hasText: 'Ссылка не сохранилась.' });
+                  await lost.waitFor();
+                  const minted = panel
+                    .locator('.karavan-shop__row')
+                    .filter({ hasText: /использовано\s+0/u });
+                  await minted
+                    .getByRole('button', { name: 'Отозвать приглашение', exact: true })
+                    .waitFor();
+                  assert.equal(
+                    await panel
+                      .getByRole('button', { name: 'В начало списка', exact: true })
+                      .count(),
+                    0,
+                    'creating on a later page returns to the new invitation',
+                  );
+                  await minted
+                    .getByRole('button', { name: 'Отозвать приглашение', exact: true })
+                    .click();
+                  await lost.waitFor({ state: 'detached' });
+                  await page.evaluate(() => {
+                    window.__deferShopClipboard = true;
+                  });
+                  await panel
+                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .click();
+                  await page.waitForFunction(
+                    () => typeof window.__finishShopClipboard === 'function',
+                  );
+                  await minted
+                    .getByRole('button', { name: 'Отозвать приглашение', exact: true })
+                    .click();
+                  await page.evaluate(() => {
+                    window.__dropShopInvitationUrl = true;
+                  });
+                  await panel
+                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .click();
+                  await lost.waitFor();
+                  await page.evaluate(() => window.__finishShopClipboard());
+                  await settleVisualFrame(page);
+                  assert.equal(
+                    await lost.isVisible(),
+                    true,
+                    'late clipboard completion cannot clear a newer lost invitation',
+                  );
+                  assert.equal(
+                    await panel
+                      .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                      .isDisabled(),
+                    true,
+                  );
+                  await minted
+                    .getByRole('button', { name: 'Отозвать приглашение', exact: true })
+                    .click();
+                  await lost.waitFor({ state: 'detached' });
+                  await panel
+                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .click();
+                  await panel.getByRole('button', { name: 'Скопировано', exact: true }).waitFor();
+                  await shot(scenario, panel);
+                  continue;
+                }
                 if (scenario === 'unbound') {
                   await home
                     .getByRole('button', { name: 'Подключить магазин', exact: true })
@@ -420,19 +786,22 @@ try {
                     .waitFor();
                   assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
                   assert.ok(
-                    (await page.evaluate(() => window.__shopRequests)).every((row) => !row.body),
+                    (await page.evaluate(() => window.__shopRequests)).every(
+                      (row) => !row.path.endsWith('/setup') && !row.path.includes('/bindings/'),
+                    ),
                     'entering setup never creates or binds a marketplace',
                   );
                   await shot(scenario, home);
                   assert.deepEqual(errors, []);
                   continue;
                 }
-                await page.getByRole('button', { name: 'Каталог', exact: true }).click();
-                panel = page.getByRole('dialog', { name: 'Каталог', exact: true });
+                await page.getByRole('button', { name: 'Витрины', exact: true }).click();
+                panel = page.getByRole('dialog', { name: 'Витрины', exact: true });
+                await panel.getByRole('tab', { name: 'Товары и услуги', exact: true }).click();
                 if (scenario === 'error') {
                   await panel.getByRole('button', { name: 'Повторить', exact: true }).click();
                   await panel.getByRole('button', { name: 'Закрепить', exact: true }).waitFor();
-                } else await panel.getByText('Объявлений пока нет').waitFor();
+                } else await panel.getByText('Товаров и услуг пока нет').waitFor();
                 await shot(scenario, panel);
                 assert.deepEqual(errors, []);
               }

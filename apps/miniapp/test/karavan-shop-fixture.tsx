@@ -9,6 +9,8 @@ import { SettingsStorefrontSection } from '../src/pages/settings/settings-storef
 import { SharedChatSettingsSection } from '../src/pages/settings/shared-chat-settings-section';
 import { createChatSettingsFieldAdapter } from '../src/features/network-settings/settings-field-bindings';
 import { chatSettingsSchema } from '@maxim/contracts/settings';
+import type { KaravanMarketplaceModule } from '@maxim/contracts/karavan-marketplace';
+import type { MarketplaceManagementResponse } from '@maxim/contracts/karavan-marketplace-management';
 import '../src/pages/settings-page';
 import '../src/styles/moderation-workspace.css';
 const params = new URLSearchParams(location.search);
@@ -17,15 +19,15 @@ document.body.dataset.miniappProfile = 'moderation';
 document.body.classList.add('settings-home-page-open');
 const id = 'a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10';
 const second = 'bb669048-0279-4a35-987c-60f94593163e';
-const market = {
+const market: NonNullable<KaravanMarketplaceModule['marketplace']> = {
   id,
   networkId: second,
   publicSlug: 'synthetic-shop',
   name: 'Магазин соседей',
   description: null,
   kind: 'chat',
-  status: 'active',
-  admissionPolicy: 'applications',
+  status: ['draft', 'draft_empty'].includes(params.get('scenario') ?? '') ? 'draft' : 'active',
+  admissionPolicy: params.get('scenario') === 'invitation_paged' ? 'invitation' : 'applications',
   logoImageUrl: null,
   coverImageUrl: null,
   editRevision: 1,
@@ -55,7 +57,7 @@ const binding = {
 };
 const permissions = ['manage_marketplace', 'review_listing', 'arrange_listings', 'bind_chat'];
 const counts = {
-  listings: 2,
+  listings: params.get('scenario') === 'draft_empty' ? 0 : 2,
   readyListings: 0,
   approvedListings: 2,
   pendingApplications: 1,
@@ -100,17 +102,54 @@ const allowedUsers = Array.from({ length: 102 }, (_, index) => ({
 let catalogReads = 0;
 let pendingApplication = true;
 let rulesConflict = true;
+let admissionFailure = true;
+let statusFailure = params.get('scenario') === 'draft_empty';
+let invitation:
+  | Extract<MarketplaceManagementResponse, { operation: 'invitation_create' }>['data']
+  | null = null;
+const invitationHistory =
+  params.get('scenario') === 'invitation_paged'
+    ? Array.from({ length: 25 }, (_, index) => ({
+        id: `a0d9b7ce-0040-4c85-a7ec-${String(index + 1).padStart(12, '0')}`,
+        expiresAt: new Date(Date.now() + 2 * 86400000).toISOString(),
+        maxUses: 1000,
+        usedCount: index + 1,
+        revoked: false,
+      }))
+    : [];
 const state = window as Window & {
   __shopRequests: Array<{ path: string; body: any }>;
   __shopOpened: string[];
   __shopPublished: typeof appearance;
   WebApp: unknown;
   __shopSaves: unknown[];
+  __shopClipboard: string[];
+  __finishShopImage?: () => void;
+  __dropShopInvitationUrl?: boolean;
+  __setShopResponseError?: () => void;
+  __deferShopClipboard?: boolean;
+  __finishShopClipboard?: () => void;
+  __loseShopManage?: () => Promise<void>;
 };
 state.__shopRequests = [];
 state.__shopOpened = [];
 state.__shopPublished = appearance;
 state.__shopSaves = [];
+state.__shopClipboard = [];
+Object.defineProperty(navigator, 'clipboard', {
+  configurable: true,
+  value: {
+    writeText: async (text: string) => {
+      state.__shopClipboard.push(text);
+      if (state.__deferShopClipboard) {
+        state.__deferShopClipboard = false;
+        await new Promise<void>((resolve) => {
+          state.__finishShopClipboard = resolve;
+        });
+      }
+    },
+  },
+});
 const bridge = (window as any).MAX?.WebApp ?? {};
 Object.assign(bridge, {
   openMaxLink: (url: string) => state.__shopOpened.push(url),
@@ -136,7 +175,19 @@ const api = {
         nextCursor: cursor ? null : 'page2',
       };
     }
-    if (path.includes('/available')) return { items: [], nextCursor: null };
+    if (path.includes('/available')) return { marketplaces: [], nextCursor: null };
+    if (path.endsWith('/preview'))
+      return {
+        target: body.marketplaceId
+          ? { marketplace: market, rules, permissions, counts, bindings: [binding] }
+          : null,
+        chats: body.chatIds.map((chatId: string) => ({
+          chatId,
+          title: 'Соседи',
+          binding: params.get('scenario') === 'unbound' ? null : binding,
+          marketplace: params.get('scenario') === 'unbound' ? null : market,
+        })),
+      };
     if (path.endsWith('/handoffs'))
       return {
         url: 'https://max.ru/synthetic_buyer_bot?startapp=mh_' + 'x'.repeat(43),
@@ -183,12 +234,66 @@ const api = {
               : [offer],
           nextCursor: null,
         };
+      } else if (operation === 'content') {
+        const { id: offerId, kind, title, imageUrl, allowedCategory, restriction } = offer;
+        data = {
+          items: [{ id: offerId, kind, title, imageUrl, allowedCategory, restriction }],
+          nextCursor: null,
+          storeId: second,
+        };
+      } else if (operation === 'settings') {
+        if (admissionFailure) {
+          admissionFailure = false;
+          throw new Error('Offline');
+        }
+        market.admissionPolicy = input.admissionPolicy;
+        market.editRevision++;
+        data = { marketplace: market };
+      } else if (operation === 'status') {
+        if (statusFailure) {
+          statusFailure = false;
+          throw new Error('Offline');
+        }
+        market.status = input.status;
+        market.editRevision++;
+        data = { marketplace: market };
+      } else if (operation === 'invitations') {
+        const items = [
+          ...(invitation ? [(({ code: _code, url: _url, ...item }) => item)(invitation)] : []),
+          ...invitationHistory,
+        ];
+        data = {
+          invitations: input.cursor ? items.slice(24) : items.slice(0, 24),
+          nextCursor: !input.cursor && items.length > 24 ? 'page2' : null,
+        };
+      } else if (operation === 'invitation_create') {
+        invitation = {
+          id,
+          expiresAt: input.expiresAt,
+          maxUses: input.maxUses,
+          usedCount: 0,
+          code: 'synthetic-invitation-code',
+          revoked: false,
+          url: state.__dropShopInvitationUrl
+            ? null
+            : 'https://max.ru/synthetic_seller_bot?startapp=invite_synthetic',
+        };
+        state.__dropShopInvitationUrl = false;
+        data = invitation;
+      } else if (operation === 'invitation_revoke') {
+        if (invitation) invitation.revoked = true;
+        data = { revoked: true };
       } else if (operation === 'pins') data = pins;
       else if (operation === 'pins_save') {
         pins = { revision: pins.revision + 1, offers: input.offers.map(() => offer) };
         data = pins;
       } else if (operation === 'moderate_content') {
-        offer.restriction = { revision: 1, active: input.active, reason: input.reason } as never;
+        offer.restriction = {
+          id,
+          revision: 1,
+          active: input.active,
+          reason: input.reason,
+        } as never;
         offer.available = !input.active;
         data = { restriction: { id, ...offer.restriction! }, visibilityRevision: 2 };
       } else if (operation === 'image') {
@@ -308,7 +413,10 @@ const api = {
         previewUrl: 'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop',
         bindings: params.get('scenario') === 'unbound' ? [] : [binding],
         publicationChoices: [],
-        publicationPreview: { mode: 'chat_marketplace' },
+        publicationPreview:
+          market.status === 'active'
+            ? { mode: 'chat_marketplace' }
+            : { mode: 'unavailable', reason: 'closed' },
         setupOperation: null,
       };
     throw new Error('Unexpected request: ' + path);
@@ -327,11 +435,22 @@ function Harness() {
   const [open, setOpen] = React.useState(false),
     [draft, setDraft] = React.useState(initial),
     [saved, setSaved] = React.useState(initial);
+  const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
+  state.__setShopResponseError = () =>
+    setFieldErrors({ karavanStorefrontMessageText: 'Проверьте текст ответа.' });
   const change = (key: string, value: unknown) => setDraft((old) => ({ ...old, [key]: value }));
   const fields = createChatSettingsFieldAdapter({
     settings: draft,
     baseline: saved,
     onChange: setDraft,
+    errors: fieldErrors,
+    onError: (path, error) =>
+      setFieldErrors((current) => {
+        const next = { ...current };
+        if (error) next[path] = error;
+        else delete next[path];
+        return next;
+      }),
   });
   return (
     <SettingsStorefrontSection
@@ -369,14 +488,15 @@ function Harness() {
     />
   );
 }
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+});
+state.__loseShopManage = () => {
+  permissions.splice(0, permissions.length, 'bind_chat');
+  return queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', '-123'] });
+};
 createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider
-    client={
-      new QueryClient({
-        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-      })
-    }
-  >
+  <QueryClientProvider client={queryClient}>
     <ToastProvider>
       <Harness />
     </ToastProvider>

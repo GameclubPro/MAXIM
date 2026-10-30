@@ -218,7 +218,7 @@ export default function KaravanMarketplacePanel({
       setSaved(null);
       setOperation(null);
       setStep('intro');
-      setNotice('Подключение остановлено. Созданный магазин и уже подключённые чаты сохранены.');
+      setNotice('Подключение остановлено. Магазин и подключённые чаты сохранены.');
       void queryClient.invalidateQueries({ queryKey });
     },
     onError: (error) =>
@@ -323,25 +323,25 @@ export default function KaravanMarketplacePanel({
             Повторить переход
           </button>
         ) : null}
-        {module.publicationChoices.map((choice) => (
-          <div key={choice.id} className="karavan-module__actions">
-            <p>Выберите витрину для ответа бота на $ в этом чате.</p>
-            {choice.stores.map((store) => (
-              <button
-                type="button"
-                key={store.id}
-                disabled={publicationChoice.isPending}
-                onClick={() => publicationChoice.mutate({ choiceId: choice.id, storeId: store.id })}
-              >
-                {store.name}
-              </button>
-            ))}
-            <p>
-              Другую свою витрину можно выбрать в её кабинете Каравана. Сохранение ничего не
-              отправляет в чат.
-            </p>
-          </div>
-        ))}
+        <StorefrontScreen page="publications">
+          {module.publicationChoices.map((choice) => (
+            <div key={choice.id} className="karavan-module__actions">
+              <p>Выберите витрину для ответа бота на $ в этом чате.</p>
+              {choice.stores.map((store) => (
+                <button
+                  type="button"
+                  key={store.id}
+                  disabled={publicationChoice.isPending}
+                  onClick={() =>
+                    publicationChoice.mutate({ choiceId: choice.id, storeId: store.id })
+                  }
+                >
+                  {store.name}
+                </button>
+              ))}
+            </div>
+          ))}
+        </StorefrontScreen>
         {marketplace && canEnter ? (
           <div hidden={step !== 'intro' || !!saved || !!bind.request}>
             <KaravanShopManager
@@ -518,7 +518,7 @@ export default function KaravanMarketplacePanel({
                   onClick={() => {
                     if (
                       window.confirm(
-                        'Остановить оставшиеся подключения? Созданный магазин и уже подключённые чаты сохранятся.',
+                        'Остановить оставшиеся подключения? Магазин и подключённые чаты сохранятся.',
                       )
                     )
                       cancelSetup.mutate();
@@ -550,7 +550,7 @@ export default function KaravanMarketplacePanel({
                 ) : null}
                 {active && module.buyerUrl ? (
                   <button type="button" onClick={openShop}>
-                    Посмотреть магазин
+                    Посмотреть магазин чата
                   </button>
                 ) : null}
                 <button type="button" onClick={() => void query.refetch()}>
@@ -560,7 +560,7 @@ export default function KaravanMarketplacePanel({
             )
           ) : step === 'intro' ? (
             <>
-              <h3>{module.currentChatTitle || 'Магазин вашего чата'}</h3>
+              <h3>{module.currentChatTitle || 'Магазин чата'}</h3>
               <button
                 type="button"
                 className="karavan-module__primary"

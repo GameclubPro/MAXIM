@@ -199,13 +199,13 @@ export function SettingsStorefrontSection({
       {draft.karavanStorefrontEnabled ? (
         <>
           {!sharedContent ? (
-            <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
-          ) : null}
-          {!sharedContent ? (
             <StorefrontAudience
               state={{ kind: 'common', value: draft.karavanStorefrontAdminsOnly }}
               onChange={onAdminsOnlyChange}
             />
+          ) : null}
+          {!sharedContent ? (
+            <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
           ) : null}
 
           {draft.karavanStorefrontAdminsOnly ? (

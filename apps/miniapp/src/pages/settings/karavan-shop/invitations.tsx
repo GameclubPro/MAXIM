@@ -1,37 +1,86 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MutationFailure, ShopFailure, useShopMutation, useShopQuery } from './runtime';
 export default function ShopInvitations() {
   const [cursor, setCursor] = useState<string | null>(null),
     [link, setLink] = useState<string | null>(null),
+    [linkId, setLinkId] = useState<string | null>(null),
+    [linkExpiry, setLinkExpiry] = useState<number | null>(null),
     [copied, setCopied] = useState(false),
     [copyError, setCopyError] = useState(false),
     [lost, setLost] = useState(false);
+  const copyEpoch = useRef(0);
+  const clearLink = () => {
+    copyEpoch.current++;
+    setLink(null);
+    setLinkId(null);
+    setLinkExpiry(null);
+    setCopied(false);
+    setCopyError(false);
+    setLost(false);
+  };
+  useEffect(
+    () => () => {
+      copyEpoch.current++;
+    },
+    [],
+  );
   const query = useShopQuery<'invitations'>({
     operation: 'invitations',
     input: { cursor, limit: 24 },
   });
-  const mutation = useShopMutation();
+  const mutation = useShopMutation((command) => {
+    if (command.operation === 'invitation_revoke' && command.input.invitationId === linkId) {
+      clearLink();
+    }
+  });
+  const copy = async (url: string) => {
+    const epoch = ++copyEpoch.current;
+    setCopyError(false);
+    try {
+      await navigator.clipboard.writeText(url);
+      if (epoch !== copyEpoch.current) return;
+      setCopied(true);
+      setLost(false);
+    } catch {
+      if (epoch !== copyEpoch.current) return;
+      setCopied(false);
+      setCopyError(true);
+    }
+  };
   useEffect(() => {
     if (
       mutation.isSuccess &&
       mutation.variables?.operation === 'invitation_create' &&
       mutation.data &&
-      'url' in mutation.data
+      'url' in mutation.data &&
+      'id' in mutation.data
     ) {
-      setLink(mutation.data.url as string | null);
-      setLost(!mutation.data.url);
+      const url = mutation.data.url as string | null;
+      setLink(url);
+      setLinkId(mutation.data.id);
+      setLinkExpiry(Date.parse(mutation.data.expiresAt));
+      setLost(!url);
+      setCursor(null);
+      if (url) void copy(url);
     }
   }, [mutation.isSuccess, mutation.data, mutation.variables]);
   return (
     <div className="karavan-module__actions">
-      <MutationFailure mutation={mutation} />
+      <MutationFailure
+        mutation={mutation}
+        onRefresh={() => {
+          copyEpoch.current++;
+        }}
+      />
       <button
         type="button"
-        disabled={mutation.isPending}
+        disabled={mutation.isPending || mutation.isError || lost}
         onClick={() => {
-          setLost(false);
-          setCopied(false);
-          setCopyError(false);
+          if (link && linkExpiry !== null && linkExpiry > Date.now()) {
+            void copy(link);
+            return;
+          }
+          clearLink();
           void mutation
             .mutateAsync({
               operation: 'invitation_create',
@@ -45,7 +94,7 @@ export default function ShopInvitations() {
             .catch(() => {});
         }}
       >
-        Создать приглашение
+        {copied ? 'Скопировано' : 'Скопировать приглашение'}
       </button>
       {link ? (
         <>
@@ -53,25 +102,10 @@ export default function ShopInvitations() {
             Ссылка для продавцов
             <input readOnly value={link} onFocus={(event) => event.currentTarget.select()} />
           </label>
-          <button
-            type="button"
-            onClick={() => {
-              setCopyError(false);
-              void (navigator.clipboard?.writeText(link) ?? Promise.reject())
-                .then(() => setLost(false))
-                .then(() => setCopied(true))
-                .catch(() => {
-                  setCopied(false);
-                  setCopyError(true);
-                });
-            }}
-          >
-            {copied ? 'Скопировано' : 'Скопировать ссылку'}
-          </button>
           {copyError ? (
             <p role="alert">Не удалось скопировать. Нажмите на ссылку и выберите «Копировать».</p>
           ) : null}
-          <p>Действует 7 дней. Продавцы подают заявки на размещение.</p>
+          <p>Действует 7 дней</p>
         </>
       ) : null}
       {lost ? (
@@ -90,13 +124,14 @@ export default function ShopInvitations() {
             </p>
             <button
               type="button"
-              disabled={mutation.isPending}
-              onClick={() =>
+              disabled={mutation.isPending || mutation.isError}
+              onClick={() => {
+                copyEpoch.current++;
                 mutation.mutate({
                   operation: 'invitation_revoke',
                   input: { commandId: crypto.randomUUID(), invitationId: item.id },
-                })
-              }
+                });
+              }}
             >
               Отозвать приглашение
             </button>
@@ -105,6 +140,11 @@ export default function ShopInvitations() {
       {query.data?.nextCursor ? (
         <button type="button" onClick={() => setCursor(query.data!.nextCursor)}>
           Следующие приглашения
+        </button>
+      ) : null}
+      {cursor ? (
+        <button type="button" onClick={() => setCursor(null)}>
+          В начало списка
         </button>
       ) : null}
     </div>
