@@ -6,6 +6,7 @@ import { of, throwError } from 'rxjs';
 import type { ActionHealthService } from '../system/action-health.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { MaxBotContextService } from './max-bot-context.service';
+import { normalizeMaxApiRateLimitServiceScope } from './max-api-metrics-key.util';
 import {
   MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
   MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
@@ -15,16 +16,20 @@ import {
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
 
-function nativeTransportFixture(botId = `test-quota-${randomUUID()}`) {
+function nativeTransportFixture(
+  botId = `test-quota-${randomUUID()}`,
+  overrides: Record<string, string | number> = {},
+) {
   const config = new ConfigService({
     MAX_API_BASE_URL: 'https://platform-api2.max.ru',
     REDIS_URL: redisUrl!,
     MAX_BOT_ID: botId,
-    MAX_BOT_TOKEN: 'native-quota-test-token',
+    MAX_BOT_TOKEN: `native-quota-test-token-${botId}`,
     MAX_WEBHOOK_SECRET_PATH: 'native-quota-test-path',
     MAX_WEBHOOK_HEADER_SECRET: 'native-quota-test-header',
     MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: 0,
     APP_SERVICE_NAME: 'test-quota-metrics',
+    ...overrides,
   });
   const request = jest.fn().mockReturnValue(of({ status: 200, data: { user_id: '123' } }));
   const health: Pick<ActionHealthService, 'recordSuccessForLane' | 'recordFailureForLane'> = {
@@ -39,6 +44,7 @@ function nativeTransportFixture(botId = `test-quota-${randomUUID()}`) {
     new MaxBotContextService(),
   );
   const internals = service as unknown as {
+    limiterRedis: Redis;
     recordRateLimitUsage(
       botId: string,
       trafficClass: 'critical' | 'interactive' | 'background',
@@ -49,8 +55,181 @@ function nativeTransportFixture(botId = `test-quota-${randomUUID()}`) {
       permit: { halfOpenProbeToken: string | null },
     ): Promise<void>;
   };
-  return { botId, service, request, internals, tokenKey: `maxapi:gcra:v1:bot:${botId}:all` };
+  const serviceScope = normalizeMaxApiRateLimitServiceScope(config.get('APP_SERVICE_NAME'));
+  return {
+    botId,
+    service,
+    request,
+    internals,
+    tokenKey: `maxapi:gcra:v1:bot:${botId}:all`,
+    classKey: `maxapi:gcra:v1:service:${serviceScope}:bot:${botId}:class:background`,
+  };
 }
+
+describeRedis('MAX configured token burst pacing', () => {
+  let redis: Redis;
+  beforeAll(async () => {
+    redis = new Redis(redisUrl!);
+    await redis.ping();
+  });
+  afterAll(async () => {
+    await redis?.quit();
+  });
+
+  type Fixture = ReturnType<typeof nativeTransportFixture>;
+
+  async function close(fixtures: Fixture[]) {
+    await Promise.all(fixtures.map(({ service }) => service.onModuleDestroy()));
+    await redis.del(
+      ...fixtures.flatMap(({ tokenKey, classKey }) => [
+        tokenKey,
+        `${tokenKey}:window:v1`,
+        `${tokenKey}:cooldown`,
+        classKey,
+      ]),
+    );
+  }
+
+  function useAdmissionClock(fixtures: Fixture[], now: () => number) {
+    const clock = "local time = redis.call('TIME')";
+    expect(MAX_API_RATE_LIMIT_RESERVATION_SCRIPT.split(clock)).toHaveLength(2);
+    for (const { internals } of fixtures) {
+      const originalEval = internals.limiterRedis.eval.bind(internals.limiterRedis);
+      jest.spyOn(internals.limiterRedis, 'eval').mockImplementation(async (...args) => {
+        // FLAG: Only the authoritative clock changes. Constructor configuration, ARGV,
+        // Redis execution and the public transport lifecycle remain real.
+        if (args[0] === MAX_API_RATE_LIMIT_RESERVATION_SCRIPT) {
+          const milliseconds = now();
+          args[0] = MAX_API_RATE_LIMIT_RESERVATION_SCRIPT.replace(
+            clock,
+            `local time = {${Math.floor(milliseconds / 1000)}, ${(milliseconds % 1000) * 1000}}`,
+          );
+        }
+        return originalEval(...args);
+      });
+    }
+  }
+
+  it('shares zero-burst 30 rps pacing without burning denied quota or changing cooldown', async () => {
+    const botId = `test-paced-${randomUUID()}`;
+    const config = { MAX_API_GLOBAL_RPS: '30', MAX_API_GLOBAL_BURST: '0' };
+    const first = nativeTransportFixture(botId, { ...config, APP_SERVICE_NAME: 'test-pacing-a' });
+    const peer = nativeTransportFixture(botId, { ...config, APP_SERVICE_NAME: 'test-pacing-b' });
+    const other = nativeTransportFixture(`test-independent-${randomUUID()}`, {
+      ...config,
+      APP_SERVICE_NAME: 'test-pacing-c',
+    });
+    const fixtures = [first, peer, other];
+    let nowMs = 1_700_000_000_000;
+    useAdmissionClock(fixtures, () => nowMs);
+    const read = ({ service }: Fixture) => service.getOwnProfile({ trafficClass: 'background' });
+    const state = async () => ({
+      tats: await redis.mget(first.tokenKey, first.classKey, peer.classKey),
+      window: await redis.zrange(`${first.tokenKey}:window:v1`, 0, -1, 'WITHSCORES'),
+    });
+    try {
+      await read(first);
+      const admitted = await state();
+      expect(admitted.tats[0]).not.toBeNull();
+      expect(admitted.window).toHaveLength(2);
+      await expect(read(peer)).rejects.toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        preDispatch: true,
+        limitScope: 'bot',
+        retryAfterMs: 34,
+      });
+      expect(await state()).toEqual(admitted);
+      expect(peer.request).not.toHaveBeenCalled();
+      await read(other);
+      expect(other.request).toHaveBeenCalledTimes(1);
+
+      nowMs += 33;
+      await expect(read(peer)).rejects.toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        limitScope: 'bot',
+        retryAfterMs: 1,
+      });
+      expect(await state()).toEqual(admitted);
+      expect(peer.request).not.toHaveBeenCalled();
+
+      nowMs += 1;
+      await read(peer);
+      expect(first.request).toHaveBeenCalledTimes(1);
+      expect(peer.request).toHaveBeenCalledTimes(1);
+      expect(await redis.zcard(`${first.tokenKey}:window:v1`)).toBe(2);
+
+      const cooldownKey = `${first.tokenKey}:cooldown`;
+      await redis.eval(MAX_API_EXTERNAL_COOLDOWN_SCRIPT, 1, cooldownKey, '60000');
+      const expiry = await redis.pexpiretime(cooldownKey);
+      await redis.eval(MAX_API_EXTERNAL_COOLDOWN_SCRIPT, 1, cooldownKey, '1000');
+      const beforeCooldownRefusal = await state();
+      nowMs += 34;
+      await expect(read(first)).rejects.toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        preDispatch: true,
+        limitScope: 'external_cooldown',
+      });
+      expect(await state()).toEqual(beforeCooldownRefusal);
+      expect(await redis.pexpiretime(cooldownKey)).toBe(expiry);
+      expect(await redis.pttl(cooldownKey)).toBeGreaterThan(50_000);
+      expect(first.request).toHaveBeenCalledTimes(1);
+      await read(other);
+      expect(other.request).toHaveBeenCalledTimes(2);
+    } finally {
+      await close(fixtures);
+    }
+  });
+
+  it('preserves immediate shared-token admissions when burst configuration is omitted', async () => {
+    const botId = `test-default-burst-${randomUUID()}`;
+    const first = nativeTransportFixture(botId, { APP_SERVICE_NAME: 'test-default-a' });
+    const peer = nativeTransportFixture(botId, { APP_SERVICE_NAME: 'test-default-b' });
+    const fixtures = [first, peer];
+    useAdmissionClock(fixtures, () => 1_700_000_000_000);
+    try {
+      await first.service.getOwnProfile({ trafficClass: 'background' });
+      await peer.service.getOwnProfile({ trafficClass: 'background' });
+      expect(first.request).toHaveBeenCalledTimes(1);
+      expect(peer.request).toHaveBeenCalledTimes(1);
+      expect(await redis.zcard(`${first.tokenKey}:window:v1`)).toBe(2);
+    } finally {
+      await close(fixtures);
+    }
+  });
+
+  it('paces concurrent callers within their bounded wait using the actual Redis clock', async () => {
+    const botId = `test-concurrent-pacing-${randomUUID()}`;
+    const config = {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_GLOBAL_BURST: '0',
+      MAX_API_GLOBAL_RPS_BACKGROUND: '30',
+      MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: '500',
+    };
+    const first = nativeTransportFixture(botId, { ...config, APP_SERVICE_NAME: 'test-wait-a' });
+    const peer = nativeTransportFixture(botId, { ...config, APP_SERVICE_NAME: 'test-wait-b' });
+    const fixtures = [first, peer];
+    try {
+      await Promise.all(fixtures.map(({ internals }) => internals.limiterRedis.ping()));
+      const startedAt = Date.now();
+      const outcomes = await Promise.allSettled(
+        Array.from({ length: 6 }, (_, index) =>
+          fixtures[index % fixtures.length]!.service.getOwnProfile({ trafficClass: 'background' }),
+        ),
+      );
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(outcomes.map(({ status }) => status)).toEqual(Array(6).fill('fulfilled'));
+      expect(first.request.mock.calls.length + peer.request.mock.calls.length).toBe(6);
+      const window = await redis.zrange(`${first.tokenKey}:window:v1`, 0, -1, 'WITHSCORES');
+      expect(window).toHaveLength(12);
+      const admissionTimes = window.filter((_, index) => index % 2 === 1).map(Number);
+      for (let index = 1; index < admissionTimes.length; index++) {
+        expect(admissionTimes[index]! - admissionTimes[index - 1]!).toBeGreaterThanOrEqual(33);
+      }
+    } finally {
+      await close(fixtures);
+    }
+  });
+});
 
 describeRedis('MAX external cooldown atomic admission', () => {
   let redis: Redis;

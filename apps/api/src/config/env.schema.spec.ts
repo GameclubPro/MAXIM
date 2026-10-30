@@ -19,6 +19,22 @@ function createValidEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe('validateEnv boolean parsing', () => {
+  it('accepts zero token burst while preserving the 30 RPS ceiling', () => {
+    expect(validateEnv(createValidEnv()).MAX_API_GLOBAL_BURST).toBeUndefined();
+    expect(validateEnv(createValidEnv({ MAX_API_GLOBAL_BURST: '0' })).MAX_API_GLOBAL_BURST).toBe(0);
+    expect(validateEnv(createValidEnv({ MAX_API_GLOBAL_BURST: '29' })).MAX_API_GLOBAL_BURST).toBe(
+      29,
+    );
+    for (const value of ['-1', '30', '0.5', 'invalid']) {
+      expect(() => validateEnv(createValidEnv({ MAX_API_GLOBAL_BURST: value }))).toThrow(
+        /MAX_API_GLOBAL_BURST/u,
+      );
+    }
+    expect(() => validateEnv(createValidEnv({ MAX_API_GLOBAL_RPS: '31' }))).toThrow(
+      /MAX_API_GLOBAL_RPS/u,
+    );
+  });
+
   it('separates pool registration from routing and keeps 4B positives conservative', () => {
     const defaults = validateEnv(createValidEnv());
     expect(defaults.COMMERCIAL_LLM_POOL_ENABLED).toBe(false);
