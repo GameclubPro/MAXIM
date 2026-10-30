@@ -164,7 +164,7 @@ try {
         const workspace = page.locator('.marketplace-entry');
         const panel = page.locator('.marketplace-profile-overlay .settings-drilldown__panel');
         const action = (name) => panel.getByRole('button', { name, exact: true });
-        const openProfile = () => action('Изменить профиль').click();
+        const openProfile = () => action('Настройки карточки').click();
         const openButtons = () => action('Кнопка в сообщениях').click();
         const exitPrompt = page.getByRole('dialog', { name: 'Выйти без сохранения?', exact: true });
         const externalPrompt = page.getByRole('dialog', {
@@ -186,14 +186,14 @@ try {
         const toggle = workspace.getByRole('checkbox', { name: toggleName, exact: true });
         const screenshot = (name) =>
           page.screenshot({ path: path.join(output, `${key}-${name}.png`), fullPage: false });
-        await action('Создать профиль').waitFor();
+        await action('Создать карточку площадки').waitFor();
         const entityTitle = await workspace
           .locator('.marketplace-profile__hero strong')
           .innerText();
         assert.equal(await title.count(), 0);
         assert.equal(await workspace.getByRole('checkbox').count(), 0);
         await assertInternalExchangeHidden(workspace);
-        await action('Создать профиль').click();
+        await action('Создать карточку площадки').click();
         assert.equal(await action('Назад').count(), 0, 'MAX uses native Back without a duplicate');
         await title.fill('Площадка с длинным названием для рекламных размещений');
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
@@ -236,7 +236,7 @@ try {
           'Continue returns to the last changed editor',
         );
         await nativeBack(page);
-        await action('Создать профиль').click();
+        await action('Создать карточку площадки').click();
         assert.equal(
           await title.inputValue(),
           'Площадка с длинным названием для рекламных размещений',
@@ -491,7 +491,7 @@ try {
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplacePilot=1&marketplaceReady=0`,
         );
         await entry.click();
-        await action('Создать профиль').click();
+        await action('Создать карточку площадки').click();
         await workspace.getByLabel('Тематика', { exact: true }).selectOption('Бизнес');
         await workspace.getByLabel('Регион', { exact: true }).selectOption('Россия');
         await returnToApp(page);
@@ -507,7 +507,7 @@ try {
           `${baseUrl}${route}?preview=1&profile=${profile}&marketplaceOwner=0&focus=birzhik`,
         );
         await action('Посмотреть профиль').waitFor();
-        assert.equal(await action('Изменить профиль').count(), 0);
+        assert.equal(await action('Настройки карточки').count(), 0);
         assert.equal(await action('Условия размещений').count(), 0);
         assert.equal(await title.count(), 0);
         await openButtons();
@@ -566,7 +566,7 @@ try {
   const browserPanel = browserPage.locator(
     '.marketplace-profile-overlay .settings-drilldown__panel',
   );
-  await browserPanel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+  await browserPanel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
   await settleVisualFrame(browserPage);
   const browserScrollBody = browserPanel.locator('.settings-drilldown__body');
   const browserDescription = browserPanel.getByRole('textbox', { name: 'Описание', exact: true });
@@ -581,7 +581,7 @@ try {
   });
   assert.ok(editorScrollTop > 0, 'The browser editor has actual scrollable content');
   await browserPanel.getByRole('button', { name: 'Назад', exact: true }).click();
-  await browserPanel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+  await browserPanel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
   await settleVisualFrame(browserPage);
   assert.equal(await browserDescription.inputValue(), draftBrowserDescription);
   assert.ok(
@@ -596,7 +596,7 @@ try {
     'Reopening after clicking Back restores focus to the last edited profile field',
   );
   await browserPage.keyboard.press('Escape');
-  await browserPanel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+  await browserPanel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
   await settleVisualFrame(browserPage);
   assert.equal(await browserDescription.inputValue(), draftBrowserDescription);
   assert.equal(

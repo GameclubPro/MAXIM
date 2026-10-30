@@ -367,7 +367,7 @@ export default function MarketplaceProfileWorkspace({
                   onClick={(event) => onOpenProfile(event.currentTarget)}
                 >
                   <AppIcon icon="EditPencil" aria-hidden />
-                  <span>Изменить профиль</span>
+                  <span>Настройки карточки</span>
                   <AppIcon icon="NavArrowRight" aria-hidden />
                 </button>
               )}

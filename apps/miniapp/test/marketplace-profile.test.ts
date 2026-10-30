@@ -372,7 +372,7 @@ test('owner overview keeps public viewing separate from placement setup and cond
     overview.primary,
     {
       kind: 'profile',
-      label: 'Изменить профиль',
+      label: 'Настройки карточки',
     },
     'A hidden profile opens editable fields without publishing',
   );
@@ -401,7 +401,7 @@ test('owner overview keeps public viewing separate from placement setup and cond
     'An incomplete draft leads directly to editable fields',
   );
   state.listing = null;
-  assert.equal(marketplaceProfileOverview(state).primary?.label, 'Создать профиль');
+  assert.equal(marketplaceProfileOverview(state).primary?.label, 'Создать карточку площадки');
 });
 
 test('expired owner access never presents current visibility or permits profile writes', async () => {

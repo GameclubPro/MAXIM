@@ -75,7 +75,7 @@ export class MarketplaceProfileAccessService {
       valid_until: null,
     });
   }
-  private async knownDenial(row: MarketplaceBindingRow): Promise<Date | null> {
+  async knownDenial(row: MarketplaceBindingRow): Promise<Date | null> {
     const connection =
       row.profile === 'publisher'
         ? await this.prisma.publisherEntityBinding.findUnique({ where: { chatId: row.entity_id } })

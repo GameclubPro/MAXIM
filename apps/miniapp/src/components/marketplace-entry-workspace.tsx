@@ -10,6 +10,7 @@ import {
 } from '../lib/marketplace-profile-view';
 import { ApiRequestError } from '../lib/api-request-error';
 import MarketplaceProfileWorkspace from './marketplace-profile-workspace';
+import MarketplaceEditorialWorkspace from './marketplace-editorial-workspace';
 import MarketplaceButtonPolicy from './marketplace-button-policy';
 import type { MarketplaceProfileCardProps } from './marketplace-profile-card';
 import type { MarketplaceDrafts, MarketplaceScreen } from './marketplace-profile-panel';
@@ -29,7 +30,7 @@ export default function MarketplaceEntryWorkspace({
 }: MarketplaceProfileCardProps & {
   onBusyChange: (busy: boolean) => void;
   onDraftsChange: (drafts: MarketplaceDrafts) => void;
-  onDraftChange: (screen: 'profile' | 'buttons') => void;
+  onDraftChange: (screen: Exclude<MarketplaceScreen, 'overview'>) => void;
   resetDraftVersion: number;
   onRequestExternalNavigation: (navigate: () => void) => void;
   screen: MarketplaceScreen;
@@ -38,9 +39,13 @@ export default function MarketplaceEntryWorkspace({
   const { api, entityId, entityType, profile } = props;
   const [profileDirty, setProfileDirty] = useState(false);
   const [policyDirty, setPolicyDirty] = useState(false);
+  const [editorialDirty, setEditorialDirty] = useState(false);
+  const [editorialBusy, setEditorialBusy] = useState(false);
+  const [editorialVisited, setEditorialVisited] = useState(false);
   useEffect(
-    () => onDraftsChange({ profile: profileDirty, buttons: policyDirty }),
-    [profileDirty, policyDirty, onDraftsChange],
+    () =>
+      onDraftsChange({ profile: profileDirty, buttons: policyDirty, editorial: editorialDirty }),
+    [profileDirty, policyDirty, editorialDirty, onDraftsChange],
   );
   const [profileBusy, setProfileBusy] = useState(false);
   const [policyBusy, setPolicyBusy] = useState(false);
@@ -52,12 +57,12 @@ export default function MarketplaceEntryWorkspace({
   const attempts = useRef(0);
   const cache = useQueryClient();
   useEffect(() => {
-    onBusyChange(profileBusy || policyBusy || linkBusy);
-  }, [profileBusy, policyBusy, linkBusy, onBusyChange]);
+    onBusyChange(profileBusy || policyBusy || editorialBusy || linkBusy);
+  }, [profileBusy, policyBusy, editorialBusy, linkBusy, onBusyChange]);
   useEffect(
     () => () => {
       onBusyChange(false);
-      onDraftsChange({ profile: false, buttons: false });
+      onDraftsChange({ profile: false, buttons: false, editorial: false });
     },
     [onBusyChange, onDraftsChange],
   );
@@ -70,6 +75,7 @@ export default function MarketplaceEntryWorkspace({
         attempts.current = 0;
         for (const queryKey of [
           ['marketplace-entry', profile, entityType, entityId],
+          ['marketplace-editorial', profile, entityType, entityId],
           marketplaceQueryKey(profile, entityType, entityId),
           ['marketplace-button-policy', profile, entityType, entityId],
         ])
@@ -182,7 +188,10 @@ export default function MarketplaceEntryWorkspace({
   };
   return (
     <div className="marketplace-entry" data-marketplace-screen={screen}>
-      <div className="marketplace-entry__overview" hidden={screen === 'buttons'}>
+      <div
+        className="marketplace-entry__overview"
+        hidden={screen === 'buttons' || screen === 'editorial'}
+      >
         {(owner || ownerVisited) && (
           <div hidden={!owner && screen !== 'profile'}>
             <MarketplaceProfileWorkspace
@@ -241,7 +250,7 @@ export default function MarketplaceEntryWorkspace({
               </button>
             )}
             {!publicNow && !query.isError && (
-              <p className="marketplace-profile-card__intro">Профилем управляет владелец.</p>
+              <p className="marketplace-profile-card__intro">Карточка скрыта от посетителей.</p>
             )}
             {linkError && <p role="alert">Не удалось открыть Биржик. Повторите переход.</p>}
           </div>
@@ -261,6 +270,22 @@ export default function MarketplaceEntryWorkspace({
         )}
         {screen === 'overview' && (
           <div className="marketplace-profile__navigation">
+            {!state.canCreate && (
+              <button
+                type="button"
+                className="marketplace-profile__nav-row"
+                data-marketplace-action="editorial"
+                disabled={query.isError || !entryUnexpired}
+                onClick={(event) => {
+                  setEditorialVisited(true);
+                  onScreenChange('editorial', event.currentTarget);
+                }}
+              >
+                <AppIcon icon="EditPencil" aria-hidden />
+                <span>Изменить описание</span>
+                <AppIcon icon="NavArrowRight" aria-hidden />
+              </button>
+            )}
             <button
               type="button"
               className="marketplace-profile__nav-row"
@@ -277,6 +302,18 @@ export default function MarketplaceEntryWorkspace({
           </div>
         )}
       </div>
+      {editorialVisited && (
+        <MarketplaceEditorialWorkspace
+          {...props}
+          active={screen === 'editorial'}
+          expectedEntityId={state.entityId}
+          canAccess={!query.isError && entryUnexpired && !state.canCreate}
+          resetDraftVersion={resetDraftVersion}
+          onDirtyChange={setEditorialDirty}
+          onBusyChange={setEditorialBusy}
+          onDraftChange={() => onDraftChange('editorial')}
+        />
+      )}
       {policyVisited && (
         <div hidden={screen !== 'buttons'}>
           <div className="marketplace-workspace-identity">

@@ -1,5 +1,7 @@
 import {
   marketplaceProfileMutationSchema,
+  marketplaceEditorialMutationSchema,
+  marketplaceEditorialStateSchema,
   marketplaceButtonPolicyMutationSchema,
   marketplaceButtonModules,
   MARKETPLACE_BUTTON_DEFAULT_CAPTION,
@@ -52,7 +54,10 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
       url: `https://max.ru/id613000037577_3_bot?startapp=${String(target)}_${String(input.kind).toLowerCase()}_${id}`,
     };
   }
-  if (segments[1] !== 'entities' || !['profile', 'entry', 'button-policy'].includes(segments[4]))
+  if (
+    segments[1] !== 'entities' ||
+    !['profile', 'entry', 'button-policy', 'editorial'].includes(segments[4])
+  )
     return PREVIEW_NOT_HANDLED;
   const kind = segments[2] === 'CHANNEL' ? 'CHANNEL' : 'CHAT';
   const entity = (kind === 'CHANNEL' ? state.channels : state.chats).find(
@@ -182,6 +187,39 @@ export const handleMarketplacePreviewRequest: PreviewRequestHandler = ({
       checkedAt: state.clock.now().toISOString(),
       validUntil: new Date(state.clock.now().getTime() + 300_000).toISOString(),
     };
+  }
+  if (segments[4] === 'editorial') {
+    if (!current.listing) throw new Error('Карточка ещё не создана');
+    if (method === 'PATCH') {
+      const input = marketplaceEditorialMutationSchema.parse(JSON.parse(String(init.body)));
+      if (
+        input.listingId !== current.listing.id ||
+        input.ownershipKey !== 'a'.repeat(64) ||
+        input.expectedRevision !== current.revision
+      )
+        throw new Error('Карточка изменилась. Обновите экран');
+      current.listing.description = input.description;
+      current.revision++;
+    } else if (method !== 'GET') return PREVIEW_NOT_HANDLED;
+    const snapshot = present();
+    return marketplaceEditorialStateSchema.parse({
+      version: 1,
+      entityId: current.entityId,
+      kind,
+      revision: current.revision,
+      listing: {
+        id: snapshot.listing!.id,
+        title: snapshot.listing!.title,
+        description: snapshot.listing!.description,
+        profileOnly: snapshot.listing!.profileOnly,
+        publicUrl: snapshot.listing!.publicUrl,
+      },
+      ownershipKey: 'a'.repeat(64),
+      role: state.marketplaceOwner ? 'RESPONSIBLE' : 'EDITOR',
+      responsible: { displayName: 'Ответственный площадки', profileId: null },
+      capabilities: { canEditDescription: true, canManageCommercial: state.marketplaceOwner },
+      validUntil: new Date(state.clock.now().getTime() + 30_000).toISOString(),
+    });
   }
   if (segments[4] === 'button-policy') {
     const byEntity = policies.get(state) ?? new Map<string, MarketplaceButtonPolicyState>();

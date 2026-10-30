@@ -89,8 +89,8 @@ export function marketplaceProfileOverview(state: MarketplaceProfileState, fresh
     status = state.binding.state === 'UNKNOWN' ? 'Проверяем доступ…' : 'Нужно проверить доступ';
     primary = { kind: 'refresh', label: 'Проверить доступ' };
   } else if (!listing) {
-    status = 'Профиля пока нет';
-    if (view.canEdit) primary = { kind: 'profile', label: 'Создать профиль' };
+    status = 'Карточка ещё не создана';
+    if (view.canEdit) primary = { kind: 'profile', label: 'Создать карточку площадки' };
   } else if (!marketplaceProfileAvailable(state) || view.publicState === 'ACCESS_REQUIRED') {
     status = 'Профиль пока недоступен';
     primary = { kind: 'refresh', label: 'Проверить доступ' };
@@ -98,7 +98,7 @@ export function marketplaceProfileOverview(state: MarketplaceProfileState, fresh
     status = 'На проверке';
   } else if (view.publicState === 'HIDDEN') {
     status = 'Скрыт';
-    if (view.canEdit) primary = { kind: 'profile', label: 'Изменить профиль' };
+    if (view.canEdit) primary = { kind: 'profile', label: 'Настройки карточки' };
   } else if (view.publicState === 'DRAFT') {
     status = 'Черновик';
     if (!listing.title.trim() || !listing.topic || !listing.region) {

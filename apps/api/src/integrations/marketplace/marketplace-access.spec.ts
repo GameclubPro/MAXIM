@@ -217,6 +217,19 @@ describe('marketplace fresh access checks', () => {
       expect.objectContaining({ trafficClass: 'interactive' }),
     );
   });
+  it('keeps scoped button refresh under the background governor without admitting editorial background work', async () => {
+    const { service, governor, max } = make();
+    governor.decide.mockResolvedValue({ action: 'pause', retryAfterMs: 60_000, reason: 'max_api' });
+    await expect(service.attest(input, false, true, 'BUTTON_POLICY')).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(governor.decide).toHaveBeenCalledTimes(1);
+    expect(max.getChatSnapshot).not.toHaveBeenCalled();
+    await expect(service.attest(input, false, true, 'PROFILE_DESCRIPTION')).rejects.toThrow(
+      'Invalid access scope',
+    );
+    expect(governor.decide).toHaveBeenCalledTimes(1);
+  });
   it('uses background quota while preserving every fresh rights probe and final binding check', async () => {
     const { service, max, database } = make();
     await service.attest(input, false, true);

@@ -313,7 +313,7 @@ try {
         await workspace.locator('[data-marketplace-action="primary"]').innerText(),
         /Посмотреть профиль/u,
       );
-      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       assert.equal(
         await workspace.locator('details[open]').count(),
         0,
@@ -457,7 +457,7 @@ try {
         'Discard after a lost profile response permits one external launch',
       );
       await returnToApp(page);
-      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       assert.equal(await profileTitle.inputValue(), 'Сохранено с потерянным ответом');
       assert.equal(
         mutations.length,
@@ -490,7 +490,7 @@ try {
       );
       await panel.getByRole('button', { name: 'Повторить', exact: true }).waitFor();
       assert.equal(
-        await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).count(),
         0,
         'Failed reread cannot authorize another profile edit',
       );
@@ -499,7 +499,7 @@ try {
       });
       profileStatus = 200;
       await panel.getByRole('button', { name: 'Повторить', exact: true }).click();
-      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       await waitUntil(
         () => profileTitle.isEditable(),
         'Successful reread restores profile editing after discard',
@@ -512,7 +512,7 @@ try {
       );
       launches.length = 0;
       await nativeBack(page);
-      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       await workspace
         .getByRole('textbox', { name: 'Название', exact: true })
         .fill('Черновик при смене владельца');
@@ -558,7 +558,7 @@ try {
         0,
       );
       assert.equal(
-        await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).count(),
         0,
       );
       assert.equal(await panel.locator('.settings-drilldown__close').isEnabled(), true);
@@ -578,7 +578,7 @@ try {
       state.capabilities.publicState = 'REVIEW';
       await returnToApp(page);
       await workspace.getByText('На проверке', { exact: true }).waitFor();
-      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       assert.equal(
         await panel.getByRole('button', { name: 'Опубликовать профиль', exact: true }).count(),
         0,
@@ -633,7 +633,7 @@ try {
           0,
         'READY must not override hidden public state',
       );
-      await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       await workspace.getByRole('textbox', { name: 'Название', exact: true }).waitFor();
       assert.equal(
         await workspace.getByRole('textbox', { name: 'Название', exact: true }).isEditable(),
@@ -897,7 +897,7 @@ try {
       await page.reload();
       await panel.getByRole('button', { name: 'Посмотреть профиль', exact: true }).waitFor();
       assert.equal(
-        await panel.getByRole('button', { name: 'Изменить профиль', exact: true }).count(),
+        await panel.getByRole('button', { name: 'Настройки карточки', exact: true }).count(),
         0,
       );
       assert.equal(
