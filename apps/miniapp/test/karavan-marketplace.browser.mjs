@@ -56,7 +56,10 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import '../../../src/styles.css';
+import '../../../src/pages/settings-page';
+import '../../../src/styles/moderation-workspace.css';
 import Panel from '../../../src/pages/settings/karavan-marketplace-panel';
+import {StorefrontWorkspace} from '../../../src/pages/settings/storefront-workspace';
 const scenario = new URLSearchParams(location.search).get('scenario');
 document.documentElement.dataset.maxTheme = new URLSearchParams(location.search).get('theme') || 'light';
 document.body.dataset.miniappProfile = 'moderation';
@@ -96,7 +99,7 @@ const api={request:async(path,init={})=>{
   if(scenario==='loading') await new Promise(resolve=>setTimeout(resolve,800));
   return {enabled:true,actorMaxUserId:'777',sellerBotUrl:'https://max.ru/synthetic_seller_bot',setupOperation:scenario==='server_restore'?operation:null,currentChatTitle:'Соседи',buyerUrl:connected?'https://max.ru/synthetic_buyer_bot?startapp=m_'+(path.includes('/-456/')?'other-shop':'synthetic-shop'):null,previewUrl:connected&&scenario!=='preview_missing'&&['draft','paused'].includes(marketplace.status)?'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop':null,bindings:connected?[binding]:[],publicationChoices:scenario==='choice'&&!chosen?[{id:uuid,marketplaceId:uuid,marketplaceName:marketplace.name,chatId:'-123',expiresAt:new Date(Date.now()+900000).toISOString(),stores:[{id:uuid,name:'Первая витрина'},{id:'bb669048-0279-4a35-987c-60f94593163e',name:'Вторая витрина'}]}]:[],marketplace:connected?(path.includes('/-456/')?{...marketplace,name:'Другой магазин'}:marketplace):null,binding:connected?binding:null,access:{reason:!recovered&&(scenario==='access_changed'||scenario==='recovery')?'binding_changed':scenario==='public_view'?'forbidden':'allowed',canRecover:!recovered&&(scenario==='recovery'||scenario==='access_changed')},permissions:scenario==='public_view'||(!recovered&&scenario==='access_changed')?[]:scenario==='reviewer'?['review_listing']:['manage_network','bind_chat','manage_marketplace','review_listing'],counts:{listings:connected&&scenario!=='draft_empty'?12:0,pendingApplications:connected&&scenario!=='draft_empty'?3:0,chats:connected?2:0},canManage:scenario!=='reviewer'};
 },requestKeepalive:()=>{}};
-function Harness(){const [chatId,setChatId]=React.useState('-123');window.__switchKaravanChat=()=>setChatId('-456');return <Panel key={chatId} api={api} chatId={chatId}/>;}
+function Harness(){const [chatId,setChatId]=React.useState('-123');window.__switchKaravanChat=()=>setChatId('-456');return <StorefrontWorkspace key={chatId} open onClose={()=>{}}><Panel api={api} chatId={chatId}/></StorefrontWorkspace>;}
 createRoot(document.getElementById('test-root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}})}><Harness/></QueryClientProvider>);
 `,
 );
@@ -128,15 +131,19 @@ async function geometry(page, name) {
       assert.ok(control.height >= 43.5, `${name}: small control ${control.text}`);
       assert.ok(
         control.left >= -1 && control.right <= bounds.width + 1,
-        `${name}: clipped control ${control.text}`,
+        `${name}: clipped control ${control.text} (${control.left}..${control.right} / ${bounds.width})`,
       );
     }
 }
 try {
   server = await ensureMiniappDevServer(base);
   browser = await chromium.launch();
-  for (const width of [320, 360, 390, 430])
-    for (const theme of ['light', 'dark']) {
+  for (const width of process.env.KARAVAN_BROWSER_WIDTH
+    ? [Number(process.env.KARAVAN_BROWSER_WIDTH)]
+    : [320, 360, 390, 430])
+    for (const theme of process.env.KARAVAN_BROWSER_THEME
+      ? [process.env.KARAVAN_BROWSER_THEME]
+      : ['light', 'dark']) {
       for (const scenario of selectedScenarios) {
         const context = await browser.newContext({
           viewport: { width, height: 740 },
@@ -205,10 +212,11 @@ try {
             if (['partial', 'partial_bound'].includes(scenario)) {
               if (scenario === 'partial_bound') {
                 await page.getByRole('button', { name: 'Настроить черновик' }).click();
-                const panel = page.getByRole('dialog', { name: 'Настройки магазина', exact: true });
+                const panel = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
                 await panel.getByRole('button', { name: 'Каталог', exact: true }).waitFor();
                 assert.equal(await page.evaluate(() => window.__karavanOpened.length), 0);
-                await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+                await panel.getByRole('button', { name: 'Назад к магазину' }).waitFor();
+                await page.keyboard.press('Escape');
               } else {
                 assert.equal(
                   await page.getByRole('button', { name: 'Настроить черновик' }).count(),
@@ -378,7 +386,7 @@ try {
           if (scenario === 'reviewer') {
             await page.getByRole('button', { name: 'Заявки', exact: true }).waitFor();
             assert.equal(
-              await page.getByRole('button', { name: 'Категории', exact: true }).count(),
+              await page.getByRole('button', { name: 'Категории и правила', exact: true }).count(),
               0,
             );
           }
@@ -457,6 +465,11 @@ try {
             path: output + '/' + width + '-' + theme + '-' + scenario + '.png',
             fullPage: true,
           });
+        } catch (error) {
+          console.error(
+            `${width}/${theme}/${scenario}: ${(await page.locator('body').innerText()).slice(-2500)}`,
+          );
+          throw error;
         } finally {
           await context.close();
         }
@@ -464,7 +477,9 @@ try {
     }
   console.log(
     'Karavan browser: ' +
-      selectedScenarios.length * 8 +
+      selectedScenarios.length *
+        (process.env.KARAVAN_BROWSER_WIDTH ? 1 : 4) *
+        (process.env.KARAVAN_BROWSER_THEME ? 1 : 2) +
       ' scenarios passed. Screenshots: ' +
       output,
   );

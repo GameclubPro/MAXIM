@@ -136,10 +136,10 @@ try {
                 await sheet.getByRole('button', { name: 'Повторить', exact: true }).click();
               }
               await sheet.getByText('Магазин чата пока недоступен.', { exact: true }).waitFor();
-              await sheet.getByRole('button', { name: 'Публикации', exact: true }).click();
-              sheet = page.getByRole('dialog', { name: 'Публикации', exact: true });
+              await sheet.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              sheet = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
               const toggle = sheet.getByRole('checkbox', {
-                name: 'Включить кнопку витрины Караван',
+                name: 'Ответ бота на $',
               });
               await toggle.waitFor({ state: 'visible' });
               await settleVisualFrame(page);
@@ -207,8 +207,8 @@ try {
                 await page.evaluate(() => window.__saves.at(-1).karavanStorefrontEnabled),
                 scenario === 'off',
               );
-              await sheet.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
-              await rootSheet.getByRole('button', { name: 'Публикации', exact: true }).click();
+              await page.keyboard.press('Escape');
+              await rootSheet.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
               await toggle.waitFor({ state: 'visible' });
               assert.equal(
                 await toggle.isChecked(),

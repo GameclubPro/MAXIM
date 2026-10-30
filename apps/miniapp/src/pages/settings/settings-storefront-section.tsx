@@ -1,7 +1,8 @@
+import { StorefrontAudience } from './storefront-audience';
 import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 import { getNetworkSettingsSectionPresentation } from './settings-workspace-sections';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { lazy, Suspense, useState, type ReactNode } from 'react';
 import type { ChatSettings } from '@maxim/contracts/settings';
 import type {
@@ -11,11 +12,8 @@ import type {
 } from '@maxim/contracts/karavan-storefront';
 import { SettingsStorefrontTextEditor } from './settings-storefront-text-editor';
 import { GlassCard } from '../../components/ui/glass-card';
-import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
-import {
-  SettingsSectionIcon,
-  SettingsSectionToggle,
-} from '../../components/ui/settings-section-toggle';
+import { StorefrontWorkspace } from './storefront-workspace';
+import { SettingsSectionToggle } from '../../components/ui/settings-section-toggle';
 import { Spinner } from '../../components/ui/spinner';
 import { useToast } from '../../components/ui/toast';
 import type { ApiTransport } from '../../lib/api/transport';
@@ -29,6 +27,11 @@ import { maxNotify, openMaxBotLinkAndClose } from '../../lib/max-bridge';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import '../../styles/settings-storefront.css';
 
+const ConfirmRevoke = lazy(() =>
+  import('../../components/ui/action-confirm-sheet').then((module) => ({
+    default: module.ActionConfirmSheet,
+  })),
+);
 const KaravanMarketplacePanel = lazy(() => import('./karavan-marketplace-panel'));
 
 type SettingsStorefrontSectionProps = {
@@ -96,13 +99,16 @@ export function SettingsStorefrontSection({
   const allowlistQueryKey = ['karavan-storefront-allowlist', chatId] as const;
   const allowlistVisible =
     expanded && draft.karavanStorefrontEnabled && draft.karavanStorefrontAdminsOnly;
-  const allowlistQuery = useQuery({
+  const allowlistQuery = useInfiniteQuery({
     queryKey: allowlistQueryKey,
-    queryFn: ({ signal }) =>
+    queryFn: ({ signal, pageParam }) =>
       getKaravanStorefrontAllowlist(api, chatId ?? '', {
         signal,
         limit: 100,
+        cursor: pageParam,
       }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
     enabled: Boolean(chatId) && allowlistVisible,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
@@ -155,18 +161,28 @@ export function SettingsStorefrontSection({
     },
   });
 
-  const entries = allowlistQuery.data?.items ?? [];
+  const entries = [
+    ...new Map(
+      (allowlistQuery.data?.pages.flatMap((page) => page.items) ?? []).map((entry) => [
+        entry.id,
+        entry,
+      ]),
+    ).values(),
+  ];
 
   const publicationControls = (
     <div className="settings-storefront__publications">
+      {headerAction ? (
+        <div className="storefront-workspace__copy-settings">{headerAction}</div>
+      ) : null}
       {sharedContent ?? (
         <div className="settings-native-toggle">
           <div className="settings-native-toggle__row">
             <div className="settings-native-toggle__title-wrap">
-              <span className="settings-native-toggle__title">Кнопка по $</span>
+              <span className="settings-native-toggle__title">Ответ бота на $</span>
             </div>
 
-            <label className="settings-native-switch" aria-label="Включить кнопку витрины Караван">
+            <label className="settings-native-switch" aria-label="Ответ бота на $">
               <input
                 type="checkbox"
                 checked={draft.karavanStorefrontEnabled}
@@ -186,30 +202,10 @@ export function SettingsStorefrontSection({
             <SettingsStorefrontTextEditor draft={draft} onChange={onTextChange} />
           ) : null}
           {!sharedContent ? (
-            <div className="settings-native-toggle settings-native-toggle--nested">
-              <div className="settings-native-toggle__row">
-                <div className="settings-native-toggle__title-wrap">
-                  <span className="settings-native-toggle__title">Только администраторы</span>
-                </div>
-
-                <label
-                  className="settings-native-switch"
-                  aria-label="Разрешать витрину только администраторам и пользователям из списка"
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.karavanStorefrontAdminsOnly}
-                    onChange={(event) => onAdminsOnlyChange(event.target.checked)}
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-              <p className="settings-native-toggle__hint">
-                Кнопка будет доступна администраторам и пользователям из списка.
-              </p>
-            </div>
+            <StorefrontAudience
+              state={{ kind: 'common', value: draft.karavanStorefrontAdminsOnly }}
+              onChange={onAdminsOnlyChange}
+            />
           ) : null}
 
           {draft.karavanStorefrontAdminsOnly ? (
@@ -240,7 +236,7 @@ export function SettingsStorefrontSection({
                   <Spinner size="sm" label="Загружаем список" />
                   <span>Загружаем список...</span>
                 </div>
-              ) : allowlistQuery.isError ? (
+              ) : allowlistQuery.isError && !allowlistQuery.data ? (
                 <div className="settings-storefront__state settings-storefront__state--error">
                   <p>
                     {describeUserFacingError(allowlistQuery.error, 'Не удалось загрузить список.')}
@@ -259,41 +255,33 @@ export function SettingsStorefrontSection({
                         <strong>{allowlistEntryLabel(entry)}</strong>
                         <span>{formatAllowlistExpiry(entry.expiresAt)}</span>
                       </div>
-                      {entryToRevoke?.id === entry.id ? (
-                        <span className="settings-storefront__revoke-confirm">
-                          <button
-                            type="button"
-                            className="settings-storefront__revoke-confirm-button"
-                            onClick={() => revokeMutation.mutate(entry.id)}
-                            disabled={revokeMutation.isPending}
-                          >
-                            {revokeMutation.isPending ? '...' : 'Отозвать'}
-                          </button>
-                          <button
-                            type="button"
-                            className="settings-storefront__revoke-cancel-button"
-                            onClick={() => setEntryToRevoke(null)}
-                            disabled={revokeMutation.isPending}
-                          >
-                            Отмена
-                          </button>
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="settings-storefront__revoke-button"
-                          aria-label={`Отозвать доступ: ${allowlistEntryLabel(entry)}`}
-                          title="Отозвать доступ"
-                          onClick={() => setEntryToRevoke(entry)}
-                          disabled={revokeMutation.isPending}
-                        >
-                          <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="settings-storefront__revoke-button"
+                        aria-label={`Отозвать доступ: ${allowlistEntryLabel(entry)}`}
+                        title="Отозвать доступ"
+                        onClick={() => setEntryToRevoke(entry)}
+                        disabled={revokeMutation.isPending}
+                      >
+                        <IconoirSprite variant="iconoir" icon="Trash" aria-hidden />
+                      </button>
                     </div>
                   ))}
                 </div>
               )}
+              {allowlistQuery.hasNextPage ? (
+                <button
+                  type="button"
+                  className="settings-storefront__more"
+                  disabled={allowlistQuery.isFetchingNextPage}
+                  onClick={() => void allowlistQuery.fetchNextPage()}
+                >
+                  {allowlistQuery.isFetchingNextPage ? 'Загружаем…' : 'Ещё пользователи'}
+                </button>
+              ) : null}
+              {allowlistQuery.isFetchNextPageError ? (
+                <p role="alert">Не удалось загрузить следующую страницу. Повторите загрузку.</p>
+              ) : null}
             </section>
           ) : null}
         </>
@@ -303,6 +291,22 @@ export function SettingsStorefrontSection({
 
   return (
     <>
+      {entryToRevoke ? (
+        <Suspense fallback={null}>
+          <ConfirmRevoke
+            open
+            id="storefront-revoke"
+            className="storefront-revoke-confirm"
+            title="Отозвать доступ к добавлению ссылки?"
+            previewTitle={allowlistEntryLabel(entryToRevoke)}
+            confirmLabel="Отозвать доступ"
+            confirmBusyLabel="Отзываем…"
+            isBusy={revokeMutation.isPending}
+            onClose={() => setEntryToRevoke(null)}
+            onConfirm={() => revokeMutation.mutate(entryToRevoke.id)}
+          />
+        </Suspense>
+      ) : null}
       <GlassCard
         className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
         style={{ animationDelay: '386ms', order: SECTION_PRESENTATION.order }}
@@ -322,19 +326,12 @@ export function SettingsStorefrontSection({
           />
         </div>
 
-        <SettingsDrilldownPanel
-          id="settings-storefront-content"
-          icon={<SettingsSectionIcon name={SECTION_PRESENTATION.icon} />}
+        <StorefrontWorkspace
           open={expanded}
-          title={SECTION_PRESENTATION.title}
-          summary={summary}
-          tone={SECTION_PRESENTATION.tone}
-          className={SECTION_PRESENTATION.panelClassName}
           onClose={onToggleSection}
-          headerAction={headerAction}
-          confirmCloseWhen={hasChanges}
-          onDiscardChanges={onDiscardChanges}
-          footer={hasChanges ? footer : null}
+          dirty={hasChanges}
+          onDiscard={onDiscardChanges}
+          footer={footer}
         >
           <div
             id="settings-storefront-collapse"
@@ -360,7 +357,7 @@ export function SettingsStorefrontSection({
               </div>
             ) : null}
           </div>
-        </SettingsDrilldownPanel>
+        </StorefrontWorkspace>
       </GlassCard>
     </>
   );

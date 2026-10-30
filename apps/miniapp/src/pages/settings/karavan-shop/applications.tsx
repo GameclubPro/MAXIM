@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
+import { useStorefrontDirty } from '../storefront-workspace';
 import type { MarketplaceApplication } from '@maxim/contracts/karavan-marketplace-management';
 import {
   MutationFailure,
@@ -13,6 +14,7 @@ export default function ShopApplications({ canInvite }: { canInvite: boolean }) 
   const [cursor, setCursor] = useState<string | null>(null);
   const [selected, setSelected] = useState<MarketplaceApplication | null>(null);
   const [reason, setReason] = useState('');
+  useStorefrontDirty('applications', !!selected && !!reason.trim());
   const query = useShopQuery<'applications'>({
     operation: 'applications',
     input: { cursor, limit: 24, state: 'pending' },

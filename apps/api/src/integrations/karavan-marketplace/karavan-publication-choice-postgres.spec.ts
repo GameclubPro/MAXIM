@@ -103,11 +103,28 @@ postgres('Private Karavan publication choice persistence', () => {
     }) as typeof fetch;
   });
   afterEach(async () => {
+    await db.karavanMarketplaceChatEnrollment.deleteMany({ where: { chatId: input.chatId } });
     global.fetch = originalFetch;
     await db.karavanMarketplacePublicationChoice.deleteMany({ where: { chatId: input.chatId } });
   });
   afterAll(async () => {
     await db?.$disconnect();
+  });
+  it('uses durable enrollment for both response preview and relay even without a current binding', async () => {
+    expect(await resolver.shouldUseScopedRelay(input.chatId)).toBe(false);
+    await db.karavanMarketplaceChatEnrollment.create({
+      data: {
+        chatId: input.chatId,
+        actorMaxUserId: input.actorMaxUserId,
+        requestedCommandId: randomUUID(),
+        marketplaceId,
+      },
+    });
+    expect(await resolver.shouldUseScopedRelay(input.chatId)).toBe(true);
+    resolver = makeResolver();
+    expect(await resolver.shouldUseScopedRelay(input.chatId)).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(authority.issuePublication).not.toHaveBeenCalled();
   });
   const prompt = async () => {
     expect((await resolver.resolve(input)).publication).toBeNull();

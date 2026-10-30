@@ -19,6 +19,7 @@ import {
   karavanMarketplaceHandoffIssueSchema,
   karavanMarketplaceSetupSchema,
   karavanMarketplacePreviewInputSchema,
+  type KaravanPublicationPreview,
 } from '@maxim/contracts/karavan-marketplace';
 import { InitDataGuard } from '../../auth/init-data.guard';
 import type { MiniappAuthContext } from '../../auth/miniapp-session.types';
@@ -56,11 +57,23 @@ export class KaravanMarketplaceController {
       user.userId,
       this.authority.principal(user, request.miniappAuth),
     );
+    // FLAG: Use the relay's durable enrollment decision; a lost binding never previews legacy buttons.
+    const scoped = await this.resolver.shouldUseScopedRelay(chatId);
+    const publicationPreview: KaravanPublicationPreview = !scoped
+      ? { mode: 'catalog' }
+      : !module.marketplace || module.binding?.state !== 'verified'
+        ? { mode: 'unavailable', reason: 'connection' }
+        : module.access?.reason !== 'allowed'
+          ? { mode: 'unavailable', reason: 'verification' }
+          : module.marketplace.status !== 'active'
+            ? { mode: 'unavailable', reason: 'closed' }
+            : { mode: 'chat_marketplace' };
     return {
       enabled: true as const,
       actorMaxUserId: user.userId,
       sellerBotUrl: `https://max.ru/${this.config.getOrThrow<string>('KARAVAN_SELLER_BOT_USERNAME')}`,
       ...module,
+      publicationPreview,
       publicationChoices: (await this.resolver.listChoices({ actorMaxUserId: user.userId, chatId }))
         .choices,
       setupOperation: await this.proxy.activeSetup(user.userId, chatId),

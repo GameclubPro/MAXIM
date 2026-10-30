@@ -1,4 +1,9 @@
-import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-panel';
+import { StorefrontPublicationPreviewContext } from './storefront-publication-preview';
+import {
+  StorefrontScreen,
+  useStorefrontBack,
+  useStorefrontWorkspace,
+} from './storefront-workspace';
 import ShopPublicationsEntry from './karavan-shop/publications-entry';
 import KaravanShopManager from './karavan-shop/manager';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -46,6 +51,7 @@ export default function KaravanMarketplacePanel({
   discardPublications?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const workspace = useStorefrontWorkspace();
   const queryKey = ['karavan-marketplace', chatId] as const;
   const query = useQuery({
     queryKey,
@@ -64,6 +70,10 @@ export default function KaravanMarketplacePanel({
   const storageKey = module ? `karavan-setup:v1:${module.actorMaxUserId}:${chatId}` : null;
   const bind = useKaravanMarketplaceBinding(api, chatId, module?.actorMaxUserId);
   const [pendingManagerOpen, setPendingManagerOpen] = useState(false);
+  useStorefrontBack(
+    () => setPendingManagerOpen(false),
+    pendingManagerOpen && workspace?.page === 'home',
+  );
   const publicationEntry = publications ? (
     <ShopPublicationsEntry
       dirty={publicationsDirty}
@@ -229,24 +239,30 @@ export default function KaravanMarketplacePanel({
   if (query.isPending)
     return (
       <div className="karavan-module" role="status">
-        <Spinner size="sm" label="Проверяем магазин" />
+        <StorefrontScreen page="home">
+          <Spinner size="sm" label="Проверяем магазин" />
+        </StorefrontScreen>
         {publicationEntry}
       </div>
     );
   if (query.isError)
     return (
       <section className="karavan-module">
-        <p role="alert">Не удалось проверить магазин.</p>
-        <button type="button" onClick={() => void query.refetch()}>
-          Повторить
-        </button>
+        <StorefrontScreen page="home">
+          <p role="alert">Не удалось проверить магазин.</p>
+          <button type="button" onClick={() => void query.refetch()}>
+            Повторить
+          </button>
+        </StorefrontScreen>
         {publicationEntry}
       </section>
     );
   if (!module)
     return (
       <div className="karavan-module" role="status">
-        <p>Магазин чата пока недоступен.</p>
+        <StorefrontScreen page="home">
+          <p>Магазин чата пока недоступен.</p>
+        </StorefrontScreen>
         {publicationEntry}
       </div>
     );
@@ -268,290 +284,298 @@ export default function KaravanMarketplacePanel({
       expectedBindingGeneration: module.binding.generation,
     });
   };
-  return (
-    <section className="karavan-module" aria-label="Магазин чата">
-      {notice || bind.error ? (
-        <p className="karavan-module__notice" role="alert">
-          {notice || bind.error}
-        </p>
-      ) : null}
-      {retryOpen ? (
-        <button type="button" onClick={openShop}>
-          Повторить переход
-        </button>
-      ) : null}
-      {module.publicationChoices.map((choice) => (
-        <div key={choice.id} className="karavan-module__actions">
-          <p>Выберите витрину для публикации по $ в этом чате.</p>
-          {choice.stores.map((store) => (
-            <button
-              type="button"
-              key={store.id}
-              disabled={publicationChoice.isPending}
-              onClick={() => publicationChoice.mutate({ choiceId: choice.id, storeId: store.id })}
-            >
-              {store.name}
-            </button>
-          ))}
-          <p>
-            Другую свою витрину можно выбрать в её кабинете Каравана. Сохранение ничего не
-            отправляет в чат.
-          </p>
-        </div>
-      ))}
-      {bind.request ? (
-        <>
-          <h3>
-            {bind.request.action === 'unbind_chat' ? 'Отключение чата' : 'Подключение магазина'}
-          </h3>
-          <p>
-            {bind.isPending
-              ? 'Проверяем результат…'
-              : bind.rejected
-                ? 'Изменение не выполнено.'
-                : 'Результат изменения ещё не подтверждён.'}
-          </p>
-          <button
-            type="button"
-            className="karavan-module__primary"
-            disabled={bind.isPending}
-            onClick={bind.retry}
-          >
-            {bind.isPending ? 'Проверяем…' : 'Повторить проверку'}
-          </button>
-          {bind.rejected ? (
-            <button
-              type="button"
-              onClick={() => {
-                bind.resetRejected();
-                setStep('intro');
-              }}
-            >
-              Обновить состояние
-            </button>
-          ) : null}
-        </>
-      ) : saved || setup.isPending ? (
-        <>
-          <h3>Подключение магазина</h3>
-          <p>
-            {setup.isPending
-              ? 'Проверяем права и подключаем выбранные чаты…'
-              : operation?.state === 'unknown'
-                ? 'Результат создания ещё не подтверждён.'
-                : 'Часть подключения требует проверки.'}
-          </p>
-          {operation ? (
-            <ul className="karavan-module__progress">
-              {operation.checkpoints.bindings.map((item) => (
-                <li key={item.chatId}>
-                  <span>
-                    {chats.data?.find((chat) => chat.id === item.chatId)?.title ??
-                      (item.chatId === chatId ? 'Этот чат' : 'Выбранный чат')}
-                  </span>
-                  <strong>
-                    {
-                      {
-                        pending: 'Ожидает',
-                        connected: 'Подключён',
-                        unknown: 'Проверяется',
-                        failed: 'Нужна проверка',
-                      }[item.state]
-                    }
-                  </strong>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {operation?.state !== 'rejected' ? (
-            <button
-              type="button"
-              className="karavan-module__primary"
-              disabled={setup.isPending || !ready}
-              onClick={() => start()}
-            >
-              {setup.isPending ? 'Подключаем…' : 'Продолжить подключение'}
-            </button>
-          ) : null}
-          {operation?.state === 'rejected' && !operation.checkpoints.marketplaceId && saved ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (storageKey) removeMirroredItem(storageKey);
-                setSaved(null);
-                setOperation(null);
-                setNotice(null);
-                setStep('wizard');
-              }}
-            >
-              Изменить настройки
-            </button>
-          ) : null}
-          {operation?.state === 'partial' &&
-          !operation.checkpoints.bindings.some((item) => item.state === 'unknown') ? (
-            <button
-              type="button"
-              disabled={setup.isPending || cancelSetup.isPending}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Остановить оставшиеся подключения? Созданный магазин и уже подключённые чаты сохранятся.',
-                  )
-                )
-                  cancelSetup.mutate();
-              }}
-            >
-              Остановить оставшиеся подключения
-            </button>
-          ) : null}
-          {canEnter && operation?.checkpoints.marketplaceId === marketplace?.id ? (
-            <button type="button" disabled={busy} onClick={() => setPendingManagerOpen(true)}>
-              Настроить черновик
-            </button>
-          ) : null}
-        </>
-      ) : marketplace && step === 'intro' ? (
-        canEnter ? (
-          <KaravanShopManager
-            api={api}
-            chatId={chatId}
-            module={module}
-            busy={busy}
-            open={openShop}
-            publications={publications}
-            publicationsFooter={publicationsFooter}
-            publicationsDirty={publicationsDirty}
-            discardPublications={discardPublications}
-            chats={
-              <>
-                <ul className="karavan-module__progress">
-                  {module.bindings?.map((binding) => (
-                    <li key={binding.id}>
-                      <span>{binding.chatTitle || 'Чат'}</span>
-                      <strong>
-                        {binding.state === 'verified'
-                          ? 'Подключён'
-                          : binding.state === 'disconnected'
-                            ? 'Отключён'
-                            : 'Нужна проверка'}
-                      </strong>
-                    </li>
-                  ))}
-                </ul>
-                <button
-                  type="button"
-                  disabled={busy || !ready}
-                  onClick={() => setStep('add_chats')}
-                >
-                  Подключить чаты
-                </button>
-                <button type="button" disabled={busy || !ready} onClick={() => setStep('existing')}>
-                  Выбрать другой магазин
-                </button>
-                {disconnectConfirm ? (
-                  <div className="karavan-module__actions">
-                    <p>
-                      Этот чат перестанет открывать магазин. Если он последний, просмотр
-                      приостановится. Витрины и заказы сохранятся.
-                    </p>
-                    <button
-                      type="button"
-                      disabled={busy || !ready}
-                      onClick={() => startBinding('unbind_chat')}
-                    >
-                      Подтвердить отключение
-                    </button>
-                    <button type="button" onClick={() => setDisconnectConfirm(false)}>
-                      Отмена
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={busy || !ready}
-                    onClick={() => setDisconnectConfirm(true)}
-                  >
-                    Отключить этот чат
-                  </button>
-                )}
-              </>
-            }
-          />
-        ) : (
-          <>
-            <h3>{marketplace.name}</h3>
-            <p role="status">{karavanAccessMessage(module)}</p>
-            {module.access?.canRecover === true && marketplace.status !== 'archived' ? (
-              <button
-                type="button"
-                className="karavan-module__primary"
-                disabled={busy || !ready}
-                onClick={() => startBinding('recover_chat')}
-              >
-                Восстановить подключение
-              </button>
-            ) : null}
-            {active && module.buyerUrl ? (
-              <button type="button" onClick={openShop}>
-                Посмотреть магазин
-              </button>
-            ) : null}
-            <button type="button" onClick={() => void query.refetch()}>
-              Проверить снова
-            </button>
-          </>
-        )
-      ) : step === 'intro' ? (
-        <>
-          <h3>{module.currentChatTitle || 'Магазин вашего чата'}</h3>
-          <button
-            type="button"
-            className="karavan-module__primary"
-            disabled={!ready}
-            onClick={() => setStep('wizard')}
-          >
-            Подключить магазин
-          </button>
-        </>
-      ) : (
-        <KaravanMarketplaceWizard
+  if (pendingManagerOpen && canEnter && marketplace)
+    return (
+      <section className="karavan-module" aria-label="Магазин чата">
+        <KaravanShopManager
           api={api}
           chatId={chatId}
-          chatTitle={module.currentChatTitle ?? ''}
-          actorId={module.actorMaxUserId}
-          existing={step === 'existing' || step === 'add_chats'}
-          initialMarketplaceId={step === 'add_chats' ? marketplace?.id : undefined}
-          onCancel={() => setStep('intro')}
-          onSubmit={start}
+          module={module}
+          busy={busy}
+          open={openShop}
+          chats={
+            <button type="button" onClick={() => setPendingManagerOpen(false)}>
+              Вернуться к подключению
+            </button>
+          }
         />
-      )}
-      {!(marketplace && step === 'intro' && canEnter && !saved && !bind.request)
-        ? publicationEntry
-        : null}
-      {pendingManagerOpen && canEnter && marketplace ? (
-        <SettingsDrilldownPanel
-          id="karavan-pending-shop"
-          title="Настройки магазина"
-          open
-          onClose={() => setPendingManagerOpen(false)}
-          className="settings-storefront-panel"
-        >
-          <div className="karavan-module">
+      </section>
+    );
+  return (
+    <StorefrontPublicationPreviewContext.Provider value={module.publicationPreview ?? null}>
+      <section className="karavan-module" aria-label="Магазин чата">
+        {notice || bind.error ? (
+          <p className="karavan-module__notice" role="alert">
+            {notice || bind.error}
+          </p>
+        ) : null}
+        {retryOpen ? (
+          <button type="button" onClick={openShop}>
+            Повторить переход
+          </button>
+        ) : null}
+        {module.publicationChoices.map((choice) => (
+          <div key={choice.id} className="karavan-module__actions">
+            <p>Выберите витрину для ответа бота на $ в этом чате.</p>
+            {choice.stores.map((store) => (
+              <button
+                type="button"
+                key={store.id}
+                disabled={publicationChoice.isPending}
+                onClick={() => publicationChoice.mutate({ choiceId: choice.id, storeId: store.id })}
+              >
+                {store.name}
+              </button>
+            ))}
+            <p>
+              Другую свою витрину можно выбрать в её кабинете Каравана. Сохранение ничего не
+              отправляет в чат.
+            </p>
+          </div>
+        ))}
+        {marketplace && canEnter ? (
+          <div hidden={step !== 'intro' || !!saved || !!bind.request}>
             <KaravanShopManager
+              key={`${marketplace.id}:${module.binding?.generation}`}
               api={api}
               chatId={chatId}
               module={module}
               busy={busy}
               open={openShop}
+              publications={publications}
+              publicationsFooter={publicationsFooter}
+              publicationsDirty={publicationsDirty}
+              discardPublications={discardPublications}
               chats={
-                <button type="button" onClick={() => setPendingManagerOpen(false)}>
-                  Вернуться к подключению
-                </button>
+                <>
+                  <ul className="karavan-module__progress">
+                    {module.bindings?.map((binding) => (
+                      <li key={binding.id}>
+                        <span>{binding.chatTitle || 'Чат'}</span>
+                        <strong>
+                          {binding.state === 'verified'
+                            ? 'Подключён'
+                            : binding.state === 'disconnected'
+                              ? 'Отключён'
+                              : 'Нужна проверка'}
+                        </strong>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    disabled={busy || !ready}
+                    onClick={() => setStep('add_chats')}
+                  >
+                    Подключить чаты
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !ready}
+                    onClick={() => setStep('existing')}
+                  >
+                    Выбрать другой магазин
+                  </button>
+                  {disconnectConfirm ? (
+                    <div className="karavan-module__actions">
+                      <p>
+                        Этот чат перестанет открывать магазин. Если он последний, просмотр
+                        приостановится. Витрины и заказы сохранятся.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={busy || !ready}
+                        onClick={() => startBinding('unbind_chat')}
+                      >
+                        Подтвердить отключение
+                      </button>
+                      <button type="button" onClick={() => setDisconnectConfirm(false)}>
+                        Отмена
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy || !ready}
+                      onClick={() => setDisconnectConfirm(true)}
+                    >
+                      Отключить этот чат
+                    </button>
+                  )}
+                </>
               }
             />
           </div>
-        </SettingsDrilldownPanel>
-      ) : null}
-    </section>
+        ) : null}
+        <div
+          hidden={
+            workspace?.page === 'publications' ||
+            (!!marketplace && canEnter && step === 'intro' && !saved && !bind.request)
+          }
+        >
+          {bind.request ? (
+            <>
+              <h3>
+                {bind.request.action === 'unbind_chat' ? 'Отключение чата' : 'Подключение магазина'}
+              </h3>
+              <p>
+                {bind.isPending
+                  ? 'Проверяем результат…'
+                  : bind.rejected
+                    ? 'Изменение не выполнено.'
+                    : 'Результат изменения ещё не подтверждён.'}
+              </p>
+              <button
+                type="button"
+                className="karavan-module__primary"
+                disabled={bind.isPending}
+                onClick={bind.retry}
+              >
+                {bind.isPending ? 'Проверяем…' : 'Повторить проверку'}
+              </button>
+              {bind.rejected ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    bind.resetRejected();
+                    setStep('intro');
+                  }}
+                >
+                  Обновить состояние
+                </button>
+              ) : null}
+            </>
+          ) : saved || setup.isPending ? (
+            <>
+              <h3>Подключение магазина</h3>
+              <p>
+                {setup.isPending
+                  ? 'Проверяем права и подключаем выбранные чаты…'
+                  : operation?.state === 'unknown'
+                    ? 'Результат создания ещё не подтверждён.'
+                    : 'Часть подключения требует проверки.'}
+              </p>
+              {operation ? (
+                <ul className="karavan-module__progress">
+                  {operation.checkpoints.bindings.map((item) => (
+                    <li key={item.chatId}>
+                      <span>
+                        {chats.data?.find((chat) => chat.id === item.chatId)?.title ??
+                          (item.chatId === chatId ? 'Этот чат' : 'Выбранный чат')}
+                      </span>
+                      <strong>
+                        {
+                          {
+                            pending: 'Ожидает',
+                            connected: 'Подключён',
+                            unknown: 'Проверяется',
+                            failed: 'Нужна проверка',
+                          }[item.state]
+                        }
+                      </strong>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {operation?.state !== 'rejected' ? (
+                <button
+                  type="button"
+                  className="karavan-module__primary"
+                  disabled={setup.isPending || !ready}
+                  onClick={() => start()}
+                >
+                  {setup.isPending ? 'Подключаем…' : 'Продолжить подключение'}
+                </button>
+              ) : null}
+              {operation?.state === 'rejected' && !operation.checkpoints.marketplaceId && saved ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (storageKey) removeMirroredItem(storageKey);
+                    setSaved(null);
+                    setOperation(null);
+                    setNotice(null);
+                    setStep('wizard');
+                  }}
+                >
+                  Изменить настройки
+                </button>
+              ) : null}
+              {operation?.state === 'partial' &&
+              !operation.checkpoints.bindings.some((item) => item.state === 'unknown') ? (
+                <button
+                  type="button"
+                  disabled={setup.isPending || cancelSetup.isPending}
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        'Остановить оставшиеся подключения? Созданный магазин и уже подключённые чаты сохранятся.',
+                      )
+                    )
+                      cancelSetup.mutate();
+                  }}
+                >
+                  Остановить оставшиеся подключения
+                </button>
+              ) : null}
+              {canEnter && operation?.checkpoints.marketplaceId === marketplace?.id ? (
+                <button type="button" disabled={busy} onClick={() => setPendingManagerOpen(true)}>
+                  Настроить черновик
+                </button>
+              ) : null}
+            </>
+          ) : marketplace && step === 'intro' ? (
+            canEnter ? null : (
+              <>
+                <h3>{marketplace.name}</h3>
+                <p role="status">{karavanAccessMessage(module)}</p>
+                {module.access?.canRecover === true && marketplace.status !== 'archived' ? (
+                  <button
+                    type="button"
+                    className="karavan-module__primary"
+                    disabled={busy || !ready}
+                    onClick={() => startBinding('recover_chat')}
+                  >
+                    Восстановить подключение
+                  </button>
+                ) : null}
+                {active && module.buyerUrl ? (
+                  <button type="button" onClick={openShop}>
+                    Посмотреть магазин
+                  </button>
+                ) : null}
+                <button type="button" onClick={() => void query.refetch()}>
+                  Проверить снова
+                </button>
+              </>
+            )
+          ) : step === 'intro' ? (
+            <>
+              <h3>{module.currentChatTitle || 'Магазин вашего чата'}</h3>
+              <button
+                type="button"
+                className="karavan-module__primary"
+                disabled={!ready}
+                onClick={() => setStep('wizard')}
+              >
+                Подключить магазин
+              </button>
+            </>
+          ) : (
+            <KaravanMarketplaceWizard
+              api={api}
+              chatId={chatId}
+              chatTitle={module.currentChatTitle ?? ''}
+              actorId={module.actorMaxUserId}
+              existing={step === 'existing' || step === 'add_chats'}
+              initialMarketplaceId={step === 'add_chats' ? marketplace?.id : undefined}
+              onCancel={() => setStep('intro')}
+              onSubmit={start}
+            />
+          )}
+        </div>
+        {!(marketplace && canEnter) ? publicationEntry : null}
+      </section>
+    </StorefrontPublicationPreviewContext.Provider>
   );
 }

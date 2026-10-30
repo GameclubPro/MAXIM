@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { StorefrontActions, useStorefrontDirty } from '../storefront-workspace';
 import { useQuery } from '@tanstack/react-query';
 import type { MarketplaceManagementOperation } from '@maxim/contracts/karavan-marketplace-management';
 import { getKaravanMarketplaceSetupOptions } from '../../../lib/api/karavan-marketplace-client';
@@ -19,7 +20,7 @@ type PreviewInput = Extract<
   MarketplaceManagementOperation,
   { operation: 'rules_preview' }
 >['input'];
-export default function ShopCategories({ onDirty }: { onDirty: (value: boolean) => void }) {
+export default function ShopCategories() {
   const { api, scope } = useShop();
   const query = useShopQuery<'detail'>({ operation: 'detail' });
   const options = useQuery({
@@ -42,10 +43,7 @@ export default function ShopCategories({ onDirty }: { onDirty: (value: boolean) 
     [error, setError] = useState<unknown>(null);
   const value = draft ?? query.data?.rules;
   const changed = !!draft;
-  useEffect(() => {
-    onDirty(changed);
-    return () => onDirty(false);
-  }, [changed, onDirty]);
+  useStorefrontDirty('categories', changed || checking || mutation.isPending);
   if (query.isPending || options.isPending) return <ShopLoading />;
   if (query.isError || options.isError || !value)
     return (
@@ -260,18 +258,23 @@ export default function ShopCategories({ onDirty }: { onDirty: (value: boolean) 
         </details>
       </fieldset>
       {error ? <ShopFailure error={error} retry={() => void calculate()} /> : null}
-      {changed && !preview ? (
-        <button
-          type="button"
-          className="karavan-module__primary"
-          disabled={
-            checking || mutation.isPending || !value.allowedCategoryIds.length || !value.text.trim()
-          }
-          onClick={() => void calculate()}
-        >
-          {checking ? 'Проверяем…' : 'Продолжить'}
-        </button>
-      ) : null}
+      <StorefrontActions page="categories">
+        {changed && !preview ? (
+          <button
+            type="button"
+            className="karavan-module__primary"
+            disabled={
+              checking ||
+              mutation.isPending ||
+              !value.allowedCategoryIds.length ||
+              !value.text.trim()
+            }
+            onClick={() => void calculate()}
+          >
+            {checking ? 'Проверяем…' : 'Продолжить'}
+          </button>
+        ) : null}
+      </StorefrontActions>
       {preview ? (
         <div className="karavan-shop__row">
           <strong>Изменения категорий</strong>
@@ -286,29 +289,31 @@ export default function ShopCategories({ onDirty }: { onDirty: (value: boolean) 
           {preview.input.requiresAcceptance ? (
             <p>Продавцам потребуется принять новые правила.</p>
           ) : null}
-          <button
-            type="button"
-            className="karavan-module__primary"
-            disabled={mutation.isPending}
-            onClick={() =>
-              void mutation
-                .mutateAsync({
-                  operation: 'rules_update',
-                  input: {
-                    ...preview.input,
-                    commandId: crypto.randomUUID(),
-                    fingerprint: preview.impact.fingerprint,
-                  },
-                })
-                .then(() => {
-                  setDraft(null);
-                  setPreview(null);
-                })
-                .catch(() => {})
-            }
-          >
-            Подтвердить
-          </button>
+          <StorefrontActions page="categories">
+            <button
+              type="button"
+              className="karavan-module__primary"
+              disabled={mutation.isPending}
+              onClick={() =>
+                void mutation
+                  .mutateAsync({
+                    operation: 'rules_update',
+                    input: {
+                      ...preview.input,
+                      commandId: crypto.randomUUID(),
+                      fingerprint: preview.impact.fingerprint,
+                    },
+                  })
+                  .then(() => {
+                    setDraft(null);
+                    setPreview(null);
+                  })
+                  .catch(() => {})
+              }
+            >
+              Применить категории и правила
+            </button>
+          </StorefrontActions>
         </div>
       ) : null}
     </>

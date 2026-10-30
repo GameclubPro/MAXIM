@@ -18,7 +18,7 @@ import {
   removeMirroredItem,
 } from '../../lib/native-storage';
 import { describeUserFacingError } from '../../lib/user-facing-error';
-import { useNativeBackHandler } from '../../lib/native-back';
+import { useStorefrontBack, useStorefrontWorkspace } from './storefront-workspace';
 
 const defaultRules =
   'Продавец отвечает за описание, актуальность предложений и выполнение договорённостей. Размещение витрин — после проверки администратора. Запрещены товары и услуги, нарушающие закон и правила MAX.';
@@ -158,7 +158,8 @@ export default function KaravanMarketplaceWizard({
     setAccepted(false);
     return true;
   };
-  useNativeBackHandler(back, { enabled: true, priority: 620 });
+  const workspace = useStorefrontWorkspace();
+  useStorefrontBack(back, workspace?.page !== 'publications');
   async function next() {
     setNotice(null);
     if (step === 1) {
@@ -572,7 +573,7 @@ export default function KaravanMarketplaceWizard({
             <p>
               {draft.mode === 'new'
                 ? 'Создадим черновик. Открытие покупателям — отдельное действие.'
-                : 'Чаты откроют выбранный магазин с его действующими правилами.'}
+                : 'Подключим чаты к выбранному магазину. Его доступность для покупателей не изменится.'}
             </p>
             <ul className="karavan-module__progress">
               {preview.data?.chats.map((chat) => (

@@ -12,20 +12,26 @@
     margin-bottom: 20px;
     color: var(--text-primary);
   }
-  body[data-miniapp-profile='moderation'] .karavan-module h3 {
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    h3:not(:where(.settings-storefront-editor *)) {
     margin: 0;
     font-size: 23px;
     line-height: 1.2;
     letter-spacing: -0.035em;
     overflow-wrap: anywhere;
   }
-  body[data-miniapp-profile='moderation'] .karavan-module p {
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    p:not(:where(.settings-storefront-editor *)) {
     margin: 0;
     font-size: 13px;
     line-height: 1.5;
     color: var(--text-secondary);
   }
-  body[data-miniapp-profile='moderation'] .karavan-module button {
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    :is(button:not([class]), button.karavan-module__primary, button.karavan-shop__drag) {
     min-height: 44px;
     padding: 11px 14px;
     border: 1px solid var(--color-border);

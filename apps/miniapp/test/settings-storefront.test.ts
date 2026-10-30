@@ -9,6 +9,7 @@ import {
   resolveKaravanStorefrontTexts,
   type KaravanStorefrontTexts,
 } from '@maxim/contracts/karavan-storefront';
+import { StorefrontPublicationPreviewContext } from '../src/pages/settings/storefront-publication-preview';
 import { SettingsStorefrontTextEditor } from '../src/pages/settings/settings-storefront-text-editor';
 
 const sectionSource = readFileSync(
@@ -50,16 +51,28 @@ test('storefront copy editor shares runtime defaults, text limits, and the secti
   ] satisfies KaravanStorefrontTexts[]) {
     const resolved = resolveKaravanStorefrontTexts(draft);
     const html = renderToStaticMarkup(
-      createElement(SettingsStorefrontTextEditor, { draft, onChange: () => undefined }),
+      createElement(
+        StorefrontPublicationPreviewContext.Provider,
+        { value: { mode: 'catalog' } },
+        createElement(SettingsStorefrontTextEditor, { draft, onChange: () => undefined }),
+      ),
     );
     assert.ok(html.includes(`<p>${resolved.karavanStorefrontMessageText}</p>`));
     assert.ok(html.includes(`<span>${resolved.karavanStorefrontOpenButtonText}</span>`));
+    const networkHtml = renderToStaticMarkup(
+      createElement(SettingsStorefrontTextEditor, {
+        draft,
+        onChange: () => undefined,
+        scope: 'network',
+      }),
+    );
+    assert.ok(!networkHtml.includes('settings-storefront-editor__preview-buttons'));
     for (const field of Object.keys(draft)) {
       const limit =
         field === 'karavanStorefrontMessageText'
           ? KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH
           : KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH;
-      assert.match(html, new RegExp(`id="${field}"[^>]*maxLength="${limit}"`, 'u'));
+      assert.match(networkHtml, new RegExp(`id="${field}"[^>]*maxLength="${limit}"`, 'u'));
     }
   }
   assert.match(editorSource, /aria-pressed=\{variant === value\}/u);
@@ -70,7 +83,10 @@ test('storefront copy editor shares runtime defaults, text limits, and the secti
   );
   assert.match(pageSource, /onTextChange=\{setFieldValue\}/u);
   assert.match(pageSource, /sharedContent=\{renderSharedChatSection\('storefront'\)\}/u);
-  assert.match(sharedFieldsSource, /<SettingsStorefrontTextEditor fields=\{fields\} \/>/u);
+  assert.match(
+    sharedFieldsSource,
+    /<SettingsStorefrontTextEditor fields=\{fields\} scope=\{scope\} \/>/u,
+  );
   for (const field of ['Message', 'OpenButton', 'CatalogButton', 'CreateButton']) {
     assert.ok(stateSource.includes(`'karavanStorefront${field}Text'`));
   }
@@ -94,4 +110,29 @@ test('chat settings page scopes both storefront settings fields and passes the a
   assert.match(pageSource, /api=\{api\}/u);
   assert.match(pageSource, /chatId=\{chatId\}/u);
   assert.match(pageSource, /onAdminsOnlyChange=/u);
+});
+
+test('unknown and unavailable modes never invent a bot response', () => {
+  const draft = {
+    karavanStorefrontMessageText: '',
+    karavanStorefrontOpenButtonText: '',
+    karavanStorefrontCatalogButtonText: '',
+    karavanStorefrontCreateButtonText: '',
+  };
+  for (const value of [
+    null,
+    { mode: 'unavailable', reason: 'closed' },
+    { mode: 'unavailable', reason: 'connection' },
+    { mode: 'unavailable', reason: 'verification' },
+  ] as const) {
+    const html = renderToStaticMarkup(
+      createElement(
+        StorefrontPublicationPreviewContext.Provider,
+        { value },
+        createElement(SettingsStorefrontTextEditor, { draft, onChange: () => undefined }),
+      ),
+    );
+    assert.ok(!html.includes('settings-storefront-editor__preview-buttons'));
+    assert.ok(html.includes('role="status"'));
+  }
 });

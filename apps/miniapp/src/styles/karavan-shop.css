@@ -197,4 +197,145 @@
     background: var(--shop-selected-surface);
     border-color: var(--karavan-brand);
   }
+
+  body[data-miniapp-profile='moderation'] .storefront-workspace {
+    --karavan-brand: #435ee9;
+    --shop-hero-surface: #202839;
+    --shop-hero-text: #fff;
+    --shop-hero-muted: #c9d2e5;
+    --karavan-on-brand: #fff;
+    --shop-selected-surface: color-mix(in srgb, var(--karavan-brand) 14%, var(--color-surface));
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace [data-storefront-screen] {
+    display: grid;
+    min-width: 0;
+    gap: 18px;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace [data-storefront-screen][hidden] {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace .karavan-module {
+    border: 0;
+    padding: 0;
+    margin: 0;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace .karavan-shop {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace .settings-drilldown__close,
+  body[data-miniapp-profile='moderation'] .storefront-workspace__back {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace__back {
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 24px;
+    cursor: pointer;
+  }
+  html:is([data-max-platform='ios'], [data-max-platform='android'])
+    body[data-miniapp-profile='moderation']
+    .storefront-workspace__back {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .storefront-workspace
+    .settings-drilldown__footer:not(:has(button)) {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .settings-drilldown__panel.storefront-workspace
+    .settings-drilldown__footer
+    .storefront-workspace__footer
+    button {
+    min-height: 48px;
+  }
+  body[data-miniapp-profile='moderation']
+    .settings-drilldown__panel.storefront-workspace
+    .storefront-workspace__footer
+    .button.button--accent {
+    background: var(--karavan-brand);
+    color: var(--karavan-on-brand);
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace__actions {
+    display: grid;
+    gap: 8px;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace__actions:empty {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace__actions button {
+    min-height: 48px;
+    padding: 12px 16px;
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    background: var(--color-surface);
+    color: var(--text-primary);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  body[data-miniapp-profile='moderation']
+    .storefront-workspace__actions
+    button.karavan-module__primary {
+    background: var(--karavan-brand);
+    color: var(--karavan-on-brand);
+    border-color: var(--karavan-brand);
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace__actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__hero {
+    position: relative;
+    display: grid;
+    gap: 20px;
+    overflow: hidden;
+    padding: 22px;
+    border-radius: 22px;
+    background: var(--shop-hero-surface);
+    color: var(--shop-hero-text);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__cover {
+    width: calc(100% + 44px);
+    max-width: none;
+    margin: -22px -22px 0;
+    aspect-ratio: 3 / 1;
+    object-fit: cover;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__logo {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 18px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__hero .karavan-module__identity h3 {
+    color: var(--shop-hero-text);
+    font-size: clamp(24px, 6.4vw, 32px);
+    letter-spacing: -0.04em;
+    line-height: 1.15;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__hero .karavan-module__identity p {
+    color: var(--shop-hero-muted);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__hero button {
+    min-height: 48px;
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__menu {
+    gap: 0;
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module
+    .karavan-shop__menu
+    .settings-section__toggle {
+    padding: 16px 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  body[data-miniapp-profile='moderation'] .karavan-shop__draft-status {
+    padding-block: 8px;
+  }
 }

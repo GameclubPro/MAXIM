@@ -41,7 +41,7 @@ native.each(['moderation', 'publisher'] as const)(
       const url = new URL(databaseUrl);
       if (
         !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
-        !/^\/maxim_race_test_[a-zA-Z0-9_]+$/.test(url.pathname)
+        !/^\/(?:race_test|maxim_race_test_[a-zA-Z0-9_]+)$/.test(url.pathname)
       )
         throw new Error('Disposable local race_test database required');
       db = new PrismaClient({
