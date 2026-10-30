@@ -1,5 +1,6 @@
 import { Pool, type PoolClient, type PoolConfig } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { currentConnectionAdmissionBudget } from './connection-admission-budget';
 
 type ConnectCallback = (
   error: Error | undefined,
@@ -8,6 +9,7 @@ type ConnectCallback = (
 ) => void;
 
 export class ConnectionAdmissionPool extends Pool {
+  private budgetedAdmissions = 0;
   override connect(): Promise<PoolClient>;
   override connect(callback: ConnectCallback): void;
   override connect(callback?: ConnectCallback): Promise<PoolClient> | void {
@@ -21,9 +23,43 @@ export class ConnectionAdmissionPool extends Pool {
       });
     }
 
+    const budget = currentConnectionAdmissionBudget();
+    if (budget) {
+      try {
+        budget.check();
+        // FLAG: Expired Prisma maxWait callers can leave a pg waiter behind. Bound that
+        // backlog, and never hand a late connection to Prisma (which would issue BEGIN).
+        if (this.budgetedAdmissions >= 16) throw new Error('Read admission capacity exhausted');
+      } catch (error) {
+        callback(
+          error instanceof Error ? error : new Error('Read admission expired'),
+          undefined,
+          () => {},
+        );
+        return;
+      }
+      this.budgetedAdmissions++;
+    }
     let retried = false;
     const acquire = () => {
       super.connect((error, client, release) => {
+        if (budget) {
+          this.budgetedAdmissions--;
+          try {
+            budget.check();
+          } catch (expired) {
+            if (client) release();
+            callback(
+              expired instanceof Error ? expired : new Error('Read admission expired'),
+              undefined,
+              () => {},
+            );
+            return;
+          }
+          // A budgeted read gets one bounded admission, never the ordinary second wait.
+          callback(error, client, release);
+          return;
+        }
         // FLAG: Retry only pg-pool's expired waiting-list admission, before a client
         // or SQL reaches the caller. Query, transaction, commit and socket failures
         // never enter this branch. The pool limit and each acquisition timeout stay fixed;

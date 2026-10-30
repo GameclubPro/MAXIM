@@ -9,6 +9,8 @@ import type {
 import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { StatsCandidate } from './stats-types';
+import { compareTimes } from './stats-common';
+import { unionStatsCoverage } from './stats-coverage';
 
 const DAY_MS = 86_400_000;
 const iso = (value: Date | null) => value?.toISOString() ?? null;
@@ -49,7 +51,7 @@ type PostAggregate = {
   delay: number | null;
   missed: bigint;
 };
-type Proof = { from_at: Date; to_at: Date };
+type Proof = { from_at: Date; to_at: Date; from_exact?: string; to_exact?: string };
 
 /** Reads native observations only; the caller authorizes every returned source candidate. */
 @Injectable()
@@ -61,6 +63,41 @@ export class MaximNativeStatsAdapter {
     scopes: StatsMetricKey[],
     fromDay: string,
     toDay: string,
+  ): Promise<StatsCandidate[]> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
+        await tx.$executeRaw`SET LOCAL statement_timeout='2500ms'`;
+        // FLAG: Acquire the MVCC snapshot before choosing the cutoff for latest-only facts.
+        const [clock] = await tx.$queryRaw<
+          Array<{ as_of: Date }>
+        >`SELECT clock_timestamp() AS as_of`;
+        const retentionFloor = new Date(
+          Date.UTC(
+            clock.as_of.getUTCFullYear(),
+            clock.as_of.getUTCMonth(),
+            clock.as_of.getUTCDate(),
+          ) -
+            89 * DAY_MS,
+        )
+          .toISOString()
+          .slice(0, 10);
+        return this.readInSnapshot(tx, entity, scopes, fromDay, toDay, {
+          asOf: clock.as_of,
+          retentionFloor,
+        });
+      },
+      { isolationLevel: 'RepeatableRead', timeout: 15_000 },
+    );
+  }
+
+  async readInSnapshot(
+    tx: Prisma.TransactionClient,
+    entity: StatsEntity,
+    scopes: StatsMetricKey[],
+    fromDay: string,
+    toDay: string,
+    snapshot: { asOf: Date; retentionFloor: string },
   ): Promise<StatsCandidate[]> {
     const from = new Date(`${fromDay}T00:00:00.000Z`);
     const end = new Date(`${toDay}T00:00:00.000Z`);
@@ -75,52 +112,38 @@ export class MaximNativeStatsAdapter {
       end.getTime() - from.getTime() >= 90 * DAY_MS
     )
       throw new RangeError('Native statistics require at most 90 inclusive UTC days');
+    const now = snapshot.asOf;
     const requested = (metric: string, method: string) =>
       scopes.some((scope) => scope.metric === metric && scope.method.id === method);
-    // FLAG: Neither old exchange selectors nor imported-generation tables are native input.
-    return this.prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
-        await tx.$executeRaw`SET LOCAL statement_timeout='2500ms'`;
-        // FLAG: Choose the observation cutoff after acquiring the MVCC snapshot, so a
-        // latest-only native row advanced before that snapshot remains visible.
-        const [clock] = await tx.$queryRaw<Array<{ as_of: Date }>>`
-          SELECT clock_timestamp() AS as_of`;
-        const now = clock.as_of;
-        const today = new Date(now);
-        today.setUTCHours(0, 0, 0, 0);
-        from.setTime(Math.max(from.getTime(), today.getTime() - 89 * DAY_MS));
-        const to = new Date(Math.min(end.getTime() + DAY_MS, now.getTime()));
-        if (to <= from) return [];
-        const rows: StatsCandidate[] = [];
-        if (requested('AUDIENCE', 'AUDIENCE_SNAPSHOT'))
-          rows.push(...(await this.audience(tx, entity, from, to)));
-        if (requested('MEMBERSHIP', 'OBSERVED_MEMBER_EVENTS'))
-          rows.push(...(await this.membership(tx, entity, from, to)));
-        if (entity.kind !== 'CHANNEL') return rows;
-        const horizons = [
-          ...new Set(
-            scopes.flatMap((scope) =>
-              scope.metric === 'REACH' &&
-              (scope.method.id === 'POST_PUBLICATION_DAY' ||
-                scope.method.id === 'TIMED_POST_PUBLICATION_DAY')
-                ? [scope.horizon]
-                : [],
-            ),
-          ),
-        ];
-        const publication = requested('PUBLICATION_HOUR', 'PUBLICATION_DAY_HOURS');
-        const proofs =
-          horizons.length || publication ? await this.proofs(tx, entity, from, to, now) : [];
-        if (horizons.length)
-          rows.push(...(await this.reach(tx, entity, from, to, now, horizons, proofs)));
-        if (publication) rows.push(...(await this.publications(tx, entity, from, to, now, proofs)));
-        if (requested('REACH', 'RECENT_POST_SAMPLE_20'))
-          rows.push(...(await this.recent(tx, entity, fromDay, toDay, now)));
-        return rows;
-      },
-      { isolationLevel: 'RepeatableRead', timeout: 15_000 },
-    );
+    from.setTime(Math.max(from.getTime(), Date.parse(`${snapshot.retentionFloor}T00:00:00.000Z`)));
+    const to = new Date(Math.min(end.getTime() + DAY_MS, now.getTime()));
+    if (to <= from) return [];
+    const rows: StatsCandidate[] = [];
+    if (requested('AUDIENCE', 'AUDIENCE_SNAPSHOT'))
+      rows.push(...(await this.audience(tx, entity, from, to)));
+    if (requested('MEMBERSHIP', 'OBSERVED_MEMBER_EVENTS'))
+      rows.push(...(await this.membership(tx, entity, from, to)));
+    if (entity.kind !== 'CHANNEL') return rows;
+    const horizons = [
+      ...new Set(
+        scopes.flatMap((scope) =>
+          scope.metric === 'REACH' &&
+          (scope.method.id === 'POST_PUBLICATION_DAY' ||
+            scope.method.id === 'TIMED_POST_PUBLICATION_DAY')
+            ? [scope.horizon]
+            : [],
+        ),
+      ),
+    ];
+    const publication = requested('PUBLICATION_HOUR', 'PUBLICATION_DAY_HOURS');
+    const proofs =
+      horizons.length || publication ? await this.proofs(tx, entity, from, to, now) : [];
+    if (horizons.length)
+      rows.push(...(await this.reach(tx, entity, from, to, now, horizons, proofs)));
+    if (publication) rows.push(...(await this.publications(tx, entity, from, to, now, proofs)));
+    if (requested('REACH', 'RECENT_POST_SAMPLE_20'))
+      rows.push(...(await this.recent(tx, entity, fromDay, toDay, now)));
+    return rows;
   }
 
   private async audience(
@@ -286,6 +309,10 @@ export class MaximNativeStatsAdapter {
     // FLAG: A rejected publication identity cannot become a proven empty/full day.
     if (conflict?.present) return [];
     return tx.$queryRaw<Proof[]>`
+      SELECT from_at,to_at,
+        to_char(from_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS from_exact,
+        to_char(to_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS to_exact
+      FROM (
       SELECT ${from}::timestamptz AS from_at,full_refresh_at AS to_at FROM channel_view_archive_states
         WHERE chat_id=${entity.maxId} AND discovery_complete_at IS NOT NULL AND full_refresh_at>=${from}
           AND full_refresh_at<=${now}
@@ -293,17 +320,28 @@ export class MaximNativeStatsAdapter {
       SELECT history_from,history_to FROM marketplace_bindings WHERE entity_id=${entity.maxId}
         AND kind='CHANNEL' AND history_complete AND history_cursor IS NULL AND NOT history_anomaly
         AND history_from IS NOT NULL AND history_to>=${from} AND history_from<${to}
-        AND history_to<=${now}`;
+        AND history_to<=${now}) proof`;
   }
 
   private coverage(bucket: Date, proofs: Proof[], mature = true): StatsCoverage {
-    const from = bucket.getTime();
-    const to = from + DAY_MS;
-    const proof = proofs.find((row) => row.from_at.getTime() <= from && row.to_at.getTime() >= to);
+    const from = bucket.toISOString();
+    const to = new Date(bucket.getTime() + DAY_MS).toISOString();
+    const intervals = unionStatsCoverage(
+      proofs.map((proof) => ({
+        from: proof.from_exact ?? proof.from_at.toISOString(),
+        to: proof.to_exact ?? proof.to_at.toISOString(),
+      })),
+      from,
+      to,
+    );
+    const complete =
+      intervals.length === 1 &&
+      compareTimes(intervals[0]!.from, from) === 0 &&
+      compareTimes(intervals[0]!.to, to) === 0;
     return {
-      state: proof && mature ? 'COMPLETE' : 'PARTIAL',
-      intervals: proof ? [{ from: bucket.toISOString(), to: new Date(to).toISOString() }] : [],
-      populationComplete: Boolean(proof && mature),
+      state: complete && mature ? 'COMPLETE' : 'PARTIAL',
+      intervals,
+      populationComplete: complete && mature,
     };
   }
 

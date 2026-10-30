@@ -8,11 +8,13 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
+import type { FastifyReply } from 'fastify';
 import {
   statsAuthorityRequestSchema,
   statsAuthorityResolveRequestSchema,
@@ -29,6 +31,9 @@ import { StatsAccessService } from './stats-access.service';
 import { StatsIngestService } from './stats-ingest.service';
 import { StatsReadService } from './stats-read.service';
 import { StatsChangesService } from './stats-changes.service';
+import { StatsAnalyticsService } from './stats-analytics.service';
+import { statsAnalyticsRequestSchema } from '@maxim/contracts/statistics-analytics-validation';
+import { analyticsFailure, statsReadBudgetFor } from './stats-read-budget';
 import { assertBytes, centralEnabled, StatsFailure } from './stats-common';
 
 @Injectable()
@@ -55,6 +60,7 @@ export class StatsController {
     private readonly ingestService: StatsIngestService,
     private readonly read: StatsReadService,
     private readonly feed: StatsChangesService,
+    private readonly analyticsService: StatsAnalyticsService,
   ) {}
   private enabled() {
     if (!centralEnabled(this.config)) throw new StatsFailure('UNAVAILABLE', 503);
@@ -74,7 +80,9 @@ export class StatsController {
     if (!result.success) throw new StatsFailure('INVALID_REQUEST', 400);
     return result.data;
   }
-  @Get('status') async status(): Promise<StatsStatusResult> {
+  @Get('status') async status(
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<StatsStatusResult> {
     const enabled = centralEnabled(this.config),
       epoch = this.config.get<string>('STATISTICS_CENTRAL_EXCHANGE_EPOCH') ?? null;
     const schema =
@@ -84,6 +92,8 @@ export class StatsController {
         >`SELECT to_regclass('stats_entities') IS NOT NULL AND to_regclass('stats_authorities') IS NOT NULL AND to_regclass('stats_measurements') IS NOT NULL AND to_regclass('stats_ingest_requests') IS NOT NULL AND to_regclass('stats_changes') IS NOT NULL AS ready`
       )[0]?.ready === true;
     const centralReady = enabled && schema && !!epoch;
+    reply.header('x-statistics-analytics-version', '1');
+    reply.header('Cache-Control', 'no-store');
     return {
       contractVersion: 1,
       selectorVersion: 1,
@@ -147,5 +157,21 @@ export class StatsController {
       .safeParse({ cursor, limit });
     if (!parsed.success) throw new StatsFailure('INVALID_REQUEST', 400);
     return this.feed.changes(parsed.data.cursor, parsed.data.limit);
+  }
+  @Post('analytics:read')
+  async analytics(
+    @Body() body: unknown,
+    @Req() req: { headers: Record<string, string | number | undefined> },
+  ) {
+    try {
+      this.enabled();
+      const budget = statsReadBudgetFor(req);
+      return await this.analyticsService.read(
+        this.parse(statsAnalyticsRequestSchema, body, 65_536, req),
+        budget,
+      );
+    } catch (error) {
+      throw analyticsFailure(error);
+    }
   }
 }
