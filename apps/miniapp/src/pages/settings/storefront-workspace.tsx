@@ -14,7 +14,7 @@ import { SettingsDrilldownPanel } from '../../components/ui/settings-drilldown-p
 import { SettingsSectionIcon } from '../../components/ui/settings-section-toggle';
 
 const pages = {
-  home: 'Интернет-витрина',
+  home: 'Магазин чата',
   catalog: 'Витрины',
   applications: 'Заявки',
   appearance: 'Оформление',

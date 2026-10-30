@@ -63,6 +63,7 @@ export default function KaravanMarketplacePanel({
   const [saved, setSaved] = useState<KaravanMarketplaceSetup | null>(null);
   const [operation, setOperation] = useState<KaravanMarketplaceOperation | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [created, setCreated] = useState(false);
   const [retryOpen, setRetryOpen] = useState(false);
   const returningFromShop = useRef(false);
   const [hydrated, setHydrated] = useState(false);
@@ -160,6 +161,7 @@ export default function KaravanMarketplacePanel({
       )
         void queryClient.invalidateQueries({ queryKey });
       if (state.state === 'complete' || state.state === 'cancelled') {
+        setCreated(state.state === 'complete' && !!state.request.create);
         if (storageKey) removeMirroredItem(storageKey);
         setSaved(null);
         setStep('intro');
@@ -242,6 +244,7 @@ export default function KaravanMarketplacePanel({
     if (!request) return;
     saveMirroredItem(storageKey, JSON.stringify(request));
     setSaved(request);
+    setCreated(false);
     setNotice(null);
     setup.mutate(request);
   }
@@ -271,6 +274,9 @@ export default function KaravanMarketplacePanel({
       <div className="karavan-module" role="status">
         <StorefrontScreen page="home">
           <p>Магазин чата пока недоступен.</p>
+          <button type="button" disabled={query.isFetching} onClick={() => void query.refetch()}>
+            Проверить снова
+          </button>
         </StorefrontScreen>
         {publicationEntry}
       </div>
@@ -313,6 +319,7 @@ export default function KaravanMarketplacePanel({
   return (
     <StorefrontPublicationPreviewContext.Provider value={module.publicationPreview ?? null}>
       <section className="karavan-module" aria-label="Магазин чата">
+        {created && workspace?.page === 'home' ? <p role="status">Магазин создан.</p> : null}
         {notice || bind.error ? (
           <p className="karavan-module__notice" role="alert">
             {notice || bind.error}
@@ -558,18 +565,8 @@ export default function KaravanMarketplacePanel({
                 </button>
               </>
             )
-          ) : step === 'intro' ? (
-            <>
-              <h3>{module.currentChatTitle || 'Магазин чата'}</h3>
-              <button
-                type="button"
-                className="karavan-module__primary"
-                disabled={!ready}
-                onClick={() => setStep('wizard')}
-              >
-                Подключить магазин
-              </button>
-            </>
+          ) : !ready ? (
+            <Spinner size="sm" label="Проверяем сохранённое подключение" />
           ) : (
             <KaravanMarketplaceWizard
               api={api}
@@ -578,7 +575,7 @@ export default function KaravanMarketplacePanel({
               actorId={module.actorMaxUserId}
               existing={step === 'existing' || step === 'add_chats'}
               initialMarketplaceId={step === 'add_chats' ? marketplace?.id : undefined}
-              onCancel={() => setStep('intro')}
+              onCancel={step === 'intro' ? undefined : () => setStep('intro')}
               onSubmit={start}
             />
           )}

@@ -570,7 +570,7 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   requiredSubscription: 'Подписка на канал',
   invitationAccess: 'Настройки',
   commands: 'Команды',
-  storefront: 'Интернет-витрина',
+  storefront: 'Магазин чата',
   extra: 'Сервис',
 };
 export const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;

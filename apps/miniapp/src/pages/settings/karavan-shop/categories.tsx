@@ -271,7 +271,7 @@ export default function ShopCategories() {
             }
             onClick={() => void calculate()}
           >
-            {checking ? 'Проверяем…' : 'Продолжить'}
+            {checking ? 'Проверяем…' : 'Проверить изменения'}
           </button>
         ) : null}
       </StorefrontActions>
@@ -285,7 +285,9 @@ export default function ShopCategories() {
           {preview.impact.emptiedStores ? (
             <p>Без доступных объявлений: {preview.impact.emptiedStores}.</p>
           ) : null}
-          <p>С {new Date(preview.input.effectiveAt).toLocaleDateString('ru-RU')}</p>
+          <p>
+            Начнут действовать {new Date(preview.input.effectiveAt).toLocaleDateString('ru-RU')}
+          </p>
           {preview.input.requiresAcceptance ? (
             <p>Продавцам потребуется принять новые правила.</p>
           ) : null}

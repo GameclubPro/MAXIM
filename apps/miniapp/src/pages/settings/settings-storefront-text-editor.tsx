@@ -161,10 +161,7 @@ export function SettingsStorefrontTextEditor(props: Props) {
         </p>
       ) : null}
       {available ? (
-        <div
-          className="settings-storefront-editor__preview"
-          aria-label="Предпросмотр сообщения витрины"
-        >
+        <div className="settings-storefront-editor__preview" aria-label="Пример переписки с ботом">
           <h3>Пример ответа</h3>
           <div
             className="settings-storefront-editor__modes"
@@ -173,8 +170,8 @@ export function SettingsStorefrontTextEditor(props: Props) {
           >
             {(
               [
-                ['storefront', 'С витриной'],
-                ['directory', 'Без витрины'],
+                ['storefront', 'Есть витрина'],
+                ['directory', 'Нет витрины'],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -187,6 +184,10 @@ export function SettingsStorefrontTextEditor(props: Props) {
                 {label}
               </button>
             ))}
+          </div>
+          <div className="settings-storefront-editor__message settings-storefront-editor__message--request">
+            <span className="settings-storefront-editor__sender">Продавец</span>
+            <p>$ Ремонт стиральных машин</p>
           </div>
           <div className="settings-storefront-editor__message">
             <span className="settings-storefront-editor__sender">Бот</span>

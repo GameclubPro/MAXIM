@@ -7,124 +7,168 @@ import {
   ShopFailure,
   ShopLoading,
   useShopMutation,
-  useShopQuery,
+  useShopPages,
 } from './runtime';
-export default function ShopApplications() {
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [selected, setSelected] = useState<MarketplaceApplication | null>(null);
+import { SellerAccessAction } from './seller-access';
+import { uniqueShopItems } from './shop-journey';
+import { publicationReasons } from './listing-status';
+
+function Application({
+  application,
+  onResult,
+}: {
+  application: MarketplaceApplication;
+  onResult: (message: string) => void;
+}) {
+  const [decision, setDecision] = useState<'reject' | 'changes_requested' | null>(null);
   const [reason, setReason] = useState('');
-  useStorefrontDirty('applications', !!selected && !!reason.trim());
-  const query = useShopQuery<'applications'>({
-    operation: 'applications',
-    input: { cursor, limit: 24, state: 'pending' },
-  });
-  const mutation = useShopMutation(() => {
-    setSelected(null);
+  const mutation = useShopMutation((command, result) => {
+    if (command.operation !== 'decide') return;
+    const value = command.input.decision;
+    const label =
+      value === 'approve'
+        ? 'Витрина одобрена'
+        : value === 'reject'
+          ? 'Заявка отклонена'
+          : 'Заявка отправлена на доработку';
+    onResult(
+      value === 'approve' && 'listing' in result && result.listing.publicationReason !== 'published'
+        ? `${label}. ${publicationReasons[result.listing.publicationReason]}.`
+        : label,
+    );
+    setDecision(null);
     setReason('');
   });
-  if (query.isPending) return <ShopLoading />;
-  if (query.isError) return <ShopFailure error={query.error} retry={() => void query.refetch()} />;
-  const decide = async (
-    application: MarketplaceApplication,
-    decision: 'approve' | 'reject' | 'changes_requested',
-  ) => {
+  const locked = mutation.isPending || mutation.isError;
+  useStorefrontDirty(`application:${application.id}`, !!decision && !!reason.trim());
+  const decide = async (value: 'approve' | 'reject' | 'changes_requested') => {
     await mutation.mutateAsync({
       operation: 'decide',
       applicationId: application.id,
       input: {
         commandId: crypto.randomUUID(),
         expectedRevision: application.revision,
-        decision,
-        reason: decision === 'approve' ? null : reason.trim(),
+        decision: value,
+        reason: value === 'approve' ? null : reason.trim(),
       },
     });
-    setSelected(null);
-    setReason('');
   };
   return (
-    <>
+    <article className="karavan-shop__row">
+      <div className="karavan-shop__identity">
+        {application.profile.logoImageUrl ? (
+          <img src={application.profile.logoImageUrl} alt="" />
+        ) : null}
+        <strong>{application.profile.name}</strong>
+      </div>
+      {application.profile.description ? <p>{application.profile.description}</p> : null}
+      {application.publishedProfile &&
+      application.publishedProfile.name !== application.profile.name ? (
+        <p>Сейчас: {application.publishedProfile.name}</p>
+      ) : null}
+      <ListingContentDisclosure listingId={application.listingId} />
+      {application.canReview ? (
+        <div className="karavan-module__entry-actions">
+          <button
+            type="button"
+            className="karavan-module__primary"
+            disabled={locked}
+            onClick={() => void decide('approve').catch(() => {})}
+          >
+            {mutation.isPending &&
+            mutation.variables?.operation === 'decide' &&
+            mutation.variables.input.decision === 'approve'
+              ? 'Одобряем…'
+              : 'Одобрить'}
+          </button>
+          <button
+            type="button"
+            disabled={locked}
+            onClick={() => {
+              setDecision('changes_requested');
+              setReason('');
+            }}
+          >
+            На доработку
+          </button>
+          <button
+            type="button"
+            disabled={locked}
+            onClick={() => {
+              setDecision('reject');
+              setReason('');
+            }}
+          >
+            Отклонить
+          </button>
+        </div>
+      ) : (
+        <p>Вашу витрину проверяет другой администратор.</p>
+      )}
+      {decision ? (
+        <div className="karavan-module__actions">
+          <label className="karavan-module__field">
+            {decision === 'reject' ? 'Причина отказа' : 'Что нужно исправить'}
+            <textarea
+              value={reason}
+              maxLength={2000}
+              disabled={locked}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={locked || !reason.trim()}
+            onClick={() => void decide(decision).catch(() => {})}
+          >
+            {mutation.isPending
+              ? 'Сохраняем решение…'
+              : decision === 'reject'
+                ? 'Отклонить заявку'
+                : 'Отправить на доработку'}
+          </button>
+          <button type="button" disabled={locked} onClick={() => setDecision(null)}>
+            Отмена
+          </button>
+        </div>
+      ) : null}
       <MutationFailure mutation={mutation} />
-      {!query.data.applications.length ? <p>Новых заявок нет</p> : null}
-      {query.data.applications.map((application) => (
-        <article className="karavan-shop__row" key={application.id}>
-          <div className="karavan-shop__identity">
-            {application.profile.logoImageUrl ? (
-              <img src={application.profile.logoImageUrl} alt="" />
-            ) : null}
-            <strong>{application.profile.name}</strong>
-          </div>
-          {application.profile.description ? <p>{application.profile.description}</p> : null}
-          {application.publishedProfile &&
-          application.publishedProfile.name !== application.profile.name ? (
-            <p>Сейчас: {application.publishedProfile.name}</p>
-          ) : null}
-          <ListingContentDisclosure listingId={application.listingId} />
-          {application.canReview ? (
-            <div className="karavan-module__entry-actions">
-              <button
-                type="button"
-                className="karavan-module__primary"
-                disabled={mutation.isPending}
-                onClick={() => void decide(application, 'approve').catch(() => {})}
-              >
-                Одобрить
-              </button>
-              <button
-                type="button"
-                disabled={mutation.isPending}
-                onClick={() => {
-                  setSelected(application);
-                  setReason('');
-                }}
-              >
-                Отклонить
-              </button>
-            </div>
-          ) : (
-            <p>Вашу витрину проверяет другой администратор.</p>
-          )}
-          {selected?.id === application.id ? (
-            <div className="karavan-module__actions">
-              <label className="karavan-module__field">
-                Причина
-                <textarea
-                  value={reason}
-                  maxLength={2000}
-                  onChange={(event) => setReason(event.target.value)}
-                />
-              </label>
-              <div className="karavan-module__entry-actions">
-                <button
-                  type="button"
-                  disabled={!reason.trim() || mutation.isPending}
-                  onClick={() => void decide(application, 'changes_requested').catch(() => {})}
-                >
-                  На доработку
-                </button>
-                <button
-                  type="button"
-                  disabled={!reason.trim() || mutation.isPending}
-                  onClick={() => void decide(application, 'reject').catch(() => {})}
-                >
-                  Отклонить заявку
-                </button>
-              </div>
-              <button type="button" onClick={() => setSelected(null)}>
-                Отмена
-              </button>
-            </div>
-          ) : null}
-        </article>
+    </article>
+  );
+}
+
+export default function ShopApplications() {
+  const [notice, setNotice] = useState('');
+  const query = useShopPages<'applications'>({
+    operation: 'applications',
+    input: { cursor: null, limit: 24, state: 'pending' },
+  });
+  if (query.isPending) return <ShopLoading />;
+  if (!query.data) return <ShopFailure error={query.error} retry={() => void query.refetch()} />;
+  const applications = uniqueShopItems(query.data.pages.map((page) => page.applications));
+  return (
+    <>
+      {notice ? <p role="status">{notice}</p> : null}
+      {!applications.length ? (
+        <>
+          <p>Новых заявок нет</p>
+          <SellerAccessAction />
+        </>
+      ) : null}
+      {applications.map((application) => (
+        <Application key={application.id} application={application} onResult={setNotice} />
       ))}
-      {query.data.nextCursor ? (
-        <button type="button" onClick={() => setCursor(query.data.nextCursor)}>
-          Следующие заявки
+      {query.hasNextPage ? (
+        <button
+          type="button"
+          disabled={query.isFetchingNextPage}
+          onClick={() => void query.fetchNextPage()}
+        >
+          {query.isFetchingNextPage ? 'Загружаем…' : 'Показать ещё'}
         </button>
       ) : null}
-      {cursor ? (
-        <button type="button" onClick={() => setCursor(null)}>
-          К новым заявкам
-        </button>
+      {query.isFetchNextPageError ? (
+        <ShopFailure error={query.error} retry={() => void query.fetchNextPage()} />
       ) : null}
     </>
   );

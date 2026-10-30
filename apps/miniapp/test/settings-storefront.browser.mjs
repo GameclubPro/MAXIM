@@ -119,8 +119,8 @@ try {
               const errors = [];
               page.on('pageerror', (error) => errors.push(error.message));
               await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);
-              await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-              const rootSheet = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+              await page.getByRole('button', { name: 'Магазин чата', exact: true }).click();
+              const rootSheet = page.getByRole('dialog', { name: 'Магазин чата', exact: true });
               let sheet = rootSheet;
               await sheet.waitFor();
               if (scenario === 'loading') {

@@ -35,6 +35,14 @@ test('the bot response example stays visible while text editing starts collapsed
   const editing = html.indexOf('<details');
   const input = html.indexOf('id="karavanStorefrontMessageText"');
   assert.ok(preview >= 0 && preview < scenarios && scenarios < editing && editing < input);
+  const request = html.indexOf('<p>$ Ремонт стиральных машин</p>');
+  const response = html.indexOf(
+    `<p>${resolveKaravanStorefrontTexts(draft).karavanStorefrontMessageText}</p>`,
+  );
+  assert.ok(scenarios < request && request < response && response < editing);
+  assert.match(html, /Пример переписки с ботом/u);
+  assert.match(html, /Есть витрина/u);
+  assert.match(html, /Нет витрины/u);
   assert.match(html, /<details[^>]*><summary[^>]*>Изменить текст<\/summary>/u);
   assert.doesNotMatch(html, /<details[^>]*\bopen(?:=|\s|>)/u);
   const defaults = resolveKaravanStorefrontTexts(draft);
@@ -63,6 +71,7 @@ test('network edits keep mixed values and validation errors without inventing a 
     createElement(SettingsStorefrontTextEditor, { fields, scope: 'network' }),
   );
   assert.doesNotMatch(html, /settings-storefront-editor__preview|Сценарий примера/u);
+  assert.doesNotMatch(html, /Ремонт стиральных машин/u);
   assert.match(html, /<details[^>]*\bopen=""/u);
   assert.match(html, /role="alert">Проверьте текст ответа\./u);
   for (const field of Object.keys(draft)) {

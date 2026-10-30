@@ -10,6 +10,7 @@ import {
 
 const scenarios = [
   'setup',
+  'setup_simple',
   'draft',
   'draft_empty',
   'paused',
@@ -70,6 +71,7 @@ import '../../../src/styles/moderation-workspace.css';
 import Panel from '../../../src/pages/settings/karavan-marketplace-panel';
 import {ApiRequestError} from '../../../src/lib/api-request-error';
 import {StorefrontWorkspace} from '../../../src/pages/settings/storefront-workspace';
+import {marketplaceManagementResponseSchema} from '@maxim/contracts/karavan-marketplace-management';
 const scenario = new URLSearchParams(location.search).get('scenario');
 document.documentElement.dataset.maxTheme = new URLSearchParams(location.search).get('theme') || 'light';
 document.body.dataset.miniappProfile = 'moderation';
@@ -92,13 +94,19 @@ if(scenario==='server_restore') { const request={operationId:uuid,chatIds:['-123
 window.__karavanRequests=[]; window.__karavanOpened=[]; window.__karavanClosed=0; window.WebApp={openMaxLink:(url)=>{if(scenario==='bridge_error'&&!window.__bridgeRetry) throw new Error('Bridge unavailable');window.__karavanOpened.push(url)},close:()=>{window.__karavanClosed++}};
 const api={request:async(path,init={})=>{
   window.__karavanRequests.push({path,body:init.body?JSON.parse(init.body):null});
+  if(path.endsWith('/manage')) {
+    const {command}=JSON.parse(init.body);
+    if(command.operation!=='detail') throw new Error('Unexpected management operation '+command.operation);
+    const detail = {operation:'detail',data:{marketplace,rules:{id:uuid,text:'Правила магазина',allowedCategoryIds:['services'],allowedSubcategoryIds:['services.repair'],categoryOrder:['services'],version:1,effectiveAt:new Date().toISOString(),createdAt:new Date().toISOString(),requiresAcceptance:true},scheduledRules:null,permissions:['manage_marketplace','bind_chat','review_listing'],counts:{listings:scenario==='draft_empty'?0:12,readyListings:scenario==='draft_empty'?0:12,pendingApplications:scenario==='draft_empty'?0:3,chats:2},bindings:[binding]}};
+    return marketplaceManagementResponseSchema.parse(detail);
+  }
   if(path.endsWith('/handoffs')) { const input=JSON.parse(init.body); const result={url:['view','preview'].includes(input.destination)?'https://max.ru/synthetic_buyer_bot?startapp=mh_'+('x'.repeat(43)):'https://max.ru/synthetic_seller_bot?startapp=community_h_'+('x'.repeat(43)),expiresAt:new Date(Date.now()+120000).toISOString()}; if(scenario==='switch_chat') return new Promise(resolve=>{window.__resolveKaravanHandoff=()=>resolve(result)}); return result; }
   if(path==='/chats') return [{id:'-123',title:'Соседи',createdAt:new Date().toISOString()},{id:'-456',title:'Ещё один очень длинный заголовок чата наших соседей',createdAt:new Date().toISOString()}];
   if(path.endsWith('/setup-options')&&scenario==='existing_options_error'&&optionReads++===0) throw new Error('Категории недоступны');
   if(path.endsWith('/setup-options')) return {chatTitle:'Соседи',categories:[{id:'services',label:'Услуги',subcategories:[{id:'services.repair',label:'Ремонт'},{id:'services.cleaning',label:'Уборка'}]},{id:'grocery',label:'Продукты',subcategories:[{id:'grocery.fruit',label:'Фрукты'}]}]};
   if(path.endsWith('/preview')) { const input=JSON.parse(init.body); if(input.marketplaceId) previewReads++; const changed=scenario==='existing_rules_changed'&&previewReads>1; const changedBinding=scenario==='existing_binding_changed'; return {target:input.marketplaceId?{marketplace:{...marketplace,policyRevision:changed?2:1},rules:{text:changed?'Обновлённые правила существующего магазина':'Проверенные правила существующего магазина',allowedCategoryIds:['services'],allowedSubcategoryIds:['services.repair'],categoryOrder:['services'],version:changed?2:1},permissions:['bind_chat','manage_network'],counts:{listings:12,pendingApplications:0,chats:2},bindings:[binding]}:null,chats:input.chatIds.map(chatId=>({chatId,title:chatId==='-123'?'Соседи':'Второй чат',binding:changedBinding?{...binding,generation:previewReads>1?2:1}:null,marketplace:changedBinding?marketplace:null}))}; }
   if(path.endsWith('/publication-choice')) {chosen=true;return {saved:true,storeId:JSON.parse(init.body).storeId};}
-  if(path.endsWith('/available')) return {marketplaces:[{marketplace,permissions:['manage_network','bind_chat']}],nextCursor:null};
+  if(path.endsWith('/available')) return {marketplaces:scenario==='setup_simple'?[]:[{marketplace,permissions:['manage_network','bind_chat']}],nextCursor:null};
   if(path.includes('/bindings/')) {
     if(scenario==='existing_unknown'&&!sessionStorage.getItem('bind-attempted')) {sessionStorage.setItem('bind-attempted','yes'); throw new Error('Ответ потерян');}
     if(['recovery_conflict_unknown','recovery_conflict_superseded'].includes(scenario)&&!sessionStorage.getItem('bind-attempted')) {sessionStorage.setItem('bind-attempted','yes');throw new Error('Ответ потерян');}
@@ -211,9 +219,85 @@ try {
             await page.getByText('Не удалось проверить магазин.').waitFor();
             await page.getByRole('button', { name: 'Повторить', exact: true }).click();
           }
+          if (scenario === 'setup_simple') {
+            await page.getByRole('textbox', { name: 'Название магазина', exact: true }).waitFor();
+            await page.waitForFunction(() =>
+              window.__karavanRequests.some((item) => item.path.endsWith('/available')),
+            );
+            assert.equal(
+              await page.getByRole('button', { name: 'Подключить магазин', exact: true }).count(),
+              0,
+            );
+            assert.equal(
+              await page
+                .getByRole('button', { name: 'Подключить существующий магазин', exact: true })
+                .count(),
+              0,
+            );
+            assert.equal(
+              await page
+                .getByRole('textbox', { name: 'Название магазина', exact: true })
+                .inputValue(),
+              'Соседи',
+            );
+            assert.equal(
+              await page.getByRole('radio', { name: 'Все желающие', exact: true }).isChecked(),
+              true,
+            );
+            await page
+              .getByText('Витрины появляются после вашего одобрения.', { exact: true })
+              .waitFor();
+            assert.equal(
+              await page
+                .getByRole('textbox', { name: 'Правила для продавцов', exact: true })
+                .isVisible(),
+              false,
+            );
+            assert.equal(
+              await page.getByRole('button', { name: 'Создать магазин', exact: true }).isDisabled(),
+              true,
+            );
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.__karavanRequests.filter((item) => item.path.endsWith('/setup')).length,
+              ),
+              0,
+            );
+            await page
+              .getByRole('checkbox', { name: 'Подтверждаю выбранные чаты и правила магазина' })
+              .check();
+            await geometry(page, `${width}-${theme}-simple-setup`);
+            await page.screenshot({
+              path: output + '/' + width + '-' + theme + '-simple-setup.png',
+              fullPage: true,
+            });
+            await page.getByRole('button', { name: 'Создать магазин', exact: true }).click();
+            await page
+              .locator('.karavan-module__identity p')
+              .filter({ hasText: /^(Черновик|Закрыт для покупателей)/u })
+              .waitFor();
+            const requests = await page.evaluate(() =>
+              window.__karavanRequests.filter((item) => item.path.endsWith('/setup')),
+            );
+            assert.equal(new Set(requests.map((item) => item.body.operationId)).size, 1);
+            assert.deepEqual(requests[0].body.chatIds, ['-123']);
+            assert.equal(requests[0].body.create.name, 'Соседи');
+            assert.equal(requests[0].body.create.admissionPolicy, 'applications');
+            assert.deepEqual(requests[0].body.create.rules.allowedCategoryIds, [
+              'services',
+              'grocery',
+            ]);
+            assert.equal(await page.evaluate(() => window.__karavanOpened.length), 0);
+            assert.equal(
+              await page
+                .getByRole('button', { name: 'Посмотреть магазин чата', exact: true })
+                .count(),
+              0,
+            );
+          }
           if (['setup', 'unknown', 'partial', 'partial_bound'].includes(scenario)) {
-            await page.getByRole('button', { name: 'Подключить магазин', exact: true }).click();
-            await page.getByRole('button', { name: /Добавить мои чаты/u }).click();
+            await page.getByText('Другие чаты', { exact: true }).click();
             await page.getByLabel('Ещё один очень длинный заголовок чата наших соседей').check();
             assert.equal(
               await page.getByLabel('Название магазина', { exact: true }).inputValue(),
@@ -244,13 +328,13 @@ try {
               path: output + '/' + width + '-' + theme + '-' + scenario + '-confirm.png',
               fullPage: true,
             });
-            await page.getByRole('button', { name: 'Создать черновик', exact: true }).click();
+            await page.getByRole('button', { name: 'Создать магазин', exact: true }).click();
             if (scenario === 'unknown')
               await page.getByRole('button', { name: 'Продолжить подключение' }).click();
             if (['partial', 'partial_bound'].includes(scenario)) {
               if (scenario === 'partial_bound') {
                 await page.getByRole('button', { name: 'Настроить черновик' }).click();
-                const panel = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+                const panel = page.getByRole('dialog', { name: 'Магазин чата', exact: true });
                 await panel.getByRole('button', { name: 'Витрины', exact: true }).waitFor();
                 assert.equal(await page.evaluate(() => window.__karavanOpened.length), 0);
                 await panel.getByRole('button', { name: 'Назад' }).waitFor();
@@ -274,7 +358,7 @@ try {
             } else
               await page
                 .locator('.karavan-module__identity p')
-                .filter({ hasText: /^Черновик/u })
+                .filter({ hasText: /^(Черновик|Закрыт для покупателей)/u })
                 .waitFor();
             const requests = await page.evaluate(() =>
               window.__karavanRequests.filter((item) => item.path.endsWith('/setup')),
@@ -296,8 +380,9 @@ try {
               'existing_options_error',
             ].includes(scenario)
           ) {
-            await page.getByRole('button', { name: 'Подключить магазин', exact: true }).click();
-            await page.getByRole('radio', { name: 'Выбрать существующий', exact: true }).check();
+            await page
+              .getByRole('button', { name: 'Подключить существующий магазин', exact: true })
+              .click();
             await page.getByRole('radio', { name: marketplaceName(), exact: true }).check();
             assert.equal(
               await page.evaluate(
@@ -584,7 +669,10 @@ try {
               0,
             );
           }
-          await page.locator('.karavan-module h3:visible').waitFor();
+          await page
+            .locator('.karavan-module h3:visible, .karavan-module__wizard:visible')
+            .first()
+            .waitFor();
           await geometry(page, `${width}-${theme}-${scenario}`);
           if (['active', 'public_view', 'bridge_error'].includes(scenario)) {
             await page
