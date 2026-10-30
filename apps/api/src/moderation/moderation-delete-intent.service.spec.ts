@@ -1114,6 +1114,50 @@ describe('ModerationDeleteIntentService', () => {
     expect(s.leased.retryUntilAt).toBe(baseIntent.retryUntilAt);
   });
 
+  it.each([false, true])(
+    'honors a first duplicate source cooldown without renewing its deadline (expires=%s)',
+    async (expires) => {
+      const s = initialDuplicateSourceFixture();
+      const deadline = new Date(Date.now() + (expires ? 20_000 : 120_000));
+      s.leased.retryUntilAt = deadline;
+      s.deferred.status = expires ? 'EXPIRED' : 'RETRYABLE';
+      const sourceError = new MaxApiInternalRateLimitError(
+        'Source read cooling down',
+        45_000,
+        'external_cooldown',
+      );
+      const startedAt = Date.now();
+
+      await expect(
+        s.service.executeLeasedIntent(s.leased.id, 'lease-1', {
+          beforeDeleteMutation: async () => {
+            throw new MessageDuplicateInitialSourceUnavailableError('current', sourceError);
+          },
+        }),
+      ).resolves.toMatchObject({
+        kind: 'inline_declined',
+        confirmed: false,
+        status: expires ? 'EXPIRED' : 'RETRYABLE',
+      });
+
+      const retry = s.prisma.$executeRaw.mock.calls.at(-1)![0];
+      expect(retry.values).toContain(expires ? 'EXPIRED' : 'RETRYABLE');
+      expect(
+        retry.values.some(
+          (value: unknown) =>
+            value instanceof Date &&
+            (expires
+              ? value.getTime() === deadline.getTime()
+              : value.getTime() >= startedAt + 45_000 && value.getTime() <= Date.now() + 45_000),
+        ),
+      ).toBe(true);
+      expect(retry.strings.join('?')).not.toMatch(/SET\s+"retry_until_at"/u);
+      expect(s.remoteDelete).not.toHaveBeenCalled();
+      expect(s.mark).not.toHaveBeenCalled();
+      expect(s.clear).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['lease-cas', 'storage-error'] as const)(
     'does not decline a duplicate when retry persistence fails: %s',
     async (failure) => {
@@ -3363,6 +3407,60 @@ describe('ModerationDeleteIntentService', () => {
 
     expect(result.status).toBe('RETRYABLE');
     expect(result.retryDelayMs).toBeGreaterThanOrEqual(45_000);
+  });
+
+  it.each([
+    [
+      'conflicting body and header',
+      { response: { data: { retry_after_ms: 1_000 }, headers: { 'retry-after': '45' } } },
+      45_000,
+    ],
+    [
+      'all header values',
+      { retryAfterMs: 1_000, response: { headers: { 'retry-after': ['2', '45'] } } },
+      45_000,
+    ],
+    [
+      'cause hint',
+      { response: { data: { retry_after_ms: 1_000 } }, cause: { retryAfterMs: 60_000 } },
+      60_000,
+    ],
+    [
+      'malformed body',
+      { response: { data: { retry_after_ms: true }, headers: { 'retry-after': '45' } } },
+      45_000,
+    ],
+    [
+      'overflow body',
+      {
+        response: { data: { retry_after_ms: Number.MAX_VALUE }, headers: { 'retry-after': '45' } },
+      },
+      45_000,
+    ],
+    [
+      'only invalid hints',
+      {
+        retryAfterMs: Number.POSITIVE_INFINITY,
+        response: {
+          data: { retry_after_ms: [] },
+          headers: { 'retry-after': '999999999999999999999999' },
+        },
+      },
+      5_000,
+    ],
+  ] as const)('uses the maximum valid MAX retry hint for %s', (_label, hints, expected) => {
+    const { service } = createService();
+    const random = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const response = 'response' in hints ? hints.response : {};
+      const result = (service as unknown as ServiceInternals).classifyDeleteError(
+        { ...hints, response: { ...response, status: 429 } },
+        1,
+      );
+      expect(result).toMatchObject({ status: 'RETRYABLE', retryDelayMs: expected });
+    } finally {
+      random.mockRestore();
+    }
   });
 
   describe('direct local DELETE cooldown', () => {
@@ -6664,78 +6762,103 @@ describe('ModerationDeleteIntentService', () => {
     );
   });
 
-  it('does not fan out an ambiguous exact-presence HTTP 5xx across bot candidates', async () => {
-    const retriedIntent = {
-      ...baseIntent,
-      attemptCount: 2,
-      leasedFromStatus: 'AMBIGUOUS',
-      deleteDispatchStartedAt: new Date(),
-      deleteDispatchStartedBotId: 'bot-1',
-    };
-    const stillAmbiguous = {
-      ...retriedIntent,
-      status: 'AMBIGUOUS',
-      nextAttemptAt: new Date(Date.now() + 10_000),
-      lastBotId: 'bot-1',
-      lastStatusCode: 502,
-      lastErrorCode: 'predelete_presence_unknown',
-      leaseToken: null,
-      leaseExpiresAt: null,
-    };
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([retriedIntent])
-      .mockResolvedValueOnce([stillAmbiguous]);
-    const executeRaw = jest.fn().mockResolvedValue(1);
-    const deleteMessage = jest.fn();
-    const getExactMessagePresence = jest.fn().mockRejectedValue({
-      response: {
-        status: 502,
-        data: { code: 'server.failure', message: 'Bad Gateway' },
-        headers: { 'retry-after': '45' },
-      },
-    });
-    const getCurrentChatMemberAccess = jest.fn();
-    const resolveDeleteMessageBotRoute = jest.fn().mockResolvedValue(confirmedRoute);
-    const { service, maxBotLink } = createService(
-      { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
-      { $queryRaw: queryRaw, $executeRaw: executeRaw },
-      { deleteMessage, getExactMessagePresence, getCurrentChatMemberAccess },
-      { resolveDeleteMessageBotRoute },
-    );
+  it.each([
+    ['HTTP 5xx', () => ({ response: { status: 502, headers: { 'retry-after': '45' } } }), 502],
+    [
+      'HTTP 429',
+      () => ({
+        response: {
+          status: 429,
+          data: { retry_after_ms: 1_000 },
+          headers: { 'retry-after': '45' },
+        },
+      }),
+      429,
+    ],
+    [
+      'local cooldown',
+      () =>
+        new MaxApiInternalRateLimitError('Presence read cooling down', 45_000, 'external_cooldown'),
+      null,
+    ],
+  ] as const)(
+    'does not fan out an ambiguous exact-presence %s across bot candidates',
+    async (_label, error, statusCode) => {
+      const retriedIntent = {
+        ...baseIntent,
+        attemptCount: 2,
+        leasedFromStatus: 'AMBIGUOUS',
+        deleteDispatchStartedAt: new Date(),
+        deleteDispatchStartedBotId: 'bot-1',
+      };
+      const stillAmbiguous = {
+        ...retriedIntent,
+        status: 'AMBIGUOUS',
+        nextAttemptAt: new Date(Date.now() + 10_000),
+        lastBotId: 'bot-1',
+        lastStatusCode: statusCode,
+        lastErrorCode: 'predelete_presence_unknown',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([retriedIntent])
+        .mockResolvedValueOnce([stillAmbiguous]);
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const deleteMessage = jest.fn();
+      const getExactMessagePresence = jest
+        .fn<
+          ReturnType<MaxClientService['getExactMessagePresence']>,
+          Parameters<MaxClientService['getExactMessagePresence']>
+        >()
+        .mockRejectedValue(error());
+      const getCurrentChatMemberAccess = jest.fn<
+        ReturnType<MaxClientService['getCurrentChatMemberAccess']>,
+        Parameters<MaxClientService['getCurrentChatMemberAccess']>
+      >();
+      const resolveDeleteMessageBotRoute = jest.fn().mockResolvedValue(confirmedRoute);
+      const { service, maxBotLink } = createService(
+        { MODERATION_DELETE_CROSS_BOT_CANARY_CHAT_IDS: 'chat-1' },
+        { $queryRaw: queryRaw, $executeRaw: executeRaw },
+        { deleteMessage, getExactMessagePresence, getCurrentChatMemberAccess },
+        { resolveDeleteMessageBotRoute },
+      );
 
-    const startedAt = Date.now();
-    const result = await service.executeLeasedIntent('intent-1', 'lease-1');
+      const startedAt = Date.now();
+      const result = await service.executeLeasedIntent('intent-1', 'lease-1');
 
-    expect(result).toMatchObject({ kind: 'ambiguous', confirmed: false, status: 'AMBIGUOUS' });
-    expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
-    expect(getExactMessagePresence).toHaveBeenCalledWith(
-      'chat-1',
-      'message-1',
-      expect.objectContaining({ botId: 'bot-1' }),
-    );
-    expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
-    expect(resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
-    expect(deleteMessage).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ kind: 'ambiguous', confirmed: false, status: 'AMBIGUOUS' });
+      expect(getExactMessagePresence).toHaveBeenCalledTimes(1);
+      expect(getExactMessagePresence).toHaveBeenCalledWith(
+        'chat-1',
+        'message-1',
+        expect.objectContaining({ botId: 'bot-1' }),
+      );
+      expect(getCurrentChatMemberAccess).not.toHaveBeenCalled();
+      expect(maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
+      expect(resolveDeleteMessageBotRoute).toHaveBeenCalledTimes(1);
+      expect(deleteMessage).not.toHaveBeenCalled();
 
-    const retryQuery = executeRaw.mock.calls
-      .map((call) => call[0] as { strings?: readonly string[]; values?: readonly unknown[] })
-      .find((query) => query.values?.includes('predelete_presence_unknown'));
-    expect(retryQuery?.values).toEqual(
-      expect.arrayContaining(['AMBIGUOUS', 502, 'predelete_presence_unknown']),
-    );
-    const retryDates =
-      retryQuery?.values?.filter((value): value is Date => value instanceof Date) ?? [];
-    expect(retryDates.length).toBeGreaterThan(0);
-    expect(retryDates.every((value) => value.getTime() >= startedAt + 45_000)).toBe(true);
+      const retryQuery = executeRaw.mock.calls
+        .map((call) => call[0] as { strings?: readonly string[]; values?: readonly unknown[] })
+        .find((query) => query.values?.includes('predelete_presence_unknown'));
+      expect(retryQuery?.values).toEqual(
+        expect.arrayContaining(['AMBIGUOUS', statusCode, 'predelete_presence_unknown']),
+      );
+      const retryDates =
+        retryQuery?.values?.filter((value): value is Date => value instanceof Date) ?? [];
+      expect(retryDates.length).toBeGreaterThan(0);
+      expect(retryDates.every((value) => value.getTime() >= startedAt + 45_000)).toBe(true);
 
-    const executedSql = executeRaw.mock.calls
-      .map((call) => call[0]?.strings?.join('?') ?? '')
-      .join('\n');
-    expect(executedSql).not.toContain('"candidate_failures" =');
-    expect(executedSql).not.toContain('"delete_dispatch_started_at" = NULL');
-  });
+      const executedSql = executeRaw.mock.calls
+        .map((call) => call[0]?.strings?.join('?') ?? '')
+        .join('\n');
+      expect(executedSql).not.toContain('"candidate_failures" =');
+      expect(executedSql).not.toContain('"delete_dispatch_started_at" = NULL');
+      expect(executedSql).not.toMatch(/SET\s+"retry_until_at"/u);
+    },
+  );
 
   it('tries another confirmed bot when retry presence is unknown for the first candidate', async () => {
     const retriedIntent = {

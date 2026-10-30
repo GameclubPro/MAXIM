@@ -107,6 +107,9 @@ export class CommercialLlmEnforcementRunnerService implements OnModuleInit, OnMo
     const decision = await this.governor.decide({
       component: 'commercial-llm-shadow',
       sourceTag: 'commercial-llm-shadow',
+      // FLAG: Resume classification in healthy automatic recovery; fresh queue/host pressure,
+      // manual/MAX degradation and the final source-bound DELETE guards still apply.
+      allowRecoveryWindowRun: true,
     });
     const headroom =
       decision.action === 'run' &&
