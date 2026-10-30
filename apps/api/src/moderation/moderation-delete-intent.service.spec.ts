@@ -971,6 +971,87 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
+  it.each(
+    [false, true].flatMap((deferGuardFailure) =>
+      (['initial', 'final'] as const).map((phase) => ({ deferGuardFailure, phase })),
+    ),
+  )(
+    'honors guard HTTP 429 Retry-After at $phase with transfer=$deferGuardFailure',
+    async ({ deferGuardFailure, phase }) => {
+      const s = initialDuplicateSourceFixture();
+      Object.assign(s.leased, {
+        messageDuplicateOwned: false,
+        durableUserDeleteReason: true,
+        retryUntilAt: new Date(Date.now() + 120_000),
+      });
+      const failure = Object.assign(new Error('Author GET rate limited'), {
+        response: { status: 429, headers: { 'retry-after': '45' } },
+        config: { method: 'get' },
+      });
+      Object.assign(
+        s.service,
+        phase === 'initial'
+          ? {
+              assertNightModeCloseNoticeCleanupStillAuthorized: jest
+                .fn()
+                .mockRejectedValue(failure),
+            }
+          : { authorizeGuardedUserDeleteReasons: jest.fn().mockRejectedValue(failure) },
+      );
+      const startedAt = Date.now();
+      const execution = s.service.executeLeasedIntent(s.leased.id, 'lease-1', {
+        deferGuardFailure,
+      });
+      if (deferGuardFailure)
+        await expect(execution).resolves.toMatchObject({ status: 'RETRYABLE', confirmed: false });
+      else await expect(execution).rejects.toBe(failure);
+      expect(s.remoteDelete).not.toHaveBeenCalled();
+      expect(s.clear).toHaveBeenCalledTimes(phase === 'final' ? 1 : 0);
+      const retry = s.prisma.$executeRaw.mock.calls.at(-1)![0];
+      expect(retry.values).toContain('RETRYABLE');
+      expect(
+        retry.values.some(
+          (value: unknown) =>
+            value instanceof Date &&
+            value.getTime() >= startedAt + 45_000 &&
+            value.getTime() <= Date.now() + 45_000,
+        ),
+      ).toBe(true);
+      expect(retry.strings.join('?')).not.toMatch(/SET\s+"retry_until_at"/u);
+    },
+  );
+
+  it.each([
+    [429, 'Infinity'],
+    [429, '999999999999999999999999'],
+    [503, '45'],
+  ])('keeps guard backoff bounded for status %i and hint %s', async (status, hint) => {
+    const s = initialDuplicateSourceFixture();
+    Object.assign(s.leased, { messageDuplicateOwned: false, durableUserDeleteReason: true });
+    Object.assign(s.service, {
+      assertNightModeCloseNoticeCleanupStillAuthorized: jest.fn().mockRejectedValue(
+        Object.assign(new Error('Author GET unavailable'), {
+          response: { status, headers: { 'retry-after': hint } },
+          config: { method: 'get' },
+        }),
+      ),
+    });
+    const startedAt = Date.now();
+    await expect(
+      s.service.executeLeasedIntent(s.leased.id, 'lease-1', { deferGuardFailure: true }),
+    ).resolves.toMatchObject({ status: 'RETRYABLE', confirmed: false });
+    const retry = s.prisma.$executeRaw.mock.calls.at(-1)![0];
+    expect(
+      retry.values.some(
+        (value: unknown) =>
+          value instanceof Date &&
+          value.getTime() >= startedAt + 4_000 &&
+          value.getTime() <= Date.now() + 6_000,
+      ),
+    ).toBe(true);
+    expect(s.remoteDelete).not.toHaveBeenCalled();
+  });
+
   it.each(['lease-cas', 'storage-error', 'caller', 'clear-failed'] as const)(
     'does not detach an inline guard failure after %s',
     async (failure) => {

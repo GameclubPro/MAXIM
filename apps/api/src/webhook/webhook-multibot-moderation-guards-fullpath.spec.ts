@@ -731,6 +731,76 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(s.messages.has(messageId)).toBe(true);
   });
 
+  it.each(
+    [false, true].flatMap((deferGuardFailure) =>
+      [15_000, 120_000].map((deadlineMs) => ({ deferGuardFailure, deadlineMs })),
+    ),
+  )(
+    'persists guard HTTP 429 Retry-After without dispatch with transfer=$deferGuardFailure and deadline=$deadlineMs',
+    async ({ deferGuardFailure, deadlineMs }) => {
+      const s = await fixture(1);
+      const [chatId] = await s.seedCatalog(1);
+      const messageId = `guard-retry-after-${randomUUID()}`;
+      const retryUntilAt = new Date(Date.now() + deadlineMs);
+      const ensured = await s.intents.ensureIntent(
+        {
+          chatId: chatId!,
+          messageId,
+          subjectUserId: 'fixture-user',
+          sourceMessageAt: source(s, chatId!, messageId),
+          originBotId: s.bots[0]!.id,
+          routingPolicy: 'origin_only',
+          entityType: 'CHAT',
+          messageAuthorKind: 'user',
+          reasonKey: `length-${messageId}`,
+          ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+          event: { userId: 'fixture-user', eventType: 'MESSAGE' },
+          retryUntilAt,
+        },
+        { enqueue: false },
+      );
+      if (!ensured.intentId) throw new Error('Expected an executable DELETE intent');
+      const failure = Object.assign(new Error('Author GET rate limited'), {
+        response: { status: 429, headers: { 'retry-after': '45' } },
+        config: { method: 'get' },
+      });
+      const member = jest.spyOn(s.max, 'getChatMemberAccess').mockRejectedValue(failure);
+      const before = Date.now();
+      const execution = s.intents.attemptIntent(ensured.intentId, { deferGuardFailure });
+      const status = deadlineMs < 45_000 ? 'EXPIRED' : 'RETRYABLE';
+      if (deferGuardFailure)
+        await expect(execution).resolves.toMatchObject({ status, confirmed: false });
+      else await expect(execution).rejects.toBe(failure);
+      const actual = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: ensured.intentId },
+      });
+      expect(actual).toMatchObject({
+        status,
+        attemptCount: 1,
+        retryUntilAt,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        deleteDispatchStartedAt: null,
+        remoteDeleteSucceededAt: null,
+        lastStatusCode: 429,
+      });
+      if (status === 'EXPIRED') expect(actual.nextAttemptAt).toEqual(retryUntilAt);
+      else expect(actual.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + 45_000);
+      await s.intents.attemptIntent(ensured.intentId, { deferGuardFailure });
+      await s.intents.sweepDueIntents();
+      expect(
+        await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { id: ensured.intentId },
+        }),
+      ).toEqual(actual);
+      expect(member).toHaveBeenCalledTimes(1);
+      expect(await s.deleteQueue.getJob(`mdi-${ensured.intentId}`)).toBeUndefined();
+      expect(s.messages.has(messageId)).toBe(true);
+      expect(s.effects).toEqual([]);
+      expect(s.failures).toEqual([]);
+    },
+  );
+
   it('deletes sticker cooldown violations and later muted stickers across mirrored receipts', async () => {
     h = await createMultibotHarness({
       databaseUrl,

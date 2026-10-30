@@ -120,6 +120,10 @@ before editing it; copying these notes does not install a fix or prove the deplo
    A concrete local `MaxApiInternalRateLimitError` from that author GET or exact source GET
    may use the same boundaries only before transport, without an HTTP response, conflicting
    method or mutation evidence. Copied error code/name fields do not qualify.
+   Both ordinary and transferred DELETE guard retries retain a validated HTTP 429 Retry-After
+   as a lower bound alongside their existing exponential backoff. A hint beyond the original
+   deadline expires an unattempted intent; it never renews authority. Keep the existing
+   return/throw and handoff qualification, fresh checks and unknown-effect fences unchanged.
    Final workers still require fresh author rights; other HTTP statuses, mutation markers,
    missing GET provenance and non-handoff qualification remain fenced. Run subscription
    guard/notice tests and native moderation guards with real queue persistence.

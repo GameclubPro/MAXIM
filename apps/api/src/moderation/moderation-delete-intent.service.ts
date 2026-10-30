@@ -53,6 +53,7 @@ import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
 import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import { readMaxRetryAfterMs } from '../max/max-retry-after';
 import {
   isMaxApiCircuitOpenError,
   MAX_API_SOURCE_TAGS,
@@ -3053,6 +3054,16 @@ export class ModerationDeleteIntentService {
             }
             const internalQuotaDeferral =
               !intent.retentionOwned && error.guardError instanceof MaxApiInternalRateLimitError;
+            // FLAG: A guard GET's HTTP 429 keeps its validated retry floor in either
+            // durable path. This delay grants no handoff authority or renewed deadline.
+            const guardRetryDelayMs = Math.max(
+              this.retryDelayMs(intent.attemptCount),
+              internalQuotaDeferral
+                ? (details.retryDelayMs ?? 0)
+                : details.statusCode === 429
+                  ? readMaxRetryAfterMs(error.guardError, Date.now())
+                  : 0,
+            );
             if (
               !terminalGuardRejection &&
               !internalQuotaDeferral &&
@@ -3073,7 +3084,7 @@ export class ModerationDeleteIntentService {
                   {
                     ...details,
                     status: 'RETRYABLE',
-                    retryDelayMs: this.retryDelayMs(intent.attemptCount),
+                    retryDelayMs: guardRetryDelayMs,
                   },
                   'guarded',
                 );
@@ -3097,9 +3108,7 @@ export class ModerationDeleteIntentService {
                   ...details,
                   status: 'RETRYABLE',
                   errorCode: details.errorCode,
-                  retryDelayMs: internalQuotaDeferral
-                    ? Math.max(details.retryDelayMs ?? 0, this.retryDelayMs(intent.attemptCount))
-                    : this.retryDelayMs(intent.attemptCount),
+                  retryDelayMs: guardRetryDelayMs,
                 });
             // FLAG: Internal quota rejection proves no DELETE happened. Its durable retry
             // may continue independently while the original engine finishes its other rules.
