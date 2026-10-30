@@ -163,6 +163,10 @@ const api = {
         offer.restriction = { revision: 1, active: input.active, reason: input.reason } as never;
         offer.available = !input.active;
         data = { restriction: { id, ...offer.restriction! }, visibilityRevision: 2 };
+      } else if (operation === 'image') {
+        data = await new Promise<{ url: string }>((resolve) => {
+          state.__finishShopImage = () => resolve({ url: 'https://example.com/shop-logo.jpg' });
+        });
       } else if (operation === 'appearance') data = design;
       else if (operation === 'appearance_save') {
         design = {

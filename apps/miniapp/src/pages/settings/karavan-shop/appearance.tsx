@@ -50,10 +50,10 @@ async function imageData(file: File, cover: boolean): Promise<string> {
 }
 export default function ShopAppearance({
   onDirty,
-  onPreview,
+  onView,
 }: {
   onDirty: (dirty: boolean) => void;
-  onPreview: () => void;
+  onView?: () => void;
 }) {
   const { api, scope } = useShop();
   const query = useShopQuery<'appearance'>({ operation: 'appearance' });
@@ -238,14 +238,16 @@ export default function ShopAppearance({
           Сохранить черновик
         </button>
       ) : null}
-      <button type="button" disabled={dirty || uploading || mutation.isPending} onClick={onPreview}>
-        Предпросмотр
-      </button>
+      {onView ? (
+        <button type="button" disabled={dirty || uploading || mutation.isPending} onClick={onView}>
+          Посмотреть магазин
+        </button>
+      ) : null}
       {!dirty && query.data.hasChanges ? (
         <button
           type="button"
           className="karavan-module__primary"
-          disabled={mutation.isPending}
+          disabled={uploading || mutation.isPending}
           onClick={() =>
             mutation.mutate({
               operation: 'appearance_publish',
@@ -253,7 +255,7 @@ export default function ShopAppearance({
             })
           }
         >
-          Опубликовать оформление
+          Применить оформление
         </button>
       ) : null}
     </>

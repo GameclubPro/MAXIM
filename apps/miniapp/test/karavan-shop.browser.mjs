@@ -64,12 +64,12 @@ try {
             assert.equal(await home.locator('.karavan-shop__menu button').count(), 6);
             assert.equal(
               await home
-                .getByRole('button', { name: 'Открыть магазин', exact: true })
+                .getByRole('button', { name: 'Посмотреть магазин', exact: true })
                 .evaluate((el) => getComputedStyle(el).color),
               'rgb(255, 255, 255)',
               'primary action contrast',
             );
-            await home.getByRole('button', { name: 'Открыть магазин', exact: true }).click();
+            await home.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
             await page.waitForFunction(() => window.__shopOpened.length === 1);
             assert.ok(
               (await page.evaluate(() => window.__shopOpened[0])).includes('synthetic_buyer_bot'),
@@ -127,22 +127,53 @@ try {
             await panel.getByLabel('Название', { exact: true }).fill('Новая главная соседей');
             await panel.getByRole('button', { name: 'Сохранить черновик', exact: true }).click();
             await panel
-              .getByRole('button', { name: 'Опубликовать оформление', exact: true })
+              .getByRole('button', { name: 'Применить оформление', exact: true })
               .waitFor();
             assert.equal(await page.evaluate(() => window.__shopPublished.name), 'Магазин соседей');
-            await panel.getByRole('button', { name: 'Предпросмотр', exact: true }).click();
+            await panel.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
+            assert.equal(
+              await page.evaluate(() => window.__shopOpened.at(-1)),
+              'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop',
+            );
             assert.equal(
               await page.evaluate(
-                () =>
-                  window.__shopRequests.filter((row) => row.path.endsWith('/handoffs')).at(-1).body
-                    .destination,
+                () => window.__shopRequests.filter((row) => row.path.endsWith('/handoffs')).length,
               ),
-              'preview',
+              0,
             );
-            await shot('appearance', panel);
+            const publishedBeforeUpload = await page.evaluate(() => window.__shopPublished);
+            await panel.getByLabel('Загрузить логотип').setInputFiles({
+              name: 'logo.png',
+              mimeType: 'image/png',
+              buffer: Buffer.from(
+                await page.evaluate(() => {
+                  const canvas = document.createElement('canvas');
+                  canvas.width = canvas.height = 16;
+                  canvas.getContext('2d').fillRect(0, 0, 16, 16);
+                  return canvas.toDataURL('image/png').split(',')[1];
+                }),
+                'base64',
+              ),
+            });
+            await page.waitForFunction(() => typeof window.__finishShopImage === 'function');
+            assert.equal(
+              await panel
+                .getByRole('button', { name: 'Применить оформление', exact: true })
+                .isDisabled(),
+              true,
+              'applying the previous saved design must be blocked during image upload',
+            );
+            assert.deepEqual(
+              await page.evaluate(() => window.__shopPublished),
+              publishedBeforeUpload,
+            );
+            await page.evaluate(() => window.__finishShopImage());
+            await panel.getByRole('button', { name: 'Сохранить черновик', exact: true }).click();
             await panel
-              .getByRole('button', { name: 'Опубликовать оформление', exact: true })
-              .click();
+              .getByRole('button', { name: 'Применить оформление', exact: true })
+              .waitFor();
+            await shot('appearance', panel);
+            await panel.getByRole('button', { name: 'Применить оформление', exact: true }).click();
             await page.waitForFunction(
               () => window.__shopPublished.name === 'Новая главная соседей',
             );
