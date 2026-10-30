@@ -447,9 +447,91 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
   function actorAccess(bindings = bindingStatus()) {
     return new KaravanMarketplaceActorAccessService(db as PrismaService, service, bindings);
   }
+
+  it('invalidates a cached positive binding when the bot becomes an ordinary member', async () => {
+    const input = await bound();
+    const status = bindingStatus();
+    expect(await status.status(input)).toMatchObject({ active: true });
+    await db.chatBotMembership.update({
+      where: { chatId_botId: { chatId, botId } },
+      data: { botAccessState: 'CONFIRMED_MEMBER', botAccessCheckedAt: new Date() },
+    });
+    max.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      isAdmin: false,
+      isOwner: false,
+      explicitNonPrivilegeEvidence: true,
+    });
+    expect(await status.status(input)).toMatchObject({ active: false, reason: 'bot_unavailable' });
+  });
+
+  it('returns temporary unavailability when a positive binding probe expires', async () => {
+    const input = await bound();
+    max.getCurrentChatMemberAccess.mockImplementationOnce(async () => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now + 10_001);
+      return { isAdmin: true, isOwner: false, explicitPrivilegeEvidence: true };
+    });
+    await expect(bindingStatus().status(input)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(
+      (await db.karavanMarketplaceBindingWitness.findFirstOrThrow({ where: { chatId } })).revokedAt,
+    ).toBeNull();
+  });
   async function accessInput() {
     return { ...(await bound()), actorMaxUserId, bindingGeneration: 7 };
   }
+
+  it('keeps the same connection across repeated positive Major lifecycle probes and entries', async () => {
+    const input = await accessInput();
+    for (let entry = 0; entry < 3; entry++) {
+      await db.chatBotMembership.update({
+        where: { chatId_botId: { chatId, botId } },
+        data: {
+          lifecycleEventAt: new Date(Date.now() - 1),
+          lifecycleEventType: 'live_probe',
+          lifecycleSource: 'live_probe',
+          botAccessCheckedAt: new Date(),
+        },
+      });
+      expect(await actorAccess().check(input)).toMatchObject({ allowed: true, reason: 'admin' });
+    }
+    expect(await db.karavanMarketplaceBindingWitness.count({ where: { chatId } })).toBe(1);
+  });
+
+  it('accepts a positive access refresh during the binding probe without requiring recovery', async () => {
+    const input = await accessInput();
+    max.getCurrentChatMemberAccess.mockImplementationOnce(async () => {
+      await db.chatBotMembership.update({
+        where: { chatId_botId: { chatId, botId } },
+        data: { botAccessCheckedAt: new Date() },
+      });
+      return { isAdmin: true, isOwner: false, explicitPrivilegeEvidence: true };
+    });
+    expect(await actorAccess().check(input)).toMatchObject({ allowed: true, reason: 'admin' });
+  });
+
+  it('never revives a connection after a bot-added lifecycle followed by a positive probe', async () => {
+    const input = await accessInput();
+    await db.chatBotMembership.update({
+      where: { chatId_botId: { chatId, botId } },
+      data: {
+        lifecycleEventAt: new Date(Date.now() - 2),
+        lifecycleEventType: 'bot_added',
+        lifecycleSource: 'webhook',
+      },
+    });
+    await db.chatBotMembership.update({
+      where: { chatId_botId: { chatId, botId } },
+      data: {
+        lifecycleEventAt: new Date(Date.now() - 1),
+        lifecycleEventType: 'live_probe',
+        lifecycleSource: 'live_probe',
+      },
+    });
+    expect(await actorAccess().check(input)).toMatchObject({
+      allowed: false,
+      reason: 'binding_changed',
+    });
+  });
 
   it('rejects fabricated access privileges and missing binding generation before MAX calls', async () => {
     const input = await accessInput();
