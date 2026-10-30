@@ -119,6 +119,7 @@ function reservationDimensions(call: readonly unknown[]) {
     keyCount: count,
     keys: call.slice(2, 2 + count).map(String),
     limits: call.slice(2 + allKeyCount, 2 + allKeyCount + count),
+    burstToleranceSlots: call.slice(2 + allKeyCount + count, 2 + allKeyCount + 2 * count),
   };
 }
 
@@ -1234,7 +1235,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           order.push('http');
           return of({ status: 200, data: { success: true, mid: 'sent' } });
         });
-        const service = createService({ request });
+        const service = createService({ request }, { MAX_API_GLOBAL_BURST: '0' });
         const proof = {
           botId: '777000_bot',
           routingVersion: 2,
@@ -17022,6 +17023,54 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await serviceA.onModuleDestroy();
     await serviceB.onModuleDestroy();
   });
+
+  it.each([
+    { label: 'omitted configuration', globalRps: '30', burst: undefined, expected: '29' },
+    { label: 'explicit zero', globalRps: '30', burst: '0', expected: '0' },
+    { label: 'fraction below one slot', globalRps: '30', burst: '0.9', expected: '0' },
+    { label: 'fractional slots', globalRps: '30', burst: '7.9', expected: '7' },
+    { label: 'negative fallback', globalRps: '30', burst: '-1', expected: '29' },
+    { label: 'non-numeric fallback', globalRps: '30', burst: 'NaN', expected: '29' },
+    { label: 'upper clamp', globalRps: '30', burst: '100', expected: '29' },
+    { label: 'lower token quota', globalRps: '5', burst: '100', expected: '4' },
+    { label: 'capped token quota', globalRps: '45', burst: '100', expected: '29' },
+    { label: 'single-slot token quota', globalRps: '1', burst: undefined, expected: '0' },
+  ])(
+    'bounds token burst tolerance for $label without changing other dimensions',
+    async ({ globalRps, burst, expected }) => {
+      const service = createService(
+        {},
+        {
+          MAX_API_GLOBAL_RPS: globalRps,
+          MAX_API_GLOBAL_RPS_CRITICAL: '12',
+          MAX_API_CHAT_RPS: '10',
+          ...(burst === undefined ? {} : { MAX_API_GLOBAL_BURST: burst }),
+        },
+      );
+      const runtime = service as unknown as {
+        limiterRedis: { eval: jest.Mock };
+        tryReserveRateLimitSlot(
+          botId: string,
+          chatId: string,
+          trafficClass: 'critical',
+          sourceTag: undefined,
+          messageMutation: { operation: 'delete'; entityId: string },
+        ): Promise<{ ok: boolean }>;
+      };
+      try {
+        await runtime.tryReserveRateLimitSlot('777000_bot', 'chat-1', 'critical', undefined, {
+          operation: 'delete',
+          entityId: 'chat-1',
+        });
+        const call = runtime.limiterRedis.eval.mock.calls.at(-1) as unknown[];
+        const { limits, burstToleranceSlots } = reservationDimensions(call);
+        expect(limits).toEqual([String(Math.min(Number(globalRps), 30)), '12', '10', '2']);
+        expect(burstToleranceSlots).toEqual([expected, '11', '9', '0']);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it('caps each token at 30 with only bot-scoped hard class and source dimensions', async () => {
     const service = createService(

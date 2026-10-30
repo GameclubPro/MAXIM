@@ -157,7 +157,7 @@ export const NETWORK_CHAT_SETTINGS_SECTIONS = [
   {
     section: 'storefront',
     entryVariant: 'priority',
-    title: 'Интернет-витрина',
+    title: 'Магазин чата',
     icon: 'storefront',
     tone: 'sky',
     order: 31,

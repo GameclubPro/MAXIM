@@ -73,7 +73,7 @@ describeRedis('Muted-user MAX API budget with native Redis', () => {
     return Promise.resolve().then(() => service.consumeRequest());
   }
 
-  function nativeTransportFixture(value: Scope) {
+  function nativeTransportFixture(value: Scope, overrides: Record<string, string | number> = {}) {
     const botId = `test-mute-transport-${suffix}`;
     const serviceName = `test-mute-transport-${suffix}`;
     const config = new ConfigService({
@@ -94,6 +94,7 @@ describeRedis('Muted-user MAX API budget with native Redis', () => {
       MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE: 0,
       MAX_MUTED_USER_API_PROTECTION_ENABLED: true,
       APP_SERVICE_NAME: serviceName,
+      ...overrides,
     });
     const request = jest
       .fn<ReturnType<HttpService['request']>, Parameters<HttpService['request']>>()
@@ -292,35 +293,51 @@ describeRedis('Muted-user MAX API budget with native Redis', () => {
     });
   });
 
-  it('blocks the thirteenth global GET at the real transport without degrading bot health', async () => {
-    const value = scope();
-    const { botId, service, request, health, criticalFailure } = nativeTransportFixture(value);
-    const options = {
-      botId,
-      trafficClass: 'critical' as const,
-      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
-    };
-    try {
-      await service.runWithMuteApiBudget(value, async () => {
-        for (let index = 0; index < 12; index++) {
-          await expect(service.getOwnProfile(options)).resolves.toMatchObject({ userId: '123' });
-        }
-        await expect(service.getOwnProfile(options)).rejects.toMatchObject({
-          code: 'MAX_API_INTERNAL_RATE_LIMIT',
-          limitScope: 'moderation_protection',
-          preDispatch: true,
-          reason: 'attempt_budget',
+  it.each<{ label: string; config: Record<string, string | number> }>([
+    { label: 'legacy token burst', config: {} },
+    {
+      label: 'production zero token burst',
+      config: {
+        MAX_API_GLOBAL_BURST: 0,
+        MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: 500,
+        MAX_API_RATE_LIMIT_WAIT_MS_MODERATION_DELETE: 500,
+      },
+    },
+  ])(
+    'blocks the thirteenth global GET with $label without degrading bot health',
+    async ({ config }) => {
+      const value = scope();
+      const { botId, service, request, health, criticalFailure } = nativeTransportFixture(
+        value,
+        config,
+      );
+      const options = {
+        botId,
+        trafficClass: 'critical' as const,
+        sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
+      };
+      try {
+        await service.runWithMuteApiBudget(value, async () => {
+          for (let index = 0; index < 12; index++) {
+            await expect(service.getOwnProfile(options)).resolves.toMatchObject({ userId: '123' });
+          }
+          await expect(service.getOwnProfile(options)).rejects.toMatchObject({
+            code: 'MAX_API_INTERNAL_RATE_LIMIT',
+            limitScope: 'moderation_protection',
+            preDispatch: true,
+            reason: 'attempt_budget',
+          });
         });
-      });
 
-      expect(request).toHaveBeenCalledTimes(12);
-      expect(health.recordSuccessForLane).toHaveBeenCalledTimes(12);
-      expect(health.recordFailureForLane).not.toHaveBeenCalled();
-      expect(criticalFailure).not.toHaveBeenCalled();
-    } finally {
-      await service.onModuleDestroy();
-    }
-  });
+        expect(request).toHaveBeenCalledTimes(12);
+        expect(health.recordSuccessForLane).toHaveBeenCalledTimes(12);
+        expect(health.recordFailureForLane).not.toHaveBeenCalled();
+        expect(criticalFailure).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it('rechecks expiry after the final mutation guard before the real DELETE transport', async () => {
     const value = scope();

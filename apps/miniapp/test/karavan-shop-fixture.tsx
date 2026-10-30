@@ -58,9 +58,9 @@ const binding = {
 const permissions = ['manage_marketplace', 'review_listing', 'arrange_listings', 'bind_chat'];
 const counts = {
   listings: params.get('scenario') === 'draft_empty' ? 0 : 2,
-  readyListings: 0,
+  readyListings: params.get('scenario') === 'draft' ? 2 : 0,
   approvedListings: 2,
-  pendingApplications: 1,
+  pendingApplications: ['draft', 'draft_empty'].includes(params.get('scenario') ?? '') ? 0 : 1,
   chats: 1,
 };
 const offer = {
@@ -360,7 +360,12 @@ const api = {
             storeName: 'Мастерская',
             marketplaceName: market.name,
             revision: 2,
-            reviewState: 'approved',
+            reviewState:
+              input.decision === 'approve'
+                ? 'approved'
+                : input.decision === 'changes_requested'
+                  ? 'changes_requested'
+                  : 'rejected',
             sellerState: 'enabled',
             publicationReason: 'published',
             rank: '1',

@@ -12,6 +12,7 @@ import {
   settleVisualFrame,
 } from '../../../scripts/miniapp-smartphone.mjs';
 import { installMaxBridgeShimInitScript } from '../../../scripts/miniapp-max-bridge-shim.mjs';
+import { runShopNativeShareChecks } from './karavan-shop-native-share.browser.mjs';
 const fixtures = resolve(import.meta.dirname, '../build/shop-browser-fixtures');
 await mkdir(fixtures, { recursive: true });
 const fixture = await mkdtemp(`${fixtures}/shop-`),
@@ -57,8 +58,8 @@ try {
             const errors = [];
             page.on('pageerror', (error) => errors.push(error.message));
             await page.goto(`${url}?theme=${theme}`);
-            await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-            const home = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
+            await page.getByRole('button', { name: 'Магазин чата', exact: true }).click();
+            const home = page.getByRole('dialog', { name: 'Магазин чата', exact: true });
             await home.getByRole('button', { name: 'Витрины', exact: true }).waitFor();
             assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
             assert.deepEqual(
@@ -115,6 +116,12 @@ try {
               }
               await home.waitFor();
             };
+            const showInvitations = async (sheet) => {
+              const details = sheet.locator('details.karavan-shop__invitations');
+              await details.locator('summary').waitFor();
+              if (!(await details.evaluate((node) => node.open)))
+                await details.locator('summary').click();
+            };
             const openSetting = async (name) => {
               await home.getByRole('button', { name: 'Настройки', exact: true }).click();
               await page
@@ -170,9 +177,11 @@ try {
             await panel.getByRole('button', { name: 'Закрепить', exact: true }).click();
             await panel.getByText('Закреплённые · 1', { exact: true }).waitFor();
             await panel.getByRole('button', { name: 'Скрыть', exact: true }).click();
-            await panel.getByLabel('Причина', { exact: true }).fill('Не соответствует правилам');
-            await panel.getByRole('button', { name: 'Подтвердить', exact: true }).click();
-            await panel.getByRole('button', { name: 'Показать', exact: true }).waitFor();
+            await panel
+              .getByLabel('Причина скрытия', { exact: true })
+              .fill('Не соответствует правилам');
+            await panel.getByRole('button', { name: 'Скрыть объявление', exact: true }).click();
+            await panel.getByRole('button', { name: 'Снять ограничение', exact: true }).waitFor();
             await shot('catalog', panel);
             await close('Витрины');
             await openSetting('Оформление');
@@ -198,7 +207,7 @@ try {
             await close('Оформление');
             await openSetting('Подключённые чаты');
             await page.getByRole('button', { name: 'Подключить чаты', exact: true }).click();
-            await page.getByRole('radio', { name: 'Выбрать существующий', exact: true }).waitFor();
+            await page.getByText('Другие чаты', { exact: true }).waitFor();
             await page.waitForFunction(() => {
               const fields = document.querySelector('.karavan-module__wizard-fields');
               return fields && !fields.disabled;
@@ -278,7 +287,7 @@ try {
               true,
             );
             await panel.getByRole('checkbox', { name: 'Ремонт', exact: true }).uncheck();
-            await panel.getByRole('button', { name: 'Продолжить', exact: true }).click();
+            await panel.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
             await panel
               .getByRole('button', { name: 'Применить категории и правила', exact: true })
               .waitFor();
@@ -296,7 +305,7 @@ try {
               .getByRole('button', { name: 'Применить категории и правила', exact: true })
               .click();
             await panel.getByRole('button', { name: 'Обновить данные', exact: true }).click();
-            await panel.getByRole('button', { name: 'Продолжить', exact: true }).waitFor();
+            await panel.getByRole('button', { name: 'Проверить изменения', exact: true }).waitFor();
             assert.equal(
               await panel
                 .getByRole('button', { name: 'Применить категории и правила', exact: true })
@@ -307,7 +316,7 @@ try {
               await panel.getByRole('checkbox', { name: 'Ремонт', exact: true }).isChecked(),
               false,
             );
-            await panel.getByRole('button', { name: 'Продолжить', exact: true }).click();
+            await panel.getByRole('button', { name: 'Проверить изменения', exact: true }).click();
             await panel
               .getByRole('button', { name: 'Применить категории и правила', exact: true })
               .waitFor();
@@ -335,9 +344,7 @@ try {
               true,
             );
             assert.equal(
-              await panel
-                .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-                .count(),
+              await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).count(),
               0,
             );
             assert.equal(
@@ -352,9 +359,7 @@ try {
             );
             await panel.getByRole('radio', { name: 'По приглашению', exact: true }).check();
             assert.equal(
-              await panel
-                .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-                .count(),
+              await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).count(),
               0,
               'unsaved invitation policy cannot expose an invitation',
             );
@@ -367,9 +372,7 @@ try {
             );
             await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
             await panel.getByRole('button', { name: 'Повторить проверку', exact: true }).click();
-            await panel
-              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-              .waitFor();
+            await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).waitFor();
             const admissionWrites = await page.evaluate(() =>
               window.__shopRequests.filter((row) => row.body?.command?.operation === 'settings'),
             );
@@ -379,14 +382,14 @@ try {
               admissionWrites[0].body,
               'admission retry preserves the immutable command',
             );
-            await panel
-              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-              .click();
-            await panel.getByRole('button', { name: 'Скопировано', exact: true }).waitFor();
+            await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).click();
+            await panel.getByRole('button', { name: 'Скопировать ссылку', exact: true }).click();
+            await panel.getByRole('status').filter({ hasText: 'Ссылка скопирована' }).waitFor();
             assert.deepEqual(await page.evaluate(() => window.__shopClipboard), [
               'https://max.ru/synthetic_seller_bot?startapp=invite_synthetic',
             ]);
-            await panel.getByRole('button', { name: 'Скопировано', exact: true }).click();
+            await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).click();
+            await panel.getByRole('button', { name: 'Скопировать ссылку', exact: true }).click();
             assert.equal(
               await page.evaluate(
                 () =>
@@ -397,26 +400,23 @@ try {
               1,
               'copying the same invitation never creates another invitation',
             );
+            await showInvitations(panel);
             await panel.getByRole('button', { name: 'Отозвать приглашение', exact: true }).click();
-            await panel
-              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-              .waitFor();
+            await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).waitFor();
             await page.evaluate(() => {
               window.__dropShopInvitationUrl = true;
             });
-            await panel
-              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-              .click();
+            await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).click();
             await panel.getByRole('alert').filter({ hasText: 'Ссылка не сохранилась.' }).waitFor();
+            await showInvitations(panel);
             await panel.getByRole('button', { name: 'Отозвать приглашение', exact: true }).click();
             await panel
               .getByRole('alert')
               .filter({ hasText: 'Ссылка не сохранилась.' })
               .waitFor({ state: 'detached' });
-            await panel
-              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-              .click();
-            await panel.getByRole('button', { name: 'Скопировано', exact: true }).waitFor();
+            await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).click();
+            await panel.getByRole('button', { name: 'Скопировать ссылку', exact: true }).click();
+            await panel.getByRole('status').filter({ hasText: 'Ссылка скопирована' }).waitFor();
             assert.equal(
               await page.evaluate(
                 () =>
@@ -430,18 +430,17 @@ try {
             await panel.getByRole('radio', { name: 'Все желающие', exact: true }).check();
             await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
             await panel
-              .getByRole('button', { name: 'Скопировано', exact: true })
+              .getByRole('status')
+              .filter({ hasText: 'Ссылка скопирована' })
               .waitFor({ state: 'detached' });
             await panel
               .getByRole('button', { name: 'Сохранить', exact: true })
               .waitFor({ state: 'detached' });
             await panel
-              .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+              .getByRole('button', { name: 'Пригласить продавца', exact: true })
               .waitFor({ state: 'detached' });
             assert.equal(
-              await panel
-                .getByRole('button', { name: 'Скопировать приглашение', exact: true })
-                .count(),
+              await panel.getByRole('button', { name: 'Пригласить продавца', exact: true }).count(),
               0,
             );
             await shot('admission', panel);
@@ -466,6 +465,7 @@ try {
               'reviewing application content does not approve it',
             );
             await panel.getByRole('button', { name: 'Одобрить', exact: true }).click();
+            await panel.getByText('Витрина одобрена', { exact: true }).waitFor();
             await panel.getByText('Новых заявок нет').waitFor();
             await close('Заявки');
             await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
@@ -507,7 +507,7 @@ try {
               panel = page.getByRole('dialog', { name: 'Кнопки в чате', exact: true });
               await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).check();
               const scenario = panel.getByRole('button', {
-                name: 'Без витрины',
+                name: 'Нет витрины',
                 exact: true,
               });
               await scenario.click();
@@ -590,7 +590,7 @@ try {
               await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
               await discard.getByRole('button', { name: 'Не сохранять', exact: true }).click();
               await page.getByRole('dialog').waitFor({ state: 'detached' });
-              await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+              await page.getByRole('button', { name: 'Магазин чата', exact: true }).click();
               await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
               assert.equal(
                 await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).isChecked(),
@@ -613,8 +613,17 @@ try {
                 'permission_loss',
               ]) {
                 await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);
-                await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+                await page.getByRole('button', { name: 'Магазин чата', exact: true }).click();
                 if (['draft', 'draft_empty'].includes(scenario)) {
+                  if (scenario === 'draft_empty') {
+                    await home
+                      .getByRole('button', { name: 'Ссылка для продавцов', exact: true })
+                      .waitFor();
+                    await home
+                      .locator('summary')
+                      .filter({ hasText: /^Доступность магазина$/u })
+                      .click();
+                  }
                   await home
                     .getByRole('button', { name: 'Открыть для покупателей', exact: true })
                     .waitFor();
@@ -641,8 +650,8 @@ try {
                       .getByText('Открыть магазин без продавцов?', { exact: true })
                       .waitFor();
                     await home
+                      .locator('.karavan-shop__row')
                       .getByRole('button', { name: 'Открыть для покупателей', exact: true })
-                      .last()
                       .click();
                     await home
                       .getByRole('button', { name: 'Повторить проверку', exact: true })
@@ -701,6 +710,7 @@ try {
                 if (scenario === 'invitation_paged') {
                   await home.getByRole('button', { name: 'Настройки', exact: true }).click();
                   panel = page.getByRole('dialog', { name: 'Настройки', exact: true });
+                  await showInvitations(panel);
                   await panel
                     .getByRole('button', { name: 'Следующие приглашения', exact: true })
                     .click();
@@ -711,7 +721,7 @@ try {
                     window.__dropShopInvitationUrl = true;
                   });
                   await panel
-                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .getByRole('button', { name: 'Пригласить продавца', exact: true })
                     .click();
                   const lost = panel
                     .getByRole('alert')
@@ -738,7 +748,10 @@ try {
                     window.__deferShopClipboard = true;
                   });
                   await panel
-                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .getByRole('button', { name: 'Пригласить продавца', exact: true })
+                    .click();
+                  await panel
+                    .getByRole('button', { name: 'Скопировать ссылку', exact: true })
                     .click();
                   await page.waitForFunction(
                     () => typeof window.__finishShopClipboard === 'function',
@@ -750,7 +763,7 @@ try {
                     window.__dropShopInvitationUrl = true;
                   });
                   await panel
-                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .getByRole('button', { name: 'Пригласить продавца', exact: true })
                     .click();
                   await lost.waitFor();
                   await page.evaluate(() => window.__finishShopClipboard());
@@ -762,7 +775,7 @@ try {
                   );
                   assert.equal(
                     await panel
-                      .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                      .getByRole('button', { name: 'Пригласить продавца', exact: true })
                       .isDisabled(),
                     true,
                   );
@@ -771,19 +784,28 @@ try {
                     .click();
                   await lost.waitFor({ state: 'detached' });
                   await panel
-                    .getByRole('button', { name: 'Скопировать приглашение', exact: true })
+                    .getByRole('button', { name: 'Пригласить продавца', exact: true })
                     .click();
-                  await panel.getByRole('button', { name: 'Скопировано', exact: true }).waitFor();
+                  await panel
+                    .getByRole('button', { name: 'Скопировать ссылку', exact: true })
+                    .click();
+                  await panel
+                    .getByRole('status')
+                    .filter({ hasText: 'Ссылка скопирована' })
+                    .waitFor();
                   await shot(scenario, panel);
                   continue;
                 }
                 if (scenario === 'unbound') {
                   await home
-                    .getByRole('button', { name: 'Подключить магазин', exact: true })
-                    .click();
-                  await home
-                    .getByRole('radio', { name: 'Выбрать существующий', exact: true })
+                    .getByRole('textbox', { name: 'Название магазина', exact: true })
                     .waitFor();
+                  assert.equal(
+                    await home
+                      .getByRole('button', { name: 'Подключить магазин', exact: true })
+                      .count(),
+                    0,
+                  );
                   assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
                   assert.ok(
                     (await page.evaluate(() => window.__shopRequests)).every(
@@ -820,6 +842,7 @@ try {
       await browser.close();
     }
   }
+  await runShopNativeShareChecks({ base, url });
   console.log(
     `Shop management browser: ${count} phone/theme/engine journeys passed. Screenshots: ${output}`,
   );

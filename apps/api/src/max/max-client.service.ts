@@ -1016,6 +1016,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly routedMutationsCanaryPercent: number;
   private readonly routedMutationsCanaryEntityIds: ReadonlySet<string>;
   private readonly globalRpsLimit: number;
+  private readonly globalBurstToleranceSlots: number;
   private readonly criticalGlobalRpsLimit: number;
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
@@ -1140,6 +1141,10 @@ export class MaxClientService implements OnModuleDestroy {
     this.globalRpsLimit = Math.min(
       this.readConfigInt(configService.get('MAX_API_GLOBAL_RPS'), DEFAULT_MAX_API_GLOBAL_RPS),
       DEFAULT_MAX_API_GLOBAL_RPS,
+    );
+    this.globalBurstToleranceSlots = Math.min(
+      this.globalRpsLimit - 1,
+      this.readConfigInt(configService.get('MAX_API_GLOBAL_BURST'), this.globalRpsLimit - 1, 0),
     );
     this.criticalGlobalRpsLimit = this.readConfigInt(
       configService.get('MAX_API_GLOBAL_RPS_CRITICAL'),
@@ -8457,6 +8462,9 @@ export class MaxClientService implements OnModuleDestroy {
       {
         key: `maxapi:gcra:v1:bot:${botId}:all`,
         limit: this.globalRpsLimit,
+        // FLAG: Pace the shared token across roles when burst is zero. Keep its
+        // existing TAT, rolling-window and cooldown keys so rollout retains debt.
+        burstToleranceSlots: this.globalBurstToleranceSlots,
         reason: `MAX API per-bot rate limit exceeded for bot ${botId}`,
         limitScope: 'bot',
       },

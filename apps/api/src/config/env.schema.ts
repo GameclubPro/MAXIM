@@ -352,6 +352,7 @@ const envSchema = z.object({
   USER_DISPLAY_NAME_RETENTION_DAYS: z.coerce.number().int().min(90).default(180),
   MAX_API_METRICS_STORAGE_LAYOUT: z.enum(['legacy', 'minute']).default('minute'),
   MAX_API_GLOBAL_RPS: z.coerce.number().int().positive().max(30).default(30),
+  MAX_API_GLOBAL_BURST: z.coerce.number().int().min(0).max(29).optional(),
   MAX_API_GLOBAL_RPS_CRITICAL: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_INTERACTIVE: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_BACKGROUND: z.coerce.number().int().positive().optional(),

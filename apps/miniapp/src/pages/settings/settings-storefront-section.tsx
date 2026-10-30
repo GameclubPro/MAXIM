@@ -310,7 +310,7 @@ export function SettingsStorefrontSection({
       <GlassCard
         className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
         style={{ animationDelay: '386ms', order: SECTION_PRESENTATION.order }}
-        aria-label="Интернет-витрина"
+        aria-label="Магазин чата"
       >
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
