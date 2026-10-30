@@ -109,7 +109,11 @@ export class KaravanMarketplaceProxyService {
       if (path === '/module') this.logAccessIssue(scope.chatId, 'unavailable');
       throw new KaravanCommandUnavailable('unknown');
     }
-    if (!result.ok && path === '/manage') await throwKnownKaravanManagementError(result);
+    if (
+      !result.ok &&
+      (path === '/manage' || /^\/[a-f0-9-]+\/bindings(?:\/action)?$/u.test(path))
+    )
+      await throwKnownKaravanManagementError(result);
     if (!result.ok) {
       if (path === '/module')
         this.logAccessIssue(scope.chatId, 'upstream_error', { status: result.status });

@@ -97,4 +97,41 @@ describe('native Major shop commands', () => {
     ).rejects.toThrow();
     expect(authority.issue).not.toHaveBeenCalled();
   });
+  it('preserves a rejected recovery generation as a safe conflict instead of service unavailability', async () => {
+    const { service, authority, fetchMock, payload } = setup();
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'MARKETPLACE_BINDING_CHANGED',
+          message: 'private upstream detail',
+        }),
+        { status: 409 },
+      ),
+    );
+    await expect(
+      service.binding(
+        payload.marketplaceId,
+        '777',
+        {
+          commandId: payload.commandId,
+          chatId: '-123',
+          expectedBindingGeneration: 3,
+          action: 'recover_chat',
+        },
+        principal,
+        true,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'MARKETPLACE_BINDING_CHANGED' },
+    });
+    expect(authority.issue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'recover_chat',
+        chatId: '-123',
+        expectedBindingGeneration: 3,
+      }),
+      principal,
+    );
+  });
 });

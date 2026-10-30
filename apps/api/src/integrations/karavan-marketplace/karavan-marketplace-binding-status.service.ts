@@ -1,4 +1,4 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -23,9 +23,24 @@ type Status = {
   reason: 'active' | 'bot_unavailable' | 'binding_changed';
 };
 const TTL_MS = 10_000;
+type BindingRefusal =
+  | 'bot_unregistered'
+  | 'witness_missing'
+  | 'witness_revoked'
+  | 'witness_scope_changed'
+  | 'chat_type_changed'
+  | 'selected_bot_changed'
+  | 'legacy_route_changed'
+  | 'route_authority_changed'
+  | 'membership_inactive'
+  | 'bot_revoked'
+  | 'lifecycle_changed'
+  | 'bot_access_denied';
 
 @Injectable()
 export class KaravanMarketplaceBindingStatusService {
+  private readonly logger = new Logger(KaravanMarketplaceBindingStatusService.name);
+  private readonly refusalTimes = new Map<string, number>();
   private readonly cache = new Map<string, { epoch: string; status: Status }>();
   private readonly inFlight = new Map<string, Promise<Status>>();
   constructor(
@@ -72,8 +87,23 @@ export class KaravanMarketplaceBindingStatusService {
   async isCurrent(tx: Prisma.TransactionClient, input: Request): Promise<boolean> {
     return (await this.localEpoch(tx, input)) !== null;
   }
+  private refuse(input: Request, reason: BindingRefusal): null {
+    const chatRef = karavanHash({ chatId: input.chatId }).slice(0, 16);
+    const key = `${chatRef}:${reason}`;
+    const now = Date.now();
+    if (now - (this.refusalTimes.get(key) ?? 0) >= 60_000) {
+      if (this.refusalTimes.size >= 256)
+        this.refusalTimes.delete(this.refusalTimes.keys().next().value!);
+      this.refusalTimes.set(key, now);
+      // FLAG: Diagnose the existing read only; never log proof tokens, user/chat IDs,
+      // names or state snapshots, and never probe or send messages to a user chat.
+      this.logger.warn({ event: 'karavan_marketplace_binding_refused', chatRef, reason });
+    }
+    return null;
+  }
   private async localEpoch(tx: Prisma.TransactionClient, input: Request): Promise<string | null> {
-    if (!this.registry.getActionableBots().some((bot) => bot.id === input.botId)) return null;
+    if (!this.registry.getActionableBots().some((bot) => bot.id === input.botId))
+      return this.refuse(input, 'bot_unregistered');
     await tx.$queryRaw`SELECT id FROM chats WHERE id=${input.chatId} FOR SHARE`;
     const witness = await tx.karavanMarketplaceBindingWitness.findUnique({
       where: {
@@ -105,29 +135,38 @@ export class KaravanMarketplaceBindingStatusService {
         lifecycleSource: true,
       },
     });
+    if (!witness) return this.refuse(input, 'witness_missing');
+    if (witness.revokedAt) return this.refuse(input, 'witness_revoked');
+    if (witness.chatId !== input.chatId || witness.botId !== input.botId)
+      return this.refuse(input, 'witness_scope_changed');
+    if (chat?.entityType !== 'CHAT') return this.refuse(input, 'chat_type_changed');
+    if ((chat.fixedModeratorBotId ?? chat.primaryBotId ?? chat.botId) !== input.botId)
+      return this.refuse(input, 'selected_bot_changed');
+    // FLAG: Old witnesses have no stable route history. Preserve their strict legacy
+    // check; new witnesses survive cache refreshes but fence real switch-away-and-back.
     if (
-      !witness ||
-      witness.revokedAt ||
-      witness.chatId !== input.chatId ||
-      witness.botId !== input.botId ||
-      chat?.entityType !== 'CHAT' ||
-      (chat.fixedModeratorBotId ?? chat.primaryBotId ?? chat.botId) !== input.botId ||
-      // FLAG: Old witnesses have no stable route history. Preserve their strict legacy
-      // check; new witnesses survive cache refreshes but fence real switch-away-and-back.
-      (witness.routingAuthorityEpoch === null
+      witness.routingAuthorityEpoch === null
         ? witness.routingVersion !== chat.routingVersion
-        : witness.routingAuthorityEpoch !== chat.commerceRoutingEpoch) ||
-      membership?.status !== 'ACTIVE' ||
-      witness.botRevocationEpoch !== membership.commerceRevocationEpoch ||
-      ((witness.lifecycleEventAt?.getTime() ?? null) !==
-        (membership.lifecycleEventAt?.getTime() ?? null) &&
-        !(
-          membership.lifecycleEventType === 'live_probe' &&
-          membership.lifecycleSource === 'live_probe'
-        )) ||
-      ['DENIED', 'LOST'].includes(membership.botAccessState)
+        : witness.routingAuthorityEpoch !== chat.commerceRoutingEpoch
     )
-      return null;
+      return this.refuse(
+        input,
+        witness.routingAuthorityEpoch === null ? 'legacy_route_changed' : 'route_authority_changed',
+      );
+    if (membership?.status !== 'ACTIVE') return this.refuse(input, 'membership_inactive');
+    if (witness.botRevocationEpoch !== membership.commerceRevocationEpoch)
+      return this.refuse(input, 'bot_revoked');
+    if (
+      (witness.lifecycleEventAt?.getTime() ?? null) !==
+        (membership.lifecycleEventAt?.getTime() ?? null) &&
+      !(
+        membership.lifecycleEventType === 'live_probe' &&
+        membership.lifecycleSource === 'live_probe'
+      )
+    )
+      return this.refuse(input, 'lifecycle_changed');
+    if (['DENIED', 'LOST'].includes(membership.botAccessState))
+      return this.refuse(input, 'bot_access_denied');
     return karavanHash({
       routingAuthorityEpoch: witness.routingAuthorityEpoch ?? chat.routingVersion,
       // FLAG: Positive observation timestamps are not revocations. The database epoch
