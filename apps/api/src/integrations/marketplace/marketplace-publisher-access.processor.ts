@@ -24,18 +24,23 @@ export class MarketplacePublisherAccessProcessor extends WorkerHost {
     const parsed = marketplacePublisherAccessJobSchema.safeParse(job.data);
     if (
       !parsed.success ||
-      (!parsed.data.exchangeV2 && parsed.data.actorUserId !== MARKETPLACE_PILOT_USER_ID)
+      (!parsed.data.exchangeV2 &&
+        !parsed.data.scope &&
+        parsed.data.actorUserId !== MARKETPLACE_PILOT_USER_ID)
     )
       throw new UnrecoverableError('Invalid marketplace access request');
-    const { requestedAtMs, exchangeV2, background, ...input } = parsed.data;
+    const { requestedAtMs, exchangeV2, background, scope, ...input } = parsed.data;
     if (Date.now() - requestedAtMs > 8000 || requestedAtMs > Date.now() + 1000)
       return { state: 'RETRY' };
     try {
-      const binding = await (background
-        ? this.access.attest(input, exchangeV2 === true, true)
-        : exchangeV2
-          ? this.access.attest(input, true)
-          : this.access.attest(input));
+      // FLAG: Editorial/button proof has no statistics grant; exact scope cannot admit legacy jobs.
+      const binding = await (scope
+        ? this.access.attest(input, false, background === true, scope)
+        : background
+          ? this.access.attest(input, exchangeV2 === true, true)
+          : exchangeV2
+            ? this.access.attest(input, true)
+            : this.access.attest(input));
       return { state: 'ACTIVE', bindingId: binding.id };
     } catch (error) {
       // Queue payloads and error storage never include MAX responses or credentials.

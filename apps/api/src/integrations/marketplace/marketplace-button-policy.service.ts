@@ -91,7 +91,7 @@ export class MarketplaceButtonPolicyService {
     >`SELECT * FROM marketplace_bindings
       WHERE actor_user_id=${input.actorUserId} AND entity_id=${input.entityId} AND kind=${input.kind} AND profile=${input.profile}
       AND checked_at>now()-interval '5 minutes' AND ${marketplaceLocalGrantSql('marketplace_bindings', false)}`;
-    return rows[0] ?? this.access.attest(input);
+    return rows[0] ?? this.access.attest(input, false, false, 'BUTTON_POLICY');
   }
   async entry(input: MarketplaceBindingInput): Promise<MarketplaceEntryResponse> {
     await this.authorize(input);
@@ -160,7 +160,9 @@ export class MarketplaceButtonPolicyService {
     // FLAG: Disabling does not depend on the peer. Enabling verifies the public
     // card and the confirmer's exact platform access without changing ownership.
     const enabling = 'enabled' in command && command.enabled;
-    const binding = enabling ? await this.access.attest(input) : authorization;
+    const binding = enabling
+      ? await this.access.attest(input, false, false, 'BUTTON_POLICY')
+      : authorization;
     const entry = enabling ? await this.readEntry(input) : null;
     if (
       enabling &&
@@ -390,7 +392,7 @@ export class MarketplaceButtonPolicyService {
             first.profile,
           );
           proof = this.access
-            .attest(input, false, true)
+            .attest(input, false, true, 'BUTTON_POLICY')
             .then(async (binding) => ({ binding, entry: await this.readEntry(input) }));
         }
         return proof;

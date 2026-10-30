@@ -1,0 +1,565 @@
+[
+  {
+    "name": "editor mutation",
+    "schema": "mutation",
+    "accepted": true,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание"
+    }
+  },
+  {
+    "name": "one character allowed on wire; native minimum remains server-owned",
+    "schema": "mutation",
+    "accepted": true,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Я"
+    }
+  },
+  {
+    "name": "trim whitespace",
+    "schema": "mutation",
+    "accepted": true,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "  Текст  "
+    }
+  },
+  {
+    "name": "empty",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": ""
+    }
+  },
+  {
+    "name": "blank",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "   "
+    }
+  },
+  {
+    "name": "1500 UTF16",
+    "schema": "mutation",
+    "accepted": true,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂"
+    }
+  },
+  {
+    "name": "1502 UTF16",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂"
+    }
+  },
+  {
+    "name": "reject ownerId",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание",
+      "ownerId": true
+    }
+  },
+  {
+    "name": "reject actorUserId",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание",
+      "actorUserId": true
+    }
+  },
+  {
+    "name": "reject price",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание",
+      "price": true
+    }
+  },
+  {
+    "name": "reject status",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание",
+      "status": true
+    }
+  },
+  {
+    "name": "reject statisticsConsent",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание",
+      "statisticsConsent": true
+    }
+  },
+  {
+    "name": "reject appendEnabled",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание",
+      "appendEnabled": true
+    }
+  },
+  {
+    "name": "CAS required",
+    "schema": "mutation",
+    "accepted": false,
+    "value": {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "description": "Описание"
+    }
+  },
+  {
+    "name": "relay identity",
+    "schema": "relay",
+    "accepted": true,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание"
+    }
+  },
+  {
+    "name": "positive entity refused",
+    "schema": "relay",
+    "accepted": false,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "listingId": "00000000-0000-4000-8000-000000000001",
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRevision": 1,
+      "description": "Описание"
+    }
+  },
+  {
+    "name": "existing state",
+    "schema": "state",
+    "accepted": true,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Карточка",
+        "description": "Описание",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "EDITOR",
+      "responsible": {
+        "displayName": "Ответственный",
+        "profileId": null
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": false
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "owner capability",
+    "schema": "state",
+    "accepted": true,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Карточка",
+        "description": "Описание",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "RESPONSIBLE",
+      "responsible": {
+        "displayName": "Ответственный",
+        "profileId": null
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": true
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "editor cannot manage commercial",
+    "schema": "state",
+    "accepted": false,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Карточка",
+        "description": "Описание",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "EDITOR",
+      "responsible": {
+        "displayName": "Ответственный",
+        "profileId": null
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": true
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "responsible name300",
+    "schema": "state",
+    "accepted": true,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Карточка",
+        "description": "Описание",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "EDITOR",
+      "responsible": {
+        "displayName": "АААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА",
+        "profileId": "00000000-0000-4000-8000-000000000001"
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": false
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "responsible name301",
+    "schema": "state",
+    "accepted": false,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Карточка",
+        "description": "Описание",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "EDITOR",
+      "responsible": {
+        "displayName": "ААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААААА",
+        "profileId": "00000000-0000-4000-8000-000000000001"
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": false
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "response description1502 UTF16",
+    "schema": "state",
+    "accepted": false,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Карточка",
+        "description": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "EDITOR",
+      "responsible": {
+        "displayName": "Ответственный",
+        "profileId": null
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": false
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "response title302 UTF16",
+    "schema": "state",
+    "accepted": false,
+    "value": {
+      "version": 1,
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "revision": 2,
+      "listing": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂",
+        "description": "Описание",
+        "profileOnly": true,
+        "publicUrl": null
+      },
+      "ownershipKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "role": "EDITOR",
+      "responsible": {
+        "displayName": "Ответственный",
+        "profileId": null
+      },
+      "capabilities": {
+        "canEditDescription": true,
+        "canManageCommercial": false
+      },
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "active30s",
+    "schema": "proof",
+    "accepted": true,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "ACTIVE",
+      "bindingRevision": 1,
+      "checkedAt": "2026-10-30T12:00:00.000Z",
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "active31s refused",
+    "schema": "proof",
+    "accepted": false,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "ACTIVE",
+      "bindingRevision": 1,
+      "checkedAt": "2026-10-30T12:00:00.000Z",
+      "validUntil": "2026-10-30T12:00:31.000Z"
+    }
+  },
+  {
+    "name": "active no checkedAt",
+    "schema": "proof",
+    "accepted": false,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "ACTIVE",
+      "bindingRevision": 1,
+      "checkedAt": null,
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "revoked no expiry",
+    "schema": "proof",
+    "accepted": true,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "REVOKED",
+      "bindingRevision": 1,
+      "checkedAt": "2026-10-30T12:00:00.000Z",
+      "validUntil": null
+    }
+  },
+  {
+    "name": "unknown no times",
+    "schema": "proof",
+    "accepted": true,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "UNKNOWN",
+      "bindingRevision": 1,
+      "checkedAt": null,
+      "validUntil": null
+    }
+  },
+  {
+    "name": "revoked with expiry",
+    "schema": "proof",
+    "accepted": false,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "REVOKED",
+      "bindingRevision": 1,
+      "checkedAt": "2026-10-30T12:00:00.000Z",
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "wrong proof scope",
+    "schema": "proof",
+    "accepted": false,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "BUTTON_POLICY",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "ACTIVE",
+      "bindingRevision": 1,
+      "checkedAt": "2026-10-30T12:00:00.000Z",
+      "validUntil": "2026-10-30T12:00:30.000Z"
+    }
+  },
+  {
+    "name": "no consent field",
+    "schema": "proof",
+    "accepted": false,
+    "value": {
+      "actorUserId": "933001",
+      "entityId": "-100",
+      "kind": "CHANNEL",
+      "profile": "publisher",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "version": 1,
+      "scope": "PROFILE_DESCRIPTION",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "state": "ACTIVE",
+      "bindingRevision": 1,
+      "checkedAt": "2026-10-30T12:00:00.000Z",
+      "validUntil": "2026-10-30T12:00:30.000Z",
+      "statisticsConsent": false
+    }
+  }
+]

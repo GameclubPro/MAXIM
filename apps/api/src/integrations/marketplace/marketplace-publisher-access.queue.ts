@@ -21,8 +21,15 @@ export const marketplacePublisherAccessJobSchema = marketplaceBindingInputSchema
     requestedAtMs: z.number().int().nonnegative(),
     exchangeV2: z.boolean().optional(),
     background: z.literal(true).optional(),
+    scope: z.enum(['PROFILE_DESCRIPTION', 'BUTTON_POLICY']).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      !value.scope ||
+      (!value.exchangeV2 && (value.scope !== 'PROFILE_DESCRIPTION' || !value.background)),
+    'Invalid access scope',
+  );
 export type MarketplacePublisherAccessJob = z.infer<typeof marketplacePublisherAccessJobSchema>;
 export const marketplacePublisherAccessResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('ACTIVE'), bindingId: z.string().uuid() }).strict(),
@@ -94,6 +101,7 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
     input: MarketplaceBindingInput,
     exchangeV2 = false,
     background = false,
+    scope?: 'PROFILE_DESCRIPTION' | 'BUTTON_POLICY',
   ): Promise<string> {
     if (this.closing) throw this.pendingAccess();
     const data = marketplacePublisherAccessJobSchema.parse({
@@ -101,6 +109,7 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
       requestedAtMs: Date.now(),
       ...(exchangeV2 ? { exchangeV2: true } : {}),
       ...(background ? { background: true } : {}),
+      ...(scope ? { scope } : {}),
     });
     const pending = await this.queue.getJobCounts(
       'wait',
@@ -127,6 +136,7 @@ export class MarketplacePublisherAccessQueueService implements OnModuleDestroy {
           ...input,
           ...(exchangeV2 ? { exchangeV2 } : {}),
           ...(background ? { background } : {}),
+          ...(scope ? { scope } : {}),
         }),
       )
       .digest('hex');

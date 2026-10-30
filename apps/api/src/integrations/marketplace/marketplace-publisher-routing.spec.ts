@@ -109,6 +109,24 @@ describe('marketplace Publisher runtime boundary', () => {
     expect(f.queue.attest).not.toHaveBeenCalled();
     expect(f.max.getChatSnapshot).not.toHaveBeenCalled();
   });
+  it.each(['PROFILE_DESCRIPTION', 'BUTTON_POLICY'] as const)(
+    'admits a non-pilot %s proof without a statistics grant',
+    async (scope) => {
+      process.env.APP_ROLE = 'publisher';
+      process.env.APP_SERVICE_NAME = 'api-publisher';
+      const id = randomUUID();
+      const access = { attest: jest.fn().mockResolvedValue({ id }) };
+      const processor = new MarketplacePublisherAccessProcessor(
+        access as unknown as MarketplaceAccessService,
+      );
+      const identity = { ...input, actorUserId: '933001' };
+      const job = {
+        data: { ...identity, requestedAtMs: Date.now(), scope },
+      } as unknown as Job<MarketplacePublisherAccessJob>;
+      await expect(processor.process(job)).resolves.toEqual({ state: 'ACTIVE', bindingId: id });
+      expect(access.attest).toHaveBeenCalledWith(identity, false, false, scope);
+    },
+  );
   it('executes queued requests only in the Publisher role and drops expired requests', async () => {
     const access = { attest: jest.fn().mockResolvedValue({ id: randomUUID() }) };
     const processor = new MarketplacePublisherAccessProcessor(

@@ -401,7 +401,7 @@ postgres('platform-scoped Birzhik button policy on PostgreSQL', () => {
   it('requires a fresh exact actor proof when enabling despite a still-valid old binding', async () => {
     await db.$executeRaw`UPDATE marketplace_bindings SET checked_at=now()-interval '10 minutes',valid_until=now()+interval '5 minutes' WHERE id=${firstBinding}::uuid`;
     await service.mutate(input, command());
-    expect(attest).toHaveBeenCalledWith(input);
+    expect(attest).toHaveBeenCalledWith(input, false, false, 'BUTTON_POLICY');
     expect((await state.read(firstBinding))!.checked_at!.getTime()).toBeGreaterThan(
       Date.now() - 10_000,
     );

@@ -11,7 +11,7 @@ const ActionConfirmSheet = lazy(() =>
   import('./ui/action-confirm-sheet').then((module) => ({ default: module.ActionConfirmSheet })),
 );
 type PanelProps = MarketplaceProfileCardProps & { id: string; onClose: () => void };
-export type MarketplaceScreen = 'overview' | 'profile' | 'buttons';
+export type MarketplaceScreen = 'overview' | 'profile' | 'buttons' | 'editorial';
 export type MarketplaceDrafts = Record<Exclude<MarketplaceScreen, 'overview'>, boolean>;
 
 export default function MarketplaceProfilePanel(props: PanelProps) {
@@ -24,7 +24,11 @@ export default function MarketplaceProfilePanel(props: PanelProps) {
 }
 
 function MarketplacePanelContents({ id, onClose, ...props }: PanelProps) {
-  const [drafts, setDrafts] = useState<MarketplaceDrafts>({ profile: false, buttons: false });
+  const [drafts, setDrafts] = useState<MarketplaceDrafts>({
+    profile: false,
+    buttons: false,
+    editorial: false,
+  });
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<MarketplaceScreen>('overview');
   const [resetDraftVersion, setResetDraftVersion] = useState(0);
@@ -36,7 +40,7 @@ function MarketplacePanelContents({ id, onClose, ...props }: PanelProps) {
     () => ({ host: actionsHost, setActive: setActionsActive }),
     [actionsHost],
   );
-  const lastEdited = useRef<'profile' | 'buttons'>('profile');
+  const lastEdited = useRef<Exclude<MarketplaceScreen, 'overview'>>('profile');
   const lastFields = useRef<Partial<Record<MarketplaceScreen, string>>>({});
   const positions = useRef<
     Partial<
@@ -51,7 +55,7 @@ function MarketplacePanelContents({ id, onClose, ...props }: PanelProps) {
       >
     >
   >({});
-  const dirty = drafts.profile || drafts.buttons;
+  const dirty = drafts.profile || drafts.buttons || drafts.editorial;
   const currentPanel = () =>
     document.getElementById(`${id}-title`)?.closest<HTMLElement>('[role="dialog"]');
   const openScreen = (next: MarketplaceScreen, source?: HTMLElement) => {
@@ -72,15 +76,17 @@ function MarketplacePanelContents({ id, onClose, ...props }: PanelProps) {
   const continueEditing = () => {
     const target = drafts[lastEdited.current]
       ? lastEdited.current
-      : drafts.profile
-        ? 'profile'
-        : 'buttons';
+      : drafts.editorial
+        ? 'editorial'
+        : drafts.profile
+          ? 'profile'
+          : 'buttons';
     setPendingNavigation(null);
     openScreen(target);
   };
   const discardDrafts = () => {
     setResetDraftVersion((value) => value + 1);
-    setDrafts({ profile: false, buttons: false });
+    setDrafts({ profile: false, buttons: false, editorial: false });
   };
   const requestExit = () => {
     if (busy) return;
@@ -96,7 +102,7 @@ function MarketplacePanelContents({ id, onClose, ...props }: PanelProps) {
     }
   };
   // FLAG: A hidden editor remains part of this session. Only a confirmed full
-  // exit or external handoff may discard both drafts; internal Back preserves them.
+  // exit or external handoff may discard the session drafts; internal Back preserves them.
   useEffect(() => {
     if (!dirty) return;
     const protect = (event: BeforeUnloadEvent) => {
@@ -172,9 +178,12 @@ function MarketplacePanelContents({ id, onClose, ...props }: PanelProps) {
       window.visualViewport?.removeEventListener('scroll', revealInput);
     };
   }, [screen, id]);
-  const title = { overview: 'Рекламная биржа', profile: 'Профиль', buttons: 'Кнопка в сообщениях' }[
-    screen
-  ];
+  const title = {
+    overview: 'Рекламная биржа',
+    profile: 'Карточка площадки',
+    editorial: 'Изменить описание',
+    buttons: 'Кнопка в сообщениях',
+  }[screen];
   return (
     <>
       <SettingsDrilldownPanel

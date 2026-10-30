@@ -98,7 +98,7 @@ try {
       );
       await page.locator('.settings-drilldown__close:visible').click();
       await page.getByRole('button', { name: 'Рекламная биржа', exact: true }).click();
-      await workspace.getByRole('button', { name: 'Изменить профиль', exact: true }).click();
+      await workspace.getByRole('button', { name: 'Настройки карточки', exact: true }).click();
       await workspace.getByRole('button', { name: 'Скрыть профиль', exact: true }).click();
       await workspace.getByRole('button', { name: 'Опубликовать снова', exact: true }).waitFor();
       await page

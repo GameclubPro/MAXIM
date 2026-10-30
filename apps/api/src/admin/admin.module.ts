@@ -1,3 +1,9 @@
+import { MarketplaceEditorialService } from '../integrations/marketplace/marketplace-editorial.service';
+import { MarketplaceEditorialAccessService } from '../integrations/marketplace/marketplace-editorial-access.service';
+import {
+  MarketplaceEditorialController,
+  MarketplaceEditorialIntegrationController,
+} from '../integrations/marketplace/marketplace-editorial.controller';
 import { StatsModule } from '../statistics/stats.module';
 import { OcrReadinessStateModule } from '../health/ocr-readiness-state.module';
 import { StatisticsExchangeV3Controller } from '../integrations/marketplace/statistics-exchange-v3.controller';
@@ -226,6 +232,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     AdminReportsController,
     AdvertisingPlacementController,
     MarketplaceIntegrationController,
+    MarketplaceEditorialController,
+    MarketplaceEditorialIntegrationController,
     StatisticsExchangeController,
     StatisticsExchangeV3Controller,
     StatisticsExchangeOwnerController,
@@ -273,6 +281,8 @@ import { PublisherAutoReplyAuthoringProcessor } from './publisher-auto-reply-aut
     MarketplaceNavigationService,
     MarketplaceButtonPolicyService,
     MarketplaceProfileAccessService,
+    MarketplaceEditorialService,
+    MarketplaceEditorialAccessService,
     MarketplaceStatisticsService,
     MarketplaceCollectorService,
     MarketplaceNativeProjectionService,

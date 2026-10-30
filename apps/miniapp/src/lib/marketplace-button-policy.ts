@@ -8,7 +8,7 @@ export function marketplaceEntityPath(
   profile: 'moderation' | 'publisher',
   entityType: 'chat' | 'channel',
   entityId: string,
-  view: 'entry' | 'button-policy',
+  view: 'entry' | 'button-policy' | 'editorial',
 ) {
   return `/marketplace/entities/${entityType === 'channel' ? 'CHANNEL' : 'CHAT'}/${encodeURIComponent(entityId)}/${view}?profile=${profile}${view === 'button-policy' ? '&version=2' : ''}`;
 }

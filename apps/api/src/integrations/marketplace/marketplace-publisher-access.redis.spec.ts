@@ -93,6 +93,42 @@ integration('marketplace Publisher request/reply with isolated Redis', () => {
     expect(jobs.map((job) => job.data.background).filter(Boolean)).toEqual([true]);
   });
 
+  it.each(['PROFILE_DESCRIPTION', 'BUTTON_POLICY'] as const)(
+    'keeps non-pilot %s proofs separate from legacy and statistics jobs',
+    async (scope) => {
+      const id = randomUUID();
+      const access = {
+        attest: jest
+          .fn<
+            ReturnType<MarketplaceAccessService['attest']>,
+            Parameters<MarketplaceAccessService['attest']>
+          >()
+          .mockResolvedValue({ id } as Awaited<ReturnType<MarketplaceAccessService['attest']>>),
+      } satisfies Pick<MarketplaceAccessService, 'attest'>;
+      startWorker(access);
+      const editor = { ...input, actorUserId: '933001' };
+      expect(await service.attest(editor, false, false, scope)).toBe(id);
+      expect(access.attest).toHaveBeenCalledWith(editor, false, false, scope);
+      const jobs = await queue.getJobs(['completed']);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]!.data).toMatchObject({
+        scope,
+        actorUserId: editor.actorUserId,
+      });
+      expect(jobs[0]!.data).not.toHaveProperty('exchangeV2');
+      expect(jobs[0]!.data).not.toHaveProperty('background');
+      await expect(service.attest(editor, true, false, scope)).rejects.toThrow(
+        'Invalid access scope',
+      );
+      expect(access.attest).toHaveBeenCalledTimes(1);
+      if (scope === 'BUTTON_POLICY') {
+        expect(await service.attest(editor, false, true, scope)).toBe(id);
+        expect(access.attest).toHaveBeenCalledWith(editor, false, true, scope);
+        expect(await queue.getJobs(['completed'])).toHaveLength(2);
+      }
+    },
+  );
+
   it('returns the exact worker binding and coalesces duplicate requests without any credential payload', async () => {
     const id = randomUUID();
     const access = { attest: jest.fn().mockResolvedValue({ id }) };

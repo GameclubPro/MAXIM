@@ -355,3 +355,89 @@ export const marketplaceLaunchInputSchema = z
       context.addIssue({ code: 'custom', message: 'Invalid marketplace destination' });
   });
 export const marketplaceLaunchResponseSchema = z.object({ url: z.string().url() }).strict();
+
+/** FLAG: Description editing grants no commercial authority and no statistics consent. */
+export const marketplaceEditorialIdentitySchema = marketplaceBindingInputSchema
+  .extend({
+    bindingId: z.string().uuid(),
+  })
+  .strict();
+export const marketplaceEditorialMutationSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    listingId: z.string().uuid(),
+    ownershipKey: z.string().regex(/^[a-f0-9]{64}$/u),
+    expectedRevision: count,
+    description: utf16Max(z.string().trim().min(1), 1500),
+  })
+  .strict();
+export const marketplaceEditorialRelayInputSchema = marketplaceEditorialIdentitySchema
+  .merge(marketplaceEditorialMutationSchema)
+  .strict();
+export const marketplaceEditorialStateSchema = z
+  .object({
+    version: z.literal(1),
+    entityId: marketplaceEntityIdSchema,
+    kind: marketplaceKindSchema,
+    revision: count,
+    listing: z
+      .object({
+        id: z.string().uuid(),
+        title: utf16Max(z.string(), 300),
+        description: utf16Max(z.string(), 1500),
+        profileOnly: z.boolean(),
+        publicUrl: z.string().url().nullable(),
+      })
+      .strict(),
+    ownershipKey: z.string().regex(/^[a-f0-9]{64}$/u),
+    role: z.enum(['RESPONSIBLE', 'EDITOR']),
+    responsible: z
+      .object({
+        displayName: utf16Max(z.string(), 300),
+        profileId: z.string().uuid().nullable(),
+      })
+      .strict(),
+    capabilities: z
+      .object({
+        canEditDescription: z.literal(true),
+        canManageCommercial: z.boolean(),
+      })
+      .strict(),
+    validUntil: timestamp,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.capabilities.canManageCommercial !== (value.role === 'RESPONSIBLE'))
+      context.addIssue({ code: 'custom', message: 'Editorial role does not match capabilities' });
+  });
+export const marketplaceEditorialProofInputSchema = marketplaceEditorialIdentitySchema
+  .extend({
+    version: z.literal(1),
+    scope: z.literal('PROFILE_DESCRIPTION'),
+    requestId: z.string().uuid(),
+  })
+  .strict();
+export const marketplaceEditorialProofSchema = marketplaceEditorialProofInputSchema
+  .extend({
+    state: z.enum(['ACTIVE', 'REVOKED', 'UNKNOWN']),
+    bindingRevision: count,
+    checkedAt: timestamp.nullable(),
+    validUntil: timestamp.nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.state === 'ACTIVE') {
+      if (
+        !value.checkedAt ||
+        !value.validUntil ||
+        Date.parse(value.validUntil) <= Date.parse(value.checkedAt) ||
+        Date.parse(value.validUntil) > Date.parse(value.checkedAt) + 30_000
+      )
+        context.addIssue({ code: 'custom', message: 'Invalid editorial proof lifetime' });
+    } else if (value.validUntil !== null)
+      context.addIssue({ code: 'custom', message: 'Inactive editorial proof has a deadline' });
+  });
+export type MarketplaceEditorialState = z.infer<typeof marketplaceEditorialStateSchema>;
+export type MarketplaceEditorialMutation = z.infer<typeof marketplaceEditorialMutationSchema>;
+export type MarketplaceEditorialProofInput = z.infer<typeof marketplaceEditorialProofInputSchema>;
+export type MarketplaceEditorialProof = z.infer<typeof marketplaceEditorialProofSchema>;

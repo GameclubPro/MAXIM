@@ -55,13 +55,16 @@ export class MarketplaceAccessService implements OnModuleDestroy {
     raw: unknown,
     exchangeV2 = false,
     background = false,
+    scope?: 'PROFILE_DESCRIPTION' | 'BUTTON_POLICY',
   ): Promise<MarketplaceBindingRow> {
+    if (scope && (exchangeV2 || (scope === 'PROFILE_DESCRIPTION' && background)))
+      throw new ConflictException('Invalid access scope');
     if (this.stopping) throw this.pendingAccess();
-    if (!background) return this.attestNow(raw, exchangeV2, false);
+    if (!background) return this.attestNow(raw, exchangeV2, false, scope);
     // FLAG: Background access never queues in memory or borrows interactive capacity.
     // Deferral cannot renew a lease or turn unknown rights into denial or permission.
     if (this.backgroundInFlight || Date.now() < this.nextBackgroundAt) throw this.pendingAccess();
-    const operation = this.attestBackground(raw, exchangeV2);
+    const operation = this.attestBackground(raw, exchangeV2, scope);
     this.backgroundInFlight = operation;
     try {
       return await operation;
@@ -78,6 +81,7 @@ export class MarketplaceAccessService implements OnModuleDestroy {
   private async attestBackground(
     raw: unknown,
     exchangeV2: boolean,
+    scope?: 'PROFILE_DESCRIPTION' | 'BUTTON_POLICY',
   ): Promise<MarketplaceBindingRow> {
     if (!this.governor) throw this.pendingAccess();
     const decision = await this.governor.decide({
@@ -86,12 +90,13 @@ export class MarketplaceAccessService implements OnModuleDestroy {
     });
     if (decision.action !== 'run') this.nextBackgroundAt = Date.now() + decision.retryAfterMs;
     if (this.stopping || decision.action === 'pause') throw this.pendingAccess();
-    return this.attestNow(raw, exchangeV2, true);
+    return this.attestNow(raw, exchangeV2, true, scope);
   }
   private async attestNow(
     raw: unknown,
     exchangeV2: boolean,
     background: boolean,
+    scope?: 'PROFILE_DESCRIPTION' | 'BUTTON_POLICY',
   ): Promise<MarketplaceBindingRow> {
     const input = marketplaceBindingInputSchema.parse(raw);
     if (!this.state.enabled()) throw new ServiceUnavailableException('Биржик пока не подключён');
@@ -104,11 +109,13 @@ export class MarketplaceAccessService implements OnModuleDestroy {
     if (input.profile === 'publisher' && !roleRunsPublisher(getAppRole())) {
       if (!this.publisherQueue)
         throw new ServiceUnavailableException('Проверка прав Публика пока недоступна');
-      const id = await (background
-        ? this.publisherQueue.attest(input, exchangeV2, true)
-        : exchangeV2
-          ? this.publisherQueue.attest(input, true)
-          : this.publisherQueue.attest(input));
+      const id = await (scope
+        ? this.publisherQueue.attest(input, false, background, scope)
+        : background
+          ? this.publisherQueue.attest(input, exchangeV2, true)
+          : exchangeV2
+            ? this.publisherQueue.attest(input, true)
+            : this.publisherQueue.attest(input));
       const binding = await this.state.read(id);
       if (
         !binding ||

@@ -4,12 +4,57 @@ import test from 'node:test';
 import {
   marketplaceEntryResponseSchema,
   marketplaceButtonPolicyStateSchema,
+  marketplaceEditorialStateSchema,
 } from '@maxim/contracts/marketplace-integration';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 import { marketplaceTargetFromLink, BIRZHIK_BOT_URL } from '../src/lib/marketplace-launch';
 import { mergeMarketplaceButtonPolicy } from '../src/lib/marketplace-button-policy';
 
 const base = '/marketplace/entities/CHAT/preview-chat';
+
+test('a shared description edit preserves the card and grants no owner controls', async () => {
+  const api = createPreviewApiTransport({ search: '?marketplaceOwner=0' });
+  const path = `${base}/editorial?profile=moderation`;
+  const before = marketplaceEditorialStateSchema.parse(await api.request(path));
+  assert.equal(before.role, 'EDITOR');
+  assert.equal(before.capabilities.canManageCommercial, false);
+  const description = 'Обновлённое описание общей карточки площадки';
+  const input = {
+    requestId: randomUUID(),
+    listingId: before.listing.id,
+    ownershipKey: before.ownershipKey,
+    expectedRevision: before.revision,
+    description,
+  };
+  const changed = marketplaceEditorialStateSchema.parse(
+    await api.request(path, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  );
+  assert.equal(changed.listing.id, before.listing.id);
+  assert.equal(changed.ownershipKey, before.ownershipKey);
+  assert.equal(changed.listing.description, description);
+  assert.equal(changed.revision, before.revision + 1);
+  assert.equal(changed.capabilities.canManageCommercial, false);
+  await assert.rejects(api.request(`${base}/profile?profile=moderation`), /владелец/u);
+  const entry = marketplaceEntryResponseSchema.parse(
+    await api.request(`${base}/entry?profile=moderation`),
+  );
+  assert.equal(entry.isOwner, false);
+  assert.equal(entry.canCreate, false);
+  assert.equal(entry.listing?.id, before.listing.id);
+  await assert.rejects(
+    api.request(path, {
+      method: 'PATCH',
+      body: JSON.stringify({ ...input, requestId: randomUUID() }),
+    }),
+    /изменилась/u,
+  );
+  await assert.rejects(
+    api.request(path, { method: 'PATCH', body: JSON.stringify({ ...input, price: 100 }) }),
+  );
+});
 
 test('second administrator can configure public profile button without receiving owner editing', async () => {
   const api = createPreviewApiTransport({ search: '?marketplaceOwner=0' });
