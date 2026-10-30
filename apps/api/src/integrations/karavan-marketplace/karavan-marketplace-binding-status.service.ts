@@ -99,8 +99,9 @@ export class KaravanMarketplaceBindingStatusService {
         status: true,
         commerceRevocationEpoch: true,
         botAccessState: true,
-        botAccessCheckedAt: true,
         lifecycleEventAt: true,
+        lifecycleEventType: true,
+        lifecycleSource: true,
       },
     });
     if (
@@ -113,14 +114,21 @@ export class KaravanMarketplaceBindingStatusService {
       witness.routingVersion !== chat.routingVersion ||
       membership?.status !== 'ACTIVE' ||
       witness.botRevocationEpoch !== membership.commerceRevocationEpoch ||
-      (witness.lifecycleEventAt?.getTime() ?? null) !==
-        (membership.lifecycleEventAt?.getTime() ?? null) ||
+      ((witness.lifecycleEventAt?.getTime() ?? null) !==
+        (membership.lifecycleEventAt?.getTime() ?? null) &&
+        !(
+          membership.lifecycleEventType === 'live_probe' &&
+          membership.lifecycleSource === 'live_probe'
+        )) ||
       ['DENIED', 'LOST'].includes(membership.botAccessState)
     )
       return null;
     return karavanHash({
       routingVersion: chat.routingVersion,
-      membership: JSON.parse(JSON.stringify(membership)),
+      // FLAG: Positive observation timestamps are not revocations. The database epoch
+      // retains real removal/denial/lifecycle changes even after a later positive probe.
+      botRevocationEpoch: membership.commerceRevocationEpoch,
+      botAccessState: membership.botAccessState,
     });
   }
   private async probe(input: Request, local: string): Promise<Status> {
@@ -166,8 +174,9 @@ export class KaravanMarketplaceBindingStatusService {
       });
       return this.result(false, 'bot_unavailable', started);
     }
-    if (Date.now() - started.getTime() >= TTL_MS || (await this.local(input)) !== local)
-      return this.result(false, 'binding_changed', started);
+    if (Date.now() - started.getTime() >= TTL_MS)
+      throw new ServiceUnavailableException('Проверка магазина устарела. Повторите позже.');
+    if ((await this.local(input)) !== local) return this.result(false, 'binding_changed', started);
     return this.result(true, 'active', started);
   }
 }
