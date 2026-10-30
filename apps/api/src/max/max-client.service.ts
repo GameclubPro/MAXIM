@@ -773,6 +773,7 @@ const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
 const MAX_API_SERVICE_CAPACITY_METRICS_TTL_SEC = 2 * 60;
 const MAX_API_RATE_LIMIT_OUTCOME_KEY_PREFIX = 'maxapi:rate-limit:v1';
 const MAX_API_RATE_LIMIT_LOG_COALESCE_MS = 60_000;
+const MAX_API_USAGE_METRICS_IN_FLIGHT_LIMIT = 128;
 const MAX_API_CIRCUIT_KEY_PREFIX = 'maxapi:circuit:v1';
 const DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC = 60;
 const MAX_API_CRITICAL_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
@@ -1067,6 +1068,9 @@ export class MaxClientService implements OnModuleDestroy {
     this.logger.warn(summary, 'MAX action failure window summary'),
   );
   private readonly registeredSourceMetricDimensions = new Set<string>();
+  private usageMetricWritesInFlight = 0;
+  private droppedUsageMetricWrites = 0;
+  private usageMetricDropWarnedAtMs = 0;
   private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
   private readonly currentChatMemberAccessInFlight = new Map<
     string,
@@ -7291,12 +7295,9 @@ export class MaxClientService implements OnModuleDestroy {
           facts: { failureOrigin: 'unlinked', isCritical },
           association: failureAssociation,
         });
-        if (isCritical) {
-          await this.registerCriticalFailure(bot.id, circuitPermit);
-        } else {
-          await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
-        }
         if (status === 429) {
+          // FLAG: Publish the shared admission stop before unrelated circuit bookkeeping.
+          // A slow circuit write must not leave other roles admitting this token's requests.
           try {
             await this.limiterRedis.eval(
               MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
@@ -7312,6 +7313,13 @@ export class MaxClientService implements OnModuleDestroy {
               'Failed to retain MAX external rate-limit cooldown',
             );
           }
+        }
+        if (isCritical) {
+          await this.registerCriticalFailure(bot.id, circuitPermit);
+        } else {
+          await this.closeCircuitAfterSuccessfulProbe(bot.id, circuitPermit);
+        }
+        if (status === 429) {
           await this.recordRateLimitOutcome({
             origin: 'external_429',
             botId: bot.id,
@@ -8379,7 +8387,7 @@ export class MaxClientService implements OnModuleDestroy {
       );
       if (reservation.ok) {
         if (activityId) this.renewHigherPriorityActivity(activityId);
-        await this.recordRateLimitUsage(botId, trafficClass, sourceTag);
+        this.recordRateLimitUsageWithoutWaiting(botId, trafficClass, sourceTag);
         return activityId;
       }
 
@@ -8729,6 +8737,40 @@ export class MaxClientService implements OnModuleDestroy {
         },
         'Failed to record MAX API rate-limit problem chat',
       );
+    }
+  }
+
+  private recordRateLimitUsageWithoutWaiting(
+    botId: string,
+    trafficClass: MaxApiTrafficClass,
+    sourceTag?: string | null,
+  ): void {
+    // FLAG: Usage observation cannot hold an admitted request past its quota window.
+    // Bound actual unsettled writes; never retry an unknown metric EXEC or count a drop as zero.
+    if (this.usageMetricWritesInFlight >= MAX_API_USAGE_METRICS_IN_FLIGHT_LIMIT) {
+      this.droppedUsageMetricWrites++;
+      const nowMs = Date.now();
+      if (nowMs - this.usageMetricDropWarnedAtMs >= MAX_API_RATE_LIMIT_LOG_COALESCE_MS) {
+        this.usageMetricDropWarnedAtMs = nowMs;
+        this.logger.warn(
+          {
+            pendingWrites: this.usageMetricWritesInFlight,
+            droppedObservations: this.droppedUsageMetricWrites,
+          },
+          'MAX API usage metrics incomplete under write pressure',
+        );
+      }
+      return;
+    }
+    this.usageMetricWritesInFlight++;
+    try {
+      // Invoke now so the admission bucket is captured before yielding to HTTP.
+      void this.recordRateLimitUsage(botId, trafficClass, sourceTag).then(
+        () => this.usageMetricWritesInFlight--,
+        () => this.usageMetricWritesInFlight--,
+      );
+    } catch {
+      this.usageMetricWritesInFlight--;
     }
   }
 

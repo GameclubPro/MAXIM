@@ -10995,7 +10995,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       },
     );
 
-    it('retains external429 circuit and cooldown order while keeping received HTTP status unknown', async () => {
+    it('retains external429 cooldown before circuit bookkeeping while keeping received HTTP status unknown', async () => {
       const error = Object.assign(new Error('limited'), {
         response: { status: 429, data: { code: 'rate.limit' } },
       });
@@ -11017,8 +11017,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         expect(events.map(({ name }) => name)).toEqual([
           'MAX_API_CIRCUIT_ACQUIRE_V1',
           'MAX_API_GCRA_RESERVE_V1',
-          'MAX_API_CIRCUIT_FAILURE_V1',
           'MAX_API_EXTERNAL_COOLDOWN_V1',
+          'MAX_API_CIRCUIT_FAILURE_V1',
         ]);
         expect(events[1]!.order).toBeLessThan(request.mock.invocationCallOrder[0]!);
         expect(request.mock.invocationCallOrder[0]).toBeLessThan(
@@ -16765,6 +16765,83 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(limiterRedis.sadd).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
+  });
+
+  describe('bounded asynchronous MAX usage metrics', () => {
+    type UsageMetricsInternals = {
+      logger: Pick<Logger, 'warn'>;
+      recordRateLimitUsage(
+        botId: string,
+        trafficClass: 'critical' | 'interactive' | 'background',
+        sourceTag?: string | null,
+      ): Promise<void>;
+      recordRateLimitUsageWithoutWaiting(
+        botId: string,
+        trafficClass: 'critical' | 'interactive' | 'background',
+        sourceTag?: string | null,
+      ): void;
+    };
+
+    it('bounds pending usage writes at 128 and accepts a new write only after settlement', async () => {
+      const service = createService();
+      const internal = service as unknown as UsageMetricsInternals;
+      const completions: Array<() => void> = [];
+      const writer = jest.spyOn(internal, 'recordRateLimitUsage').mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            completions.push(resolve);
+          }),
+      );
+      const warn = jest.spyOn(internal.logger, 'warn').mockImplementation(() => undefined);
+      const record = () =>
+        internal.recordRateLimitUsageWithoutWaiting('777000_bot', 'background', 'managed_refresh');
+      try {
+        for (let index = 0; index < 128; index++) record();
+        expect(writer).toHaveBeenCalledTimes(128);
+        record();
+        expect(writer).toHaveBeenCalledTimes(128);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ pendingWrites: 128, droppedObservations: 1 }),
+          'MAX API usage metrics incomplete under write pressure',
+        );
+        completions[0]!();
+        await Promise.resolve();
+        record();
+        expect(writer).toHaveBeenCalledTimes(129);
+        expect(writer).toHaveBeenLastCalledWith('777000_bot', 'background', 'managed_refresh');
+      } finally {
+        for (const complete of completions) complete();
+        await Promise.resolve();
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['reject', 'throw'] as const)(
+      'contains a usage writer %s without blocking subsequent observations',
+      async (failure) => {
+        const service = createService();
+        const internal = service as unknown as UsageMetricsInternals;
+        const error = new Error('usage metrics unavailable');
+        const writer = jest
+          .spyOn(internal, 'recordRateLimitUsage')
+          .mockImplementationOnce(() => {
+            if (failure === 'throw') throw error;
+            return Promise.reject(error);
+          })
+          .mockResolvedValue(undefined);
+        try {
+          expect(() =>
+            internal.recordRateLimitUsageWithoutWaiting('777000_bot', 'background'),
+          ).not.toThrow();
+          await Promise.resolve();
+          internal.recordRateLimitUsageWithoutWaiting('777000_bot', 'background');
+          expect(writer).toHaveBeenCalledTimes(2);
+          await Promise.resolve();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
   });
 
   it('retries source dimension registration after a Redis transaction failure and then caches it', async () => {

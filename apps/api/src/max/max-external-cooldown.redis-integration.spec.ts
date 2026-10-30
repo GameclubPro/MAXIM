@@ -1,12 +1,56 @@
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
+import { ConfigService } from '@nestjs/config';
+import type { HttpService } from '@nestjs/axios';
+import { of, throwError } from 'rxjs';
+import type { ActionHealthService } from '../system/action-health.service';
+import { MaxBotRegistryService } from './max-bot-registry.service';
+import { MaxBotContextService } from './max-bot-context.service';
 import {
   MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
   MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
+  MaxClientService,
 } from './max-client.service';
 
 const redisUrl = process.env.MAXIM_TEST_REDIS_URL;
 const describeRedis = redisUrl ? describe : describe.skip;
+
+function nativeTransportFixture(botId = `test-quota-${randomUUID()}`) {
+  const config = new ConfigService({
+    MAX_API_BASE_URL: 'https://platform-api2.max.ru',
+    REDIS_URL: redisUrl!,
+    MAX_BOT_ID: botId,
+    MAX_BOT_TOKEN: 'native-quota-test-token',
+    MAX_WEBHOOK_SECRET_PATH: 'native-quota-test-path',
+    MAX_WEBHOOK_HEADER_SECRET: 'native-quota-test-header',
+    MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: 0,
+    APP_SERVICE_NAME: 'test-quota-metrics',
+  });
+  const request = jest.fn().mockReturnValue(of({ status: 200, data: { user_id: '123' } }));
+  const health: Pick<ActionHealthService, 'recordSuccessForLane' | 'recordFailureForLane'> = {
+    recordSuccessForLane: jest.fn(),
+    recordFailureForLane: jest.fn(),
+  };
+  const service = new MaxClientService(
+    { request } as unknown as HttpService,
+    config,
+    health as ActionHealthService,
+    new MaxBotRegistryService(config),
+    new MaxBotContextService(),
+  );
+  const internals = service as unknown as {
+    recordRateLimitUsage(
+      botId: string,
+      trafficClass: 'critical' | 'interactive' | 'background',
+      sourceTag?: string | null,
+    ): Promise<void>;
+    registerCriticalFailure(
+      botId: string,
+      permit: { halfOpenProbeToken: string | null },
+    ): Promise<void>;
+  };
+  return { botId, service, request, internals, tokenKey: `maxapi:gcra:v1:bot:${botId}:all` };
+}
 
 describeRedis('MAX external cooldown atomic admission', () => {
   let redis: Redis;
@@ -43,6 +87,105 @@ describeRedis('MAX external cooldown atomic admission', () => {
     await redis.pexpire(`${key}:cooldown`, 1);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(await reserve(key)).toEqual([1, 0, 0]);
+  });
+
+  it('does not hold an admitted GET behind usage metrics and release it into a later 30s cooldown', async () => {
+    const { botId, tokenKey, service, request, internals } = nativeTransportFixture();
+    let metricsEntered!: () => void;
+    let releaseMetrics!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      metricsEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseMetrics = resolve;
+    });
+    jest.spyOn(internals, 'recordRateLimitUsage').mockImplementation(async () => {
+      metricsEntered();
+      await blocked;
+    });
+    const reading = service.getOwnProfile({ botId, trafficClass: 'background' });
+    try {
+      await entered;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const startsBeforeCooldown = request.mock.calls.length;
+      await redis.eval(MAX_API_EXTERNAL_COOLDOWN_SCRIPT, 1, `${tokenKey}:cooldown`, '30000');
+      releaseMetrics();
+      await reading;
+
+      expect(startsBeforeCooldown).toBe(1);
+      expect(request).toHaveBeenCalledTimes(startsBeforeCooldown);
+      await expect(
+        service.getOwnProfile({ botId, trafficClass: 'background' }),
+      ).rejects.toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        preDispatch: true,
+        limitScope: 'external_cooldown',
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(await redis.pttl(`${tokenKey}:cooldown`)).toBeGreaterThan(25_000);
+    } finally {
+      releaseMetrics();
+      await reading.catch(() => undefined);
+      await service.onModuleDestroy();
+      await redis.del(
+        tokenKey,
+        `${tokenKey}:window:v1`,
+        `${tokenKey}:cooldown`,
+        `maxapi:gcra:v1:service:test-quota-metrics:bot:${botId}:class:background`,
+      );
+    }
+  });
+
+  it('retains shared external 429 cooldown before waiting for circuit bookkeeping', async () => {
+    const { botId, tokenKey, service, request, internals } = nativeTransportFixture();
+    const peer = nativeTransportFixture(botId);
+    const failure = Object.assign(new Error('MAX quota exceeded'), {
+      response: { status: 429, headers: { 'retry-after': '30' } },
+    });
+    request.mockReturnValueOnce(throwError(() => failure));
+    let circuitEntered!: () => void;
+    let releaseCircuit!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      circuitEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseCircuit = resolve;
+    });
+    const register = internals.registerCriticalFailure.bind(internals);
+    jest.spyOn(internals, 'registerCriticalFailure').mockImplementation(async (...args) => {
+      circuitEntered();
+      await blocked;
+      await register(...args);
+    });
+    const reading = service
+      .getOwnProfile({ botId, trafficClass: 'background' })
+      .catch((error: unknown) => error);
+    try {
+      await entered;
+      const ttlWhileCircuitBlocked = await redis.pttl(`${tokenKey}:cooldown`);
+      const peerResult = await peer.service
+        .getOwnProfile({ botId, trafficClass: 'background' })
+        .catch((error: unknown) => error);
+      releaseCircuit();
+      expect(await reading).toBe(failure);
+      expect(ttlWhileCircuitBlocked).toBeGreaterThan(25_000);
+      expect(peerResult).toMatchObject({
+        code: 'MAX_API_INTERNAL_RATE_LIMIT',
+        preDispatch: true,
+        limitScope: 'external_cooldown',
+      });
+      expect(peer.request).not.toHaveBeenCalled();
+    } finally {
+      releaseCircuit();
+      await reading;
+      await Promise.all([service.onModuleDestroy(), peer.service.onModuleDestroy()]);
+      await redis.del(
+        tokenKey,
+        `${tokenKey}:window:v1`,
+        `${tokenKey}:cooldown`,
+        `maxapi:gcra:v1:service:test-quota-metrics:bot:${botId}:class:background`,
+      );
+    }
   });
 });
 
