@@ -17,6 +17,10 @@ module.exports = {
     '^@maxim/contracts/network-settings-metadata$':
       '<rootDir>/../../packages/contracts/src/network-settings-metadata.ts',
     '^@maxim/contracts/networks-stats$': '<rootDir>/../../packages/contracts/src/networks-stats.ts',
+    '^@maxim/contracts/statistics-analytics$':
+      '<rootDir>/../../packages/contracts/src/statistics-analytics.ts',
+    '^@maxim/contracts/statistics-analytics-validation$':
+      '<rootDir>/../../packages/contracts/src/statistics-analytics-validation.ts',
     '^@maxim/contracts/statistics-central$':
       '<rootDir>/../../packages/contracts/src/statistics-central.ts',
     '^@maxim/contracts/statistics-central-validation$':

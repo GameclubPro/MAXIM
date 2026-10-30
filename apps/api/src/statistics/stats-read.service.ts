@@ -24,6 +24,7 @@ import {
   asKey,
   assertBytes,
   DAY_MS,
+  compareTimes,
   hash,
   keyOf,
   StatsFailure,
@@ -79,70 +80,73 @@ export class StatsReadService {
   private secret() {
     return this.config.get<string>('SVYAZKA_ANALYTICS_TOKEN') ?? 'local-stats-cursor-disabled';
   }
-  private async prepare(
+  private prepare(context: StatsReadContext, consumer: 'MAXIM' | 'EXCHANGE') {
+    return this.prisma.$transaction((tx) => this.prepareWithin(tx, context, consumer));
+  }
+  async prepareWithin(
+    tx: Prisma.TransactionClient,
     context: StatsReadContext,
     consumer: 'MAXIM' | 'EXCHANGE',
+    selectedKeys: StatsMetricKey[] = allKeys,
   ): Promise<PreparedStatsView | null> {
-    return this.prisma.$transaction(async (tx) => {
-      const e = (
-        await tx.$queryRaw<
-          Array<{
-            id: string;
-            data_revision: bigint;
-            health: Record<string, { health: StatsHealth }>;
-          }>
-        >`SELECT id,data_revision,health FROM stats_entities WHERE kind=${context.entity.kind} AND max_id=${context.entity.maxId} FOR SHARE`
-      )[0];
-      if (!e) return null;
-      const view = await this.access.currentView(tx, e.id, context, consumer);
-      const deps = allKeys.flatMap((k) =>
-        ['MAXIM', 'EXCHANGE'].flatMap((p) =>
-          this.access.dependencies(view, p as 'MAXIM' | 'EXCHANGE', k),
-        ),
-      );
-      const validUntil = new Date(
-        Math.min(
-          view.consumer.peer_valid_until.getTime(),
-          ...deps.map((d) => Date.parse(d.peerValidUntil)),
-        ),
-      ).toISOString();
-      return {
-        context,
-        id: e.id,
-        revision: {
-          canonicalRevision: e.data_revision.toString(),
-          entityRevision: e.data_revision.toString(),
-          selectorVersion: 1,
+    const e = (
+      await tx.$queryRaw<
+        Array<{
+          id: string;
+          data_revision: bigint;
+          health: Record<string, { health: StatsHealth }>;
+        }>
+      >`SELECT id,data_revision,health FROM stats_entities WHERE kind=${context.entity.kind} AND max_id=${context.entity.maxId} FOR SHARE`
+    )[0];
+    if (!e) return null;
+    const view = await this.access.currentView(tx, e.id, context, consumer);
+    const deps = selectedKeys.flatMap((k) =>
+      ['MAXIM', 'EXCHANGE'].flatMap((p) =>
+        this.access.dependencies(view, p as 'MAXIM' | 'EXCHANGE', k),
+      ),
+    );
+    const validUntil = new Date(
+      Math.min(
+        view.consumer.peer_valid_until.getTime(),
+        ...deps.map((d) => Date.parse(d.peerValidUntil)),
+      ),
+    ).toISOString();
+    return {
+      context,
+      id: e.id,
+      revision: {
+        canonicalRevision: e.data_revision.toString(),
+        entityRevision: e.data_revision.toString(),
+        selectorVersion: 1,
+      },
+      access: { viewId: view.consumer.id, sourceAuthorityDependencies: deps, validUntil },
+      view,
+      health: Object.fromEntries(
+        Object.entries(e.health)
+          .filter(([key]) =>
+            selectedKeys.some(
+              (k) => keyOf(k) === key && this.access.dependencies(view, 'EXCHANGE', k).length,
+            ),
+          )
+          .map(([key, v]) => [key, v.health]),
+      ),
+      fingerprint: hash({
+        revision: e.data_revision.toString(),
+        consumer: {
+          id: view.consumer.id,
+          epoch: view.consumer.epoch.toString(),
+          fence: view.consumer.local_access_fence,
         },
-        access: { viewId: view.consumer.id, sourceAuthorityDependencies: deps, validUntil },
-        view,
-        health: Object.fromEntries(
-          Object.entries(e.health)
-            .filter(([key]) =>
-              allKeys.some(
-                (k) => keyOf(k) === key && this.access.dependencies(view, 'EXCHANGE', k).length,
-              ),
-            )
-            .map(([key, v]) => [key, v.health]),
-        ),
-        fingerprint: hash({
-          revision: e.data_revision.toString(),
-          consumer: {
-            id: view.consumer.id,
-            epoch: view.consumer.epoch.toString(),
-            fence: view.consumer.local_access_fence,
-          },
-          sources: view.sources
-            .map((s) => ({
-              id: s.id,
-              epoch: s.epoch.toString(),
-              scopes: s.scopes,
-              fence: s.local_access_fence,
-            }))
-            .sort((a, b) => a.id.localeCompare(b.id)),
-        }),
-      };
-    });
+        sources: view.sources
+          .map((s) => ({
+            id: s.id,
+            epoch: s.epoch.toString(),
+            scopes: s.scopes,
+            fence: s.local_access_fence,
+          }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      }),
+    };
   }
   private async prepared(contexts: StatsReadContext[], consumer: 'MAXIM' | 'EXCHANGE') {
     const result: Array<PreparedStatsView | null> = [];
@@ -169,11 +173,21 @@ export class StatsReadService {
     )
       throw new StatsFailure('READ_RESTART', 409);
   }
-  private async candidates(
+  private candidates(
     prepared: PreparedStatsView,
     keys: StatsMetricKey[],
     from: string,
     to: string,
+  ) {
+    return this.candidatesWithin(this.prisma, prepared, keys, from, to);
+  }
+  async candidatesWithin(
+    tx: Prisma.TransactionClient | PrismaService,
+    prepared: PreparedStatsView,
+    keys: StatsMetricKey[],
+    from: string,
+    to: string,
+    snapshot?: { asOf: Date; retentionFloor: string },
   ): Promise<StatsCandidate[]> {
     const allowed = keys.filter((k) =>
       ['MAXIM', 'EXCHANGE'].some(
@@ -185,10 +199,20 @@ export class StatsReadService {
       (k) => this.access.dependencies(prepared.view, 'MAXIM', k).length,
     );
     const nativeRows = nativeKeys.length
-      ? await this.native.read(prepared.context.entity, nativeKeys, from, to)
+      ? snapshot
+        ? await this.native.readInSnapshot(
+            tx,
+            prepared.context.entity,
+            nativeKeys,
+            from,
+            to,
+            snapshot,
+          )
+        : await this.native.read(prepared.context.entity, nativeKeys, from, to)
       : [];
     const filters = JSON.stringify(allowed.map(asKey));
-    const stored = await this.prisma.$queryRaw<
+    const rowBound = snapshot ? allowed.length * 90 * 2 : 1440;
+    const stored = await tx.$queryRaw<
       Array<{
         producer: 'MAXIM' | 'EXCHANGE';
         metric: StatsMetricKey['metric'];
@@ -203,10 +227,11 @@ export class StatsReadService {
    SELECT m.producer,m.metric,m.horizon,m.method_id,m.method_version,m.day::text AS day,m.value,m.coverage
    FROM stats_measurements m WHERE m.entity_id=${prepared.id}::uuid AND m.day BETWEEN ${from}::date AND ${to}::date AND m.deleted=false
     AND EXISTS(SELECT 1 FROM jsonb_to_recordset(${filters}::jsonb) AS f(metric text,horizon integer,method jsonb) WHERE f.metric=m.metric AND f.horizon=m.horizon AND f.method->>'id'=m.method_id)
-   ORDER BY m.day,m.metric,m.horizon,m.method_id LIMIT 1440`;
+   ORDER BY m.day,m.metric,m.horizon,m.method_id LIMIT ${rowBound + (snapshot ? 1 : 0)}`;
+    if (stored.length > rowBound) throw new StatsFailure('UNAVAILABLE', 503);
     const health =
       (
-        await this.prisma.$queryRaw<
+        await tx.$queryRaw<
           Array<{ health: Record<string, { health: StatsHealth }> }>
         >`SELECT health FROM stats_entities WHERE id=${prepared.id}::uuid`
       )[0]?.health ?? {};
@@ -235,6 +260,21 @@ export class StatsReadService {
     const uniqueNative = new Set(nativeRows.map((r) => `${r.scope.day}:${keyOf(r.scope)}`));
     return selectStats(
       facts
+        .filter((r) => {
+          if (!snapshot || nativeRows.includes(r)) return true;
+          const value = r.value;
+          const observed =
+            'observedAt' in value
+              ? value.observedAt
+              : 'observedTo' in value
+                ? value.observedTo
+                : null;
+          if (observed && compareTimes(observed, snapshot.asOf.toISOString()) > 0) return false;
+          return (
+            !('fetchedAt' in value) ||
+            compareTimes(value.fetchedAt, snapshot.asOf.toISOString()) <= 0
+          );
+        })
         .filter(
           (r) =>
             r.producer !== 'MAXIM' ||
