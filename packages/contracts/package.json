@@ -163,6 +163,14 @@
       "types": "./dist/statistics-exchange-v3.d.ts",
       "default": "./dist/statistics-exchange-v3.js"
     },
+    "./statistics-analytics": {
+      "types": "./dist/statistics-analytics.d.ts",
+      "default": "./dist/statistics-analytics.js"
+    },
+    "./statistics-analytics-validation": {
+      "types": "./dist/statistics-analytics-validation.d.ts",
+      "default": "./dist/statistics-analytics-validation.js"
+    },
     "./statistics-central": {
       "types": "./dist/statistics-central.d.ts",
       "default": "./dist/statistics-central.js"

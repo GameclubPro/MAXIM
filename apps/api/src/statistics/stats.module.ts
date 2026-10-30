@@ -5,6 +5,7 @@ import { StatsReadService } from './stats-read.service';
 import { StatsChangesService } from './stats-changes.service';
 import { StatsController, StatsGuard } from './stats.controller';
 import { MaximNativeStatsAdapter } from './maxim-native-stats.adapter';
+import { StatsAnalyticsService } from './stats-analytics.service';
 @Module({
   controllers: [StatsController],
   providers: [
@@ -14,6 +15,7 @@ import { MaximNativeStatsAdapter } from './maxim-native-stats.adapter';
     StatsChangesService,
     StatsGuard,
     MaximNativeStatsAdapter,
+    StatsAnalyticsService,
   ],
   exports: [StatsAccessService, StatsReadService],
 })

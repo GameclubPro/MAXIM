@@ -357,6 +357,34 @@ native('central statistics native adapters and transactional hooks with PostgreS
     });
   });
 
+  it('preserves a microsecond gap in native SQL discovery proofs instead of proving empty population', async () => {
+    const first = randomUUID(),
+      second = randomUUID();
+    const d = day(publishedAt);
+    const end = new Date(Date.parse(`${d}T00:00:00Z`) + DAY_MS).toISOString();
+    await db.$executeRaw`INSERT INTO marketplace_bindings
+      (id,actor_user_id,entity_id,kind,profile,bot_id,state,metadata,history_complete,history_from,history_to)
+      VALUES(${first}::uuid,'micro-a',${entity.maxId},'CHANNEL','moderation','micro-a','UNKNOWN','{}'::jsonb,true,${`${d}T00:00:00Z`}::timestamptz,${`${d}T12:00:00Z`}::timestamptz),
+      (${second}::uuid,'micro-b',${entity.maxId},'CHANNEL','moderation','micro-b','UNKNOWN','{}'::jsonb,true,${`${d}T12:00:00.000001Z`}::timestamptz,${end}::timestamptz)`;
+    expect(
+      await adapter.read(
+        entity,
+        scopes.filter((scope) => scope.metric === 'PUBLICATION_HOUR'),
+        d,
+        d,
+      ),
+    ).toEqual([]);
+    await db.$executeRaw`UPDATE marketplace_bindings SET history_from=${`${d}T12:00:00Z`}::timestamptz WHERE id=${second}::uuid`;
+    const complete = await adapter.read(
+      entity,
+      scopes.filter((scope) => scope.metric === 'PUBLICATION_HOUR'),
+      d,
+      d,
+    );
+    expect(complete).toHaveLength(1);
+    expect(complete[0]!.coverage).toMatchObject({ state: 'COMPLETE', populationComplete: true });
+    expect(complete[0]!.value).toMatchObject({ hours: Array(24).fill(0) });
+  });
   it('requires complete scan proof before filling an absent day or hour with zero', async () => {
     expect(await read()).toEqual([]);
     await db.channelPost.create({

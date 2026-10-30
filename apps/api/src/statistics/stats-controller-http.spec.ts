@@ -13,6 +13,13 @@ import { StatsAccessService } from './stats-access.service';
 import { StatsChangesService } from './stats-changes.service';
 import { StatsIngestService } from './stats-ingest.service';
 import { StatsReadService } from './stats-read.service';
+import { StatsAnalyticsService } from './stats-analytics.service';
+import {
+  STATS_ANALYTICS_ROUTE,
+  type StatsAnalyticsRequest,
+} from '@maxim/contracts/statistics-analytics';
+import { StatsReadBudget } from './stats-read-budget';
+import { statsStatusResultSchema } from '@maxim/contracts/statistics-central-validation';
 import { StatsController } from './stats.controller';
 import { registerStatsHttpLimits } from './stats-http-limits';
 
@@ -21,6 +28,7 @@ describe('central statistics real Nest Fastify routes', () => {
   const token = 'synthetic-statistics-route-token';
   const id = '00000000-0000-4000-8000-000000000001';
   const entity = { kind: 'CHANNEL' as const, maxId: '-123456789' };
+  const prisma = { $queryRaw: jest.fn() } satisfies Pick<PrismaService, '$queryRaw'>;
   const scope = {
     contractVersion: 1,
     producerEpoch: id,
@@ -89,6 +97,18 @@ describe('central statistics real Nest Fastify routes', () => {
     StatsReadService,
     'summaries' | 'history'
   >;
+  const analytics = { read: jest.fn() } satisfies Pick<StatsAnalyticsService, 'read'>;
+  const analyticsRequest = {
+    contractVersion: 1,
+    analyticsVersion: 1,
+    context: summary.contexts[0],
+    periodDays: 7,
+    metrics: ['AUDIENCE'],
+    horizons: [],
+    includeComparison: false,
+    includeHistory: true,
+    cursor: null,
+  } satisfies StatsAnalyticsRequest;
   const feed = { changes: jest.fn() } satisfies Pick<StatsChangesService, 'changes'>;
   const handlers = [
     access.attest,
@@ -97,12 +117,14 @@ describe('central statistics real Nest Fastify routes', () => {
     read.summaries,
     read.history,
     feed.changes,
+    analytics.read,
   ];
   const actionCases = [
     [STATS_ROUTES.authorities, authority, access.attest],
     [STATS_ROUTES.authorityResolve, scope, access.resolve],
     [STATS_ROUTES.summaries, summary, read.summaries],
     [STATS_ROUTES.history, history, read.history],
+    [STATS_ANALYTICS_ROUTE, analyticsRequest, analytics.read],
   ] as const;
   const posts = [...actionCases.map(([route]) => route), STATS_ROUTES.ingest];
 
@@ -116,13 +138,15 @@ describe('central statistics real Nest Fastify routes', () => {
             SVYAZKA_ANALYTICS_TOKEN: token,
             STATISTICS_CENTRAL_ENABLED: 'true',
             STATISTICS_CENTRAL_MODE: 'CENTRAL',
+            STATISTICS_CENTRAL_EXCHANGE_EPOCH: id,
           }),
         },
-        { provide: PrismaService, useValue: { $queryRaw: jest.fn() } },
+        { provide: PrismaService, useValue: prisma },
         { provide: StatsAccessService, useValue: access },
         { provide: StatsIngestService, useValue: ingest },
         { provide: StatsReadService, useValue: read },
         { provide: StatsChangesService, useValue: feed },
+        { provide: StatsAnalyticsService, useValue: analytics },
       ],
     }).compile();
     app = module.createNestApplication<NestFastifyApplication>(
@@ -136,6 +160,45 @@ describe('central statistics real Nest Fastify routes', () => {
   beforeEach(() => jest.clearAllMocks());
   afterAll(async () => app?.close());
 
+  it('advertises the analytics release version only on a successful authenticated legacy status', async () => {
+    const url = STATS_HTTP_PREFIX + STATS_ROUTES.status;
+    const denied = await app.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: 'Bearer synthetic-wrong-token' },
+    });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.headers['x-statistics-analytics-version']).toBeUndefined();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    prisma.$queryRaw.mockResolvedValueOnce([{ ready: true }]);
+    const response = await app.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['x-statistics-analytics-version']).toBe('1');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(statsStatusResultSchema.parse(response.json())).toEqual({
+      contractVersion: 1,
+      selectorVersion: 1,
+      enabled: true,
+      centralReady: true,
+      producerEpoch: id,
+      storeMode: 'CENTRAL',
+      legacyHistory: { imports: 'RETIRED', exports: 'RETIRED' },
+      capabilities: ['AUTHORITIES', 'INGEST', 'SUMMARIES', 'HISTORY', 'CHANGES'],
+    });
+    prisma.$queryRaw.mockRejectedValueOnce(new Error('Synthetic status storage failure'));
+    const failed = await app.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(failed.statusCode).toBe(500);
+    expect(failed.headers['x-statistics-analytics-version']).toBeUndefined();
+  });
+
   it.each(actionCases)(
     'dispatches the exact literal action %s to its own handler',
     async (route, payload, handler) => {
@@ -148,20 +211,25 @@ describe('central statistics real Nest Fastify routes', () => {
       });
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ route });
-      expect(handler).toHaveBeenCalledWith(payload);
+      if (handler === analytics.read)
+        expect(handler).toHaveBeenCalledWith(payload, expect.any(StatsReadBudget));
+      else expect(handler).toHaveBeenCalledWith(payload);
       for (const other of handlers) if (other !== handler) expect(other).not.toHaveBeenCalled();
     },
   );
 
-  it.each(Object.values(STATS_ROUTES))('requires the dedicated credential at %s', async (route) => {
-    const response = await app.inject({
-      method: posts.includes(route as (typeof posts)[number]) ? 'POST' : 'GET',
-      url: STATS_HTTP_PREFIX + route,
-      headers: { authorization: 'Bearer synthetic-wrong-token' },
-    });
-    expect(response.statusCode).toBe(401);
-    for (const handler of handlers) expect(handler).not.toHaveBeenCalled();
-  });
+  it.each([...Object.values(STATS_ROUTES), STATS_ANALYTICS_ROUTE])(
+    'requires the dedicated credential at %s',
+    async (route) => {
+      const response = await app.inject({
+        method: posts.includes(route as (typeof posts)[number]) ? 'POST' : 'GET',
+        url: STATS_HTTP_PREFIX + route,
+        headers: { authorization: 'Bearer synthetic-wrong-token' },
+      });
+      expect(response.statusCode).toBe(401);
+      for (const handler of handlers) expect(handler).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(posts)('validates the request schema at %s', async (route) => {
     const response = await app.inject({
@@ -180,6 +248,8 @@ describe('central statistics real Nest Fastify routes', () => {
     '/authorities::batch',
     '/summaries:unknown',
     '/history:unknown',
+    '/analytics:unknown',
+    '/analytics::read',
   ])('rejects an unregistered action %s', async (route) => {
     const response = await app.inject({
       method: 'POST',
@@ -211,4 +281,37 @@ describe('central statistics real Nest Fastify routes', () => {
       expect(handler).toHaveBeenCalledTimes(1);
     },
   );
+  it.each(['0', '5001', '-1', '1.5', 'NaN', '0500', '500, 500'])(
+    'rejects invalid analytics read budget %s before the handler',
+    async (budget) => {
+      const response = await app.inject({
+        method: 'POST',
+        url: STATS_HTTP_PREFIX + STATS_ANALYTICS_ROUTE,
+        headers: { authorization: `Bearer ${token}`, 'x-statistics-read-budget-ms': budget },
+        payload: analyticsRequest,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        analyticsVersion: 1,
+        error: { code: 'INVALID_REQUEST' },
+      });
+      expect(analytics.read).not.toHaveBeenCalled();
+    },
+  );
+  it('passes the original reduced deadline to analytics', async () => {
+    analytics.read.mockImplementationOnce(
+      async (_request: StatsAnalyticsRequest, budget: StatsReadBudget) => {
+        expect(budget.remainingMs()).toBeGreaterThan(0);
+        expect(budget.remainingMs()).toBeLessThanOrEqual(300);
+        return { test: true };
+      },
+    );
+    const response = await app.inject({
+      method: 'POST',
+      url: STATS_HTTP_PREFIX + STATS_ANALYTICS_ROUTE,
+      headers: { authorization: `Bearer ${token}`, 'x-statistics-read-budget-ms': '300' },
+      payload: analyticsRequest,
+    });
+    expect(response.statusCode).toBe(201);
+  });
 });
