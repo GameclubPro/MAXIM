@@ -183,4 +183,36 @@
     margin-top: 6px;
     color: var(--text-secondary);
   }
+  body[data-miniapp-profile='moderation']
+    .karavan-module__wizard
+    :is(.karavan-module__setup-rules, .karavan-module__setup-chats)
+    > summary {
+    justify-content: space-between;
+    gap: 12px;
+    list-style: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module__wizard
+    :is(.karavan-module__setup-rules, .karavan-module__setup-chats)
+    > summary::-webkit-details-marker {
+    display: none;
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module__wizard
+    :is(.karavan-module__setup-rules, .karavan-module__setup-chats)
+    > summary::after {
+    content: '';
+    flex: 0 0 7px;
+    height: 7px;
+    margin-right: 3px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+  }
+  body[data-miniapp-profile='moderation']
+    .karavan-module__wizard
+    :is(.karavan-module__setup-rules, .karavan-module__setup-chats)[open]
+    > summary::after {
+    transform: rotate(225deg);
+  }
 }

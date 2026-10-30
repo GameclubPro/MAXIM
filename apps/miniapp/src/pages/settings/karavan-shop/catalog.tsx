@@ -12,24 +12,13 @@ import {
   ShopLoading,
   useShopMutation,
   useShopQuery,
+  useShopPages,
+  useShop,
 } from './runtime';
 
-const publicationReasons = {
-  published: 'В магазине',
-  marketplace_unavailable: 'Магазин закрыт для покупателей',
-  chat_unavailable: 'Чат магазина недоступен',
-  store_unavailable: 'Витрина продавца недоступна',
-  awaiting_review: 'Заявка на проверке',
-  changes_requested: 'Требуется доработка заявки',
-  rejected: 'Заявка отклонена',
-  suspended: 'Скрыт администратором',
-  seller_paused: 'Приостановлено продавцом',
-  withdrawn: 'Продавец отозвал размещение',
-  platform_review: 'Витрина на проверке Каравана',
-  rules_acceptance_required: 'Продавец ещё не принял правила',
-  category_not_allowed: 'Категория не разрешена',
-  no_published_offers: 'Нет опубликованных объявлений',
-} satisfies Record<MarketplaceListing['publicationReason'], string>;
+import { publicationReasons } from './listing-status';
+import { SellerAccessAction } from './seller-access';
+import { uniqueShopItems } from './shop-journey';
 
 function Sellers({
   search,
@@ -40,34 +29,41 @@ function Sellers({
   canArrange: boolean;
   onEmpty: () => void;
 }) {
-  const [cursor, setCursor] = useState<string | null>(null),
-    [reason, setReason] = useState('');
+  const { module } = useShop();
+  const [reason, setReason] = useState('');
+  const [notice, setNotice] = useState('');
   const [selected, setSelected] = useState<MarketplaceListing | null>(null);
   const [arranging, setArranging] = useState(false);
   useStorefrontDirty('catalog-seller', !!selected && !!reason.trim());
-  const query = useShopQuery<'listings'>({
+  const query = useShopPages<'listings'>({
     operation: 'listings',
-    input: { cursor, limit: 24, q: search, visibility: 'all', orderableOnly: false },
+    input: { cursor: null, limit: 24, q: search, visibility: 'all', orderableOnly: false },
   });
   const mutation = useShopMutation((command) => {
-    if (command.operation === 'moderate_listing' || command.operation === 'moderate_content')
+    if (command.operation === 'moderate_listing') {
       setSelected(null);
+      setReason('');
+      setNotice(command.input.action === 'resume' ? 'Ограничение витрины снято' : 'Витрина скрыта');
+    }
   });
-  useEffect(() => setCursor(null), [search]);
   if (query.isPending) return <ShopLoading />;
-  if (query.isError) return <ShopFailure error={query.error} retry={() => void query.refetch()} />;
+  if (!query.data) return <ShopFailure error={query.error} retry={() => void query.refetch()} />;
+  const listings = uniqueShopItems(query.data.pages.map((page) => page.listings));
+  const meta = query.data.pages[0]!;
+  const selectedVisible = selected && listings.some((listing) => listing.id === selected.id);
   return (
     <>
-      <MutationFailure mutation={mutation} />
+      {notice ? <p role="status">{notice}</p> : null}
+      {!selectedVisible ? <MutationFailure mutation={mutation} /> : null}
       {canArrange &&
-      (query.data.orderableTotal ?? query.data.listings.length) > 1 &&
-      query.data.listings.some((listing) => listing.position) ? (
+      (meta.orderableTotal ?? listings.length) > 1 &&
+      listings.some((listing) => listing.position) ? (
         <button type="button" aria-pressed={arranging} onClick={() => setArranging(!arranging)}>
           {arranging ? 'Готово' : 'Изменить порядок'}
         </button>
       ) : null}
-      {query.data.listings.length ? (
-        query.data.listings.map((listing, index, list) => (
+      {listings.length ? (
+        listings.map((listing, index, list) => (
           <article
             className="karavan-shop__row"
             key={listing.id}
@@ -81,7 +77,7 @@ function Sellers({
                   label={listing.storeName}
                   index={index}
                   group="sellers"
-                  disabled={mutation.isPending}
+                  disabled={mutation.isPending || mutation.isError}
                   move={(_from, to) => {
                     const position = list[to]?.position;
                     if (position)
@@ -89,7 +85,7 @@ function Sellers({
                         operation: 'reorder_listings',
                         input: {
                           commandId: crypto.randomUUID(),
-                          expectedOrderRevision: query.data.orderRevision,
+                          expectedOrderRevision: meta.orderRevision,
                           moves: [{ listingId: listing.id, position }],
                         },
                       });
@@ -104,13 +100,13 @@ function Sellers({
                 <div className="karavan-module__entry-actions">
                   <button
                     type="button"
-                    disabled={mutation.isPending}
+                    disabled={mutation.isPending || mutation.isError}
                     onClick={() => {
                       setSelected(listing);
                       setReason('');
                     }}
                   >
-                    {listing.reviewState === 'suspended' ? 'Показать' : 'Скрыть'}
+                    {listing.reviewState === 'suspended' ? 'Снять ограничение' : 'Скрыть'}
                   </button>
                 </div>
                 {canArrange && arranging ? (
@@ -118,13 +114,18 @@ function Sellers({
                     <div className="karavan-module__entry-actions">
                       <button
                         type="button"
-                        disabled={!canArrange || mutation.isPending || listing.position === 1}
+                        disabled={
+                          !canArrange ||
+                          mutation.isPending ||
+                          mutation.isError ||
+                          listing.position === 1
+                        }
                         onClick={() =>
                           mutation.mutate({
                             operation: 'reorder_listings',
                             input: {
                               commandId: crypto.randomUUID(),
-                              expectedOrderRevision: query.data.orderRevision,
+                              expectedOrderRevision: meta.orderRevision,
                               moves: [{ listingId: listing.id, position: 1 }],
                             },
                           })
@@ -136,13 +137,13 @@ function Sellers({
                         <button
                           type="button"
                           aria-label={`Выше: ${listing.storeName}`}
-                          disabled={mutation.isPending}
+                          disabled={mutation.isPending || mutation.isError}
                           onClick={() =>
                             mutation.mutate({
                               operation: 'reorder_listings',
                               input: {
                                 commandId: crypto.randomUUID(),
-                                expectedOrderRevision: query.data.orderRevision,
+                                expectedOrderRevision: meta.orderRevision,
                                 moves: [{ listingId: listing.id, position: listing.position! - 1 }],
                               },
                             })
@@ -153,17 +154,17 @@ function Sellers({
                       ) : null}
                       {canArrange &&
                       listing.position &&
-                      listing.position < (query.data.orderableTotal ?? 0) ? (
+                      listing.position < (meta.orderableTotal ?? 0) ? (
                         <button
                           type="button"
                           aria-label={`Ниже: ${listing.storeName}`}
-                          disabled={mutation.isPending}
+                          disabled={mutation.isPending || mutation.isError}
                           onClick={() =>
                             mutation.mutate({
                               operation: 'reorder_listings',
                               input: {
                                 commandId: crypto.randomUUID(),
-                                expectedOrderRevision: query.data.orderRevision,
+                                expectedOrderRevision: meta.orderRevision,
                                 moves: [{ listingId: listing.id, position: listing.position! + 1 }],
                               },
                             })
@@ -180,7 +181,9 @@ function Sellers({
             {selected?.id === listing.id ? (
               <div className="karavan-module__actions">
                 <label className="karavan-module__field">
-                  Причина
+                  {listing.reviewState === 'suspended'
+                    ? 'Комментарий к восстановлению'
+                    : 'Причина скрытия'}
                   <textarea
                     value={reason}
                     maxLength={2000}
@@ -189,7 +192,7 @@ function Sellers({
                 </label>
                 <button
                   type="button"
-                  disabled={!reason.trim() || mutation.isPending}
+                  disabled={!reason.trim() || mutation.isPending || mutation.isError}
                   onClick={() =>
                     void mutation
                       .mutateAsync({
@@ -206,9 +209,18 @@ function Sellers({
                       .catch(() => {})
                   }
                 >
-                  Подтвердить
+                  {mutation.isPending
+                    ? 'Сохраняем…'
+                    : listing.reviewState === 'suspended'
+                      ? 'Снять ограничение'
+                      : 'Скрыть витрину'}
                 </button>
-                <button type="button" onClick={() => setSelected(null)}>
+                <MutationFailure mutation={mutation} />
+                <button
+                  type="button"
+                  disabled={mutation.isPending || mutation.isError}
+                  onClick={() => setSelected(null)}
+                >
                   Отмена
                 </button>
               </div>
@@ -219,21 +231,28 @@ function Sellers({
         <div className="karavan-module__actions">
           <p>{search ? 'Ничего не найдено' : 'Витрин пока нет'}</p>
           {!search ? (
-            <button type="button" onClick={onEmpty}>
-              Посмотреть заявки
-            </button>
+            <>
+              <SellerAccessAction />
+              {module.counts.pendingApplications > 0 ? (
+                <button type="button" onClick={onEmpty}>
+                  Посмотреть заявки
+                </button>
+              ) : null}
+            </>
           ) : null}
         </div>
       )}
-      {query.data.nextCursor ? (
-        <button type="button" onClick={() => setCursor(query.data.nextCursor)}>
-          Следующие продавцы
+      {query.hasNextPage ? (
+        <button
+          type="button"
+          disabled={query.isFetchingNextPage}
+          onClick={() => void query.fetchNextPage()}
+        >
+          {query.isFetchingNextPage ? 'Загружаем…' : 'Показать ещё'}
         </button>
       ) : null}
-      {cursor ? (
-        <button type="button" onClick={() => setCursor(null)}>
-          В начало списка
-        </button>
+      {query.isFetchNextPageError ? (
+        <ShopFailure error={query.error} retry={() => void query.fetchNextPage()} />
       ) : null}
     </>
   );
@@ -244,6 +263,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
   const [cursor, setCursor] = useState<string | null>(null),
     [selected, setSelected] = useState<MarketplaceOfferCard | null>(null),
     [reason, setReason] = useState('');
+  const [notice, setNotice] = useState('');
   useStorefrontDirty('catalog-offer', !!selected && !!reason.trim());
   const query = useShopQuery<'catalog'>({
     operation: 'catalog',
@@ -251,20 +271,23 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
   });
   const pins = useShopQuery<'pins'>({ operation: 'pins' }, canArrange);
   const mutation = useShopMutation((command) => {
-    if (command.operation === 'moderate_listing' || command.operation === 'moderate_content')
+    if (command.operation === 'moderate_content') {
       setSelected(null);
+      setReason('');
+      setNotice(command.input.active ? 'Объявление скрыто' : 'Ограничение объявления снято');
+    }
   });
   useEffect(() => setCursor(null), [search, kind, visibility]);
   const savePins = (offers: MarketplaceOfferCard[]) => {
-    if (pins.data)
-      mutation.mutate({
-        operation: 'pins_save',
-        input: {
-          commandId: crypto.randomUUID(),
-          expectedRevision: pins.data.revision,
-          offers: offers.map(({ id, storeId, kind: type }) => ({ id, storeId, kind: type })),
-        },
-      });
+    if (!canArrange || mutation.isPending || mutation.isError || !pins.data) return;
+    mutation.mutate({
+      operation: 'pins_save',
+      input: {
+        commandId: crypto.randomUUID(),
+        expectedRevision: pins.data.revision,
+        offers: offers.map(({ id, storeId, kind: type }) => ({ id, storeId, kind: type })),
+      },
+    });
   };
   return (
     <>
@@ -288,9 +311,14 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
           </select>
         </label>
       </div>
-      <MutationFailure mutation={mutation} />
-      {pins.isError ? <ShopFailure error={pins.error} retry={() => void pins.refetch()} /> : null}
-      {pins.data?.offers.length ? (
+      {notice ? <p role="status">{notice}</p> : null}
+      {!selected || !query.data?.items.some((item) => item.id === selected.id) ? (
+        <MutationFailure mutation={mutation} />
+      ) : null}
+      {canArrange && pins.isError ? (
+        <ShopFailure error={pins.error} retry={() => void pins.refetch()} />
+      ) : null}
+      {canArrange && pins.data?.offers.length ? (
         <details>
           <summary>Закреплённые · {pins.data.offers.length}</summary>
           {pins.data.offers.map((offer, index, list) => (
@@ -306,7 +334,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                   label={offer.title}
                   index={index}
                   group="pins"
-                  disabled={mutation.isPending}
+                  disabled={mutation.isPending || mutation.isError}
                   move={(from, to) => {
                     if (to >= list.length) return;
                     const next = [...list];
@@ -319,7 +347,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
               <div className="karavan-module__entry-actions">
                 <button
                   type="button"
-                  disabled={index === 0 || mutation.isPending}
+                  disabled={index === 0 || mutation.isPending || mutation.isError}
                   aria-label={`Выше: ${offer.title}`}
                   onClick={() => {
                     const next = [...list];
@@ -331,7 +359,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                 </button>
                 <button
                   type="button"
-                  disabled={index === list.length - 1 || mutation.isPending}
+                  disabled={index === list.length - 1 || mutation.isPending || mutation.isError}
                   aria-label={`Ниже: ${offer.title}`}
                   onClick={() => {
                     const next = [...list];
@@ -344,7 +372,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
               </div>
               <button
                 type="button"
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || mutation.isError}
                 onClick={() => savePins(list.filter((row) => row !== offer))}
               >
                 Открепить
@@ -381,19 +409,20 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                   <div className="karavan-module__entry-actions">
                     <button
                       type="button"
-                      disabled={mutation.isPending}
+                      disabled={mutation.isPending || mutation.isError}
                       onClick={() => {
                         setSelected(offer);
                         setReason('');
                       }}
                     >
-                      {offer.restriction?.active ? 'Показать' : 'Скрыть'}
+                      {offer.restriction?.active ? 'Снять ограничение' : 'Скрыть'}
                     </button>
                     <button
                       type="button"
                       disabled={
                         !canArrange ||
                         mutation.isPending ||
+                        mutation.isError ||
                         !pins.data ||
                         (!pinned && (!offer.available || pins.data.offers.length >= 24))
                       }
@@ -413,7 +442,9 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                   {selected?.id === offer.id ? (
                     <div className="karavan-module__actions">
                       <label className="karavan-module__field">
-                        Причина
+                        {offer.restriction?.active
+                          ? 'Комментарий к восстановлению'
+                          : 'Причина скрытия'}
                         <textarea
                           value={reason}
                           maxLength={2000}
@@ -422,7 +453,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                       </label>
                       <button
                         type="button"
-                        disabled={mutation.isPending || !reason.trim()}
+                        disabled={mutation.isPending || mutation.isError || !reason.trim()}
                         onClick={() =>
                           void mutation
                             .mutateAsync({
@@ -441,9 +472,18 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                             .catch(() => {})
                         }
                       >
-                        Подтвердить
+                        {mutation.isPending
+                          ? 'Сохраняем…'
+                          : offer.restriction?.active
+                            ? 'Снять ограничение'
+                            : 'Скрыть объявление'}
                       </button>
-                      <button type="button" onClick={() => setSelected(null)}>
+                      <MutationFailure mutation={mutation} />
+                      <button
+                        type="button"
+                        disabled={mutation.isPending || mutation.isError}
+                        onClick={() => setSelected(null)}
+                      >
                         Отмена
                       </button>
                     </div>

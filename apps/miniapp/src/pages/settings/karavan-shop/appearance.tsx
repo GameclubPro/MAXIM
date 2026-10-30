@@ -207,7 +207,7 @@ export default function ShopAppearance({ onView }: { onView?: () => void }) {
         {dirty
           ? 'Есть несохранённые изменения'
           : query.data.hasChanges
-            ? 'Черновик сохранён. Примените оформление, чтобы его увидели покупатели.'
+            ? 'Черновик сохранён. Покупатели пока видят прежнее оформление.'
             : 'Покупатели видят это оформление'}
       </p>
       <StorefrontActions page="appearance">

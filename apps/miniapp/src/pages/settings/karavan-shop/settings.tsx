@@ -7,6 +7,7 @@ import {
   useStorefrontWorkspace,
 } from '../storefront-workspace';
 import { MutationFailure, ShopLoading, useShopMutation } from './runtime';
+import { SellerAccessAction, useSellerAccess } from './seller-access';
 
 const Invitations = lazy(() => import('./invitations'));
 
@@ -14,6 +15,7 @@ export default function ShopSettings({ module }: { module: KaravanMarketplaceMod
   const workspace = useStorefrontWorkspace();
   const marketplace = module.marketplace!;
   const canManage = module.permissions.includes('manage_marketplace');
+  const access = useSellerAccess();
   const [policy, setPolicy] = useState<typeof marketplace.admissionPolicy | null>(null);
   const mutation = useShopMutation(() => setPolicy(null));
   const value = policy ?? marketplace.admissionPolicy;
@@ -56,9 +58,15 @@ export default function ShopSettings({ module }: { module: KaravanMarketplaceMod
       {canManage ? (
         <fieldset
           className="karavan-module__choices"
-          disabled={mutation.isPending || mutation.isError}
+          disabled={
+            mutation.isPending ||
+            mutation.isError ||
+            access.sharing ||
+            access.mutation.isPending ||
+            access.mutation.isError
+          }
         >
-          <legend>Приём витрин</legend>
+          <legend>Кто может подать заявку</legend>
           {(
             [
               ['applications', 'Все желающие'],
@@ -77,7 +85,9 @@ export default function ShopSettings({ module }: { module: KaravanMarketplaceMod
           ))}
         </fieldset>
       ) : null}
+      {canManage ? <p>Витрины появляются после вашего одобрения.</p> : null}
       <MutationFailure mutation={mutation} />
+      {canManage && !dirty ? <SellerAccessAction /> : null}
       {canManage && value === 'invitation' && marketplace.admissionPolicy === 'invitation' ? (
         <Suspense fallback={<ShopLoading />}>
           <Invitations />
