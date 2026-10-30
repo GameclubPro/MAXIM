@@ -1,6 +1,7 @@
 import { AppIcon as IconoirSprite } from '../../components/ui/app-icon';
 
 import { useEffect, useState } from 'react';
+import { useStorefrontPublicationPreview } from './storefront-publication-preview';
 import {
   KARAVAN_STOREFRONT_BUTTON_MAX_LENGTH,
   KARAVAN_STOREFRONT_MESSAGE_MAX_LENGTH,
@@ -23,8 +24,14 @@ type Props =
       draft: KaravanStorefrontTexts;
       onChange: (field: KaravanStorefrontTextField, value: string) => void;
       fields?: never;
+      scope?: 'single' | 'network';
     }
-  | { fields: ChatSettingsFieldAdapter; draft?: never; onChange?: never };
+  | {
+      fields: ChatSettingsFieldAdapter;
+      draft?: never;
+      onChange?: never;
+      scope?: 'single' | 'network';
+    };
 function StorefrontTextField({
   field,
   label,
@@ -90,6 +97,9 @@ function StorefrontTextField({
   );
 }
 export function SettingsStorefrontTextEditor(props: Props) {
+  const publication = useStorefrontPublicationPreview();
+  const network = props.scope === 'network';
+  const available = !network && !!publication && publication.mode !== 'unavailable';
   const [variant, setVariant] = useState<'storefront' | 'directory'>('storefront');
   const [resetVersion, setResetVersion] = useState(0);
   const state = (field: KaravanStorefrontTextField): SettingsFieldState<string> =>
@@ -114,10 +124,12 @@ export function SettingsStorefrontTextEditor(props: Props) {
   const previewButtons =
     variant === 'storefront'
       ? [preview('karavanStorefrontOpenButtonText')]
-      : [
-          preview('karavanStorefrontCatalogButtonText'),
-          preview('karavanStorefrontCreateButtonText'),
-        ];
+      : publication?.mode === 'chat_marketplace'
+        ? [preview('karavanStorefrontCatalogButtonText')]
+        : [
+            preview('karavanStorefrontCatalogButtonText'),
+            preview('karavanStorefrontCreateButtonText'),
+          ];
   const disabled = Boolean(props.fields?.readOnly);
   const textField = (field: KaravanStorefrontTextField, label: string, multiline = false) => (
     <StorefrontTextField
@@ -132,10 +144,17 @@ export function SettingsStorefrontTextEditor(props: Props) {
       multiline={multiline}
     />
   );
+  const shownButtons = available
+    ? variant === 'storefront'
+      ? buttonFields.slice(0, 1)
+      : publication?.mode === 'chat_marketplace'
+        ? buttonFields.slice(1, 2)
+        : buttonFields.slice(1)
+    : buttonFields;
   return (
     <section className="settings-storefront-editor" aria-labelledby="storefront-text-title">
       <div className="settings-storefront-editor__head">
-        <h3 id="storefront-text-title">Сообщение и кнопки</h3>
+        <h3 id="storefront-text-title">Текст и кнопки ответа</h3>
         <button
           type="button"
           className="settings-storefront-editor__reset"
@@ -155,24 +174,20 @@ export function SettingsStorefrontTextEditor(props: Props) {
           <IconoirSprite variant="iconoir" icon="Undo" aria-hidden />
         </button>
       </div>
-      {textField('karavanStorefrontMessageText', 'Текст сообщения', true)}
-      <div className="settings-storefront-editor__buttons">
-        {buttonFields.map(([field, label]) => textField(field, label))}
-      </div>
-      <div className="settings-storefront-editor__preview-head">
-        <h4>Предпросмотр</h4>
+      {available ? (
         <div
           className="settings-storefront-editor__modes"
           role="group"
-          aria-label="Вариант витрины"
+          aria-label="Сценарий ответа"
         >
           {(
             [
-              ['storefront', 'Есть витрина'],
-              ['directory', 'Нет витрины'],
+              ['storefront', 'Есть витрина продавца'],
+              ['directory', 'Нет витрины продавца'],
             ] as const
           ).map(([value, label]) => (
             <button
+              className="settings-storefront-editor__mode"
               key={value}
               type="button"
               aria-pressed={variant === value}
@@ -182,24 +197,48 @@ export function SettingsStorefrontTextEditor(props: Props) {
             </button>
           ))}
         </div>
+      ) : null}
+      {textField('karavanStorefrontMessageText', 'Текст ответа бота', true)}
+      <div className="settings-storefront-editor__buttons">
+        {shownButtons.map(([field, label]) =>
+          textField(
+            field,
+            field === 'karavanStorefrontCatalogButtonText' &&
+              publication?.mode === 'chat_marketplace'
+              ? 'Кнопка магазина чата'
+              : label,
+          ),
+        )}
       </div>
-      <div
-        className="settings-storefront-editor__preview"
-        aria-label="Предпросмотр сообщения витрины"
-      >
-        <div className="settings-storefront-editor__message">
-          <span className="settings-storefront-editor__sender">Бот</span>
-          <p>{preview('karavanStorefrontMessageText')}</p>
-        </div>
-        <div className="settings-storefront-editor__preview-buttons">
-          {previewButtons.map((label, index) => (
-            <div className="settings-storefront-editor__preview-button" key={index}>
-              <span>{label}</span>
-              <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
+      {!network && !available ? (
+        <p className="settings-storefront-editor__unavailable" role="status">
+          {publication?.mode === 'unavailable' && publication.reason === 'closed'
+            ? 'Магазин закрыт для покупателей. Ответ с его ссылкой недоступен.'
+            : 'Не удалось определить ответ для этого чата. Пример пока недоступен.'}
+        </p>
+      ) : null}
+      {available ? (
+        <>
+          <h4>Пример ответа</h4>
+          <div
+            className="settings-storefront-editor__preview"
+            aria-label="Предпросмотр сообщения витрины"
+          >
+            <div className="settings-storefront-editor__message">
+              <span className="settings-storefront-editor__sender">Бот</span>
+              <p>{preview('karavanStorefrontMessageText')}</p>
             </div>
-          ))}
-        </div>
-      </div>
+            <div className="settings-storefront-editor__preview-buttons">
+              {previewButtons.map((label, index) => (
+                <div className="settings-storefront-editor__preview-button" key={index}>
+                  <span>{label}</span>
+                  <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : null}
     </section>
   );
 }

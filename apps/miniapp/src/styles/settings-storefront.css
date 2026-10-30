@@ -1,4 +1,9 @@
 @layer components {
+  .settings-storefront-editor,
+  .storefront-audience {
+    --storefront-selected: #435ee9;
+    --storefront-on-selected: #fff;
+  }
   .settings-storefront-editor {
     display: grid;
     min-width: 0;
@@ -9,7 +14,6 @@
   }
 
   .settings-storefront-editor__head,
-  .settings-storefront-editor__preview-head,
   .settings-storefront-editor__label {
     display: flex;
     align-items: center;
@@ -29,9 +33,9 @@
   .settings-storefront-editor__reset {
     display: grid;
     place-items: center;
-    width: 40px;
-    height: 40px;
-    flex: 0 0 40px;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
     border: 1px solid var(--color-border);
     border-radius: 8px;
     background: transparent;
@@ -102,11 +106,6 @@
     opacity: 1;
   }
 
-  .settings-storefront-editor__preview-head {
-    flex-wrap: wrap;
-    padding-top: 4px;
-  }
-
   .settings-storefront-editor__modes {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -117,7 +116,7 @@
   }
 
   .settings-storefront-editor__modes button {
-    min-height: 36px;
+    min-height: 44px;
     padding: 6px 9px;
     border: 0;
     border-radius: 5px;
@@ -130,9 +129,9 @@
   }
 
   .settings-storefront-editor__modes button[aria-pressed='true'] {
-    background: var(--color-surface);
+    background: var(--storefront-selected);
     box-shadow: var(--shadow-xs);
-    color: var(--color-accent);
+    color: var(--storefront-on-selected);
   }
 
   .settings-storefront-editor__preview {
@@ -201,7 +200,6 @@
     --storefront-border-soft: rgba(121, 166, 203, 0.2);
     --storefront-surface: rgba(247, 252, 255, 0.72);
     --storefront-entry-surface: rgba(255, 255, 255, 0.76);
-    --storefront-control-surface: rgba(255, 255, 255, 0.86);
     --storefront-accent: #0d67c4;
     --storefront-accent-border: rgba(13, 103, 196, 0.28);
     --storefront-accent-border-hover: rgba(13, 103, 196, 0.52);
@@ -246,7 +244,7 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    min-height: 34px;
+    min-height: 44px;
     max-width: 100%;
     padding: 7px 10px;
     border: 1px solid var(--storefront-accent-border);
@@ -273,15 +271,13 @@
 
   .settings-storefront__add-button:focus-visible,
   .settings-storefront__revoke-button:focus-visible,
-  .settings-storefront__state button:focus-visible,
-  .settings-storefront__revoke-confirm button:focus-visible {
+  .settings-storefront__state button:focus-visible {
     outline: 3px solid var(--storefront-focus);
     outline-offset: 2px;
   }
 
   .settings-storefront__add-button:disabled,
-  .settings-storefront__revoke-button:disabled,
-  .settings-storefront__revoke-confirm button:disabled {
+  .settings-storefront__revoke-button:disabled {
     cursor: wait;
     opacity: 0.58;
   }
@@ -332,8 +328,8 @@
   .settings-storefront__revoke-button {
     display: grid;
     flex: 0 0 auto;
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     place-items: center;
     border: 1px solid var(--storefront-danger-border);
     border-radius: 9px;
@@ -352,42 +348,12 @@
     height: 16px;
   }
 
-  .settings-storefront__revoke-confirm {
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .settings-storefront__revoke-confirm-button,
-  .settings-storefront__revoke-cancel-button {
-    min-height: 30px;
-    padding: 5px 7px;
-    border-radius: 8px;
-    font-size: 0.67rem;
-    font-weight: 740;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .settings-storefront__revoke-confirm-button {
-    border: 1px solid var(--storefront-danger-border);
-    background: var(--storefront-danger-surface);
-    color: var(--storefront-danger);
-  }
-
-  .settings-storefront__revoke-cancel-button {
-    border: 1px solid var(--storefront-border-soft);
-    background: transparent;
-    color: var(--text-secondary);
-  }
-
   .settings-storefront__state,
   .settings-storefront__empty {
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 34px;
+    min-height: 44px;
     margin: 0;
     color: var(--text-secondary);
     font-size: 0.74rem;
@@ -432,7 +398,6 @@
     --storefront-border-soft: rgba(129, 177, 219, 0.2);
     --storefront-surface: rgba(25, 42, 58, 0.58);
     --storefront-entry-surface: rgba(21, 35, 49, 0.72);
-    --storefront-control-surface: rgba(20, 42, 63, 0.8);
     --storefront-accent: #9dccff;
     --storefront-accent-border: rgba(131, 191, 255, 0.32);
     --storefront-accent-border-hover: rgba(131, 191, 255, 0.56);
@@ -449,7 +414,6 @@
       --storefront-border-soft: rgba(129, 177, 219, 0.2);
       --storefront-surface: rgba(25, 42, 58, 0.58);
       --storefront-entry-surface: rgba(21, 35, 49, 0.72);
-      --storefront-control-surface: rgba(20, 42, 63, 0.8);
       --storefront-accent: #9dccff;
       --storefront-accent-border: rgba(131, 191, 255, 0.32);
       --storefront-accent-border-hover: rgba(131, 191, 255, 0.56);
@@ -461,31 +425,50 @@
     }
   }
 
-  body[data-miniapp-profile='moderation'] .settings-storefront__publications > summary {
+  .storefront-audience {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .storefront-audience legend {
+    margin-bottom: 8px;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .storefront-audience label {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
-    min-height: 44px;
-    cursor: pointer;
-    font-weight: 650;
-    list-style: none;
+    min-height: 48px;
+    font-size: 14px;
   }
-  body[data-miniapp-profile='moderation']
-    .settings-storefront__publications
-    > summary::-webkit-details-marker {
-    display: none;
-  }
-  body[data-miniapp-profile='moderation'] .settings-storefront__publications > summary svg {
+  .storefront-audience input {
     flex: 0 0 20px;
     width: 20px;
     height: 20px;
-    transform: rotate(-90deg);
+    accent-color: var(--storefront-selected);
   }
-  body[data-miniapp-profile='moderation'] .settings-storefront__publications[open] > summary svg {
-    transform: rotate(0);
+  .settings-storefront__more {
+    min-height: 48px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
   }
-  body[data-miniapp-profile='moderation'] .settings-storefront__publications[open] > summary {
-    margin-bottom: 16px;
+  .storefront-revoke-confirm .action-confirm-sheet__preview-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+  }
+  .settings-storefront-editor__unavailable {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
   }
 }

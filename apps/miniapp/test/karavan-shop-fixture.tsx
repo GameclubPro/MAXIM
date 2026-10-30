@@ -1,5 +1,6 @@
 import '../src/styles.css';
 import React from 'react';
+import { runNativeBackHandlers } from '../src/lib/native-back';
 import { ApiRequestError } from '../src/lib/api-request-error';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -85,6 +86,17 @@ const appearance = {
 };
 let design = { draft: appearance, published: appearance, revision: 1, hasChanges: false };
 let pins = { revision: 1, offers: [] as (typeof offer)[] };
+const allowedUsers = Array.from({ length: 102 }, (_, index) => ({
+  id: `allow-${index}`,
+  userId: String(1000 + index),
+  displayName:
+    index === 101
+      ? 'Александра Константинопольская-Рождественская — представитель районного сообщества'
+      : `Участник ${index + 1}`,
+  expiresAt: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+}));
 let catalogReads = 0;
 let pendingApplication = true;
 let rulesConflict = true;
@@ -105,10 +117,26 @@ Object.assign(bridge, {
   close: () => {},
 });
 state.WebApp = bridge;
+bridge.BackButton?.onClick(runNativeBackHandlers);
+document.documentElement.dataset.maxPlatform = bridge.platform ?? 'android';
 const api = {
-  request: async (path: string, init: { body?: string } = {}) => {
+  request: async (path: string, init: { body?: string; method?: string } = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
     state.__shopRequests.push({ path, body });
+    if (path.includes('/karavan-storefront/allowlist')) {
+      if (init.method === 'DELETE') {
+        const index = allowedUsers.findIndex((user) => path.endsWith('/' + user.id));
+        if (index >= 0) allowedUsers.splice(index, 1);
+        return { revoked: true };
+      }
+      const cursor = new URL(path, location.origin).searchParams.get('cursor');
+      return {
+        items: cursor ? allowedUsers.slice(100) : allowedUsers.slice(0, 100),
+        hasMore: !cursor,
+        nextCursor: cursor ? null : 'page2',
+      };
+    }
+    if (path.includes('/available')) return { items: [], nextCursor: null };
     if (path.endsWith('/handoffs'))
       return {
         url: 'https://max.ru/synthetic_buyer_bot?startapp=mh_' + 'x'.repeat(43),
@@ -165,7 +193,7 @@ const api = {
         data = { restriction: { id, ...offer.restriction! }, visibilityRevision: 2 };
       } else if (operation === 'image') {
         data = await new Promise<{ url: string }>((resolve) => {
-          state.__finishShopImage = () => resolve({ url: 'https://example.com/shop-logo.jpg' });
+          state.__finishShopImage = () => resolve({ url: `${location.origin}/app/favicon.png` });
         });
       } else if (operation === 'appearance') data = design;
       else if (operation === 'appearance_save') {
@@ -280,6 +308,7 @@ const api = {
         previewUrl: 'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop',
         bindings: params.get('scenario') === 'unbound' ? [] : [binding],
         publicationChoices: [],
+        publicationPreview: { mode: 'chat_marketplace' },
         setupOperation: null,
       };
     throw new Error('Unexpected request: ' + path);
@@ -328,6 +357,7 @@ function Harness() {
       footer={
         <button
           type="button"
+          className="button button--accent"
           onClick={() => {
             state.__shopSaves.push(draft);
             setSaved(draft);

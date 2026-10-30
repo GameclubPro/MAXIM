@@ -70,7 +70,7 @@ try {
                 orderRevision: 1, visibilityRevision: 1}, binding, bindings: [binding],
               permissions: ['manage_marketplace','review_listing','arrange_listings','bind_chat'],
               counts: {listings: 2, readyListings: 2, pendingApplications: 1, chats: 1}, canManage: true,
-              buyerUrl: 'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop', previewUrl: null};
+              publicationPreview: {mode: 'chat_marketplace'}, buyerUrl: 'https://max.ru/synthetic_buyer_bot?startapp=m_synthetic-shop', previewUrl: null};
           }
           ${marker}`,
           ),
@@ -94,17 +94,46 @@ try {
         assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
         await settleVisualFrame(page);
         await page.screenshot({ path: `${output}/${engineName}-home.png` });
-        await home.getByRole('button', { name: 'Публикации', exact: true }).click();
-        const publications = page.getByRole('dialog', { name: 'Публикации', exact: true });
-        await publications
-          .getByRole('checkbox', { name: 'Включить кнопку витрины Караван' })
-          .check();
-        const message = publications.getByRole('textbox', { name: /^Текст сообщения/ });
+        await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+        const publications = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
+        await publications.getByRole('checkbox', { name: 'Ответ бота на $' }).check();
+        const message = publications.getByRole('textbox', { name: /^Текст ответа бота/ });
         await message.fill('Объявления нашего чата');
+        await page.evaluate(() => {
+          Object.defineProperty(window.visualViewport, 'height', {
+            configurable: true,
+            value: 360,
+          });
+          window.visualViewport.dispatchEvent(new Event('resize'));
+        });
+        await settleVisualFrame(page);
+        await message.focus();
+        const save = publications.getByRole('button', { name: 'Сохранить', exact: true });
+        assert.ok(
+          await save.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return rect.height >= 48 && rect.top >= 0 && rect.bottom <= 360;
+          }),
+          'save stays above keyboard with a 48px target',
+        );
+        assert.ok(
+          await message.evaluate((node) => {
+            const field = node.getBoundingClientRect();
+            const body = node.closest('.settings-drilldown__body').getBoundingClientRect();
+            return field.top >= body.top - 1 && field.bottom <= body.bottom + 1;
+          }),
+          'focused input stays inside visible scroll area',
+        );
+        await page.screenshot({ path: `${output}/${engineName}-keyboard.png` });
+        await page.evaluate(() => {
+          delete window.visualViewport.height;
+          window.visualViewport.dispatchEvent(new Event('resize'));
+        });
+        await settleVisualFrame(page);
         await publications.getByRole('button', { name: 'Сохранить', exact: true }).click();
         await page.getByText('Блок «Интернет-витрина» сохранен', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-        await home.getByRole('button', { name: 'Публикации', exact: true }).click();
+        await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
         assert.equal(await message.inputValue(), 'Объявления нашего чата');
         await settleVisualFrame(page);
         assert.ok(await publications.evaluate((node) => node.scrollWidth <= node.clientWidth + 1));

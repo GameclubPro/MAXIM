@@ -41,10 +41,10 @@ describe('Karavan module destination permissions', () => {
       counts: { listings: 0, pendingApplications: 3, chats: 1 },
       canManage: false,
     };
-    const proxy = { module: jest.fn().mockResolvedValue(state) } satisfies Pick<
-      KaravanMarketplaceProxyService,
-      'module'
-    >;
+    const proxy = {
+      module: jest.fn().mockResolvedValue(state),
+      activeSetup: jest.fn().mockResolvedValue(null),
+    } satisfies Pick<KaravanMarketplaceProxyService, 'module' | 'activeSetup'>;
     const authority = {
       principal: jest.fn().mockReturnValue({
         source: 'session',
@@ -58,13 +58,18 @@ describe('Karavan module destination permissions', () => {
         expiresAt: new Date().toISOString(),
       }),
     } satisfies Pick<KaravanMarketplaceHandoffService, 'issue'>;
+    const resolver = {
+      listChoices: jest.fn().mockResolvedValue({ choices: [] }),
+      shouldUseScopedRelay: jest.fn().mockResolvedValue(true),
+    } satisfies Pick<KaravanMarketplaceResolverService, 'listChoices' | 'shouldUseScopedRelay'>;
     const controller = new KaravanMarketplaceController(
-      new ConfigService(),
+      new ConfigService({
+        KARAVAN_MARKETPLACE_ENABLED: true,
+        KARAVAN_SELLER_BOT_USERNAME: 'seller',
+      }),
       authority as unknown as KaravanMarketplaceAuthorityService,
       proxy as unknown as KaravanMarketplaceProxyService,
-      {
-        listChoices: jest.fn().mockResolvedValue({ choices: [] }),
-      } as unknown as KaravanMarketplaceResolverService,
+      resolver as unknown as KaravanMarketplaceResolverService,
       handoffs as unknown as KaravanMarketplaceHandoffService,
     );
     const invoke = (destination: string) =>
@@ -74,7 +79,13 @@ describe('Karavan module destination permissions', () => {
         { userId: '777', username: null, displayName: null },
         {} as FastifyRequest,
       );
-    return { state, invoke, handoffs };
+    const invokeModule = () =>
+      controller.module(
+        '-123',
+        { userId: '777', username: null, displayName: null },
+        {} as FastifyRequest,
+      );
+    return { state, invoke, handoffs, invokeModule, resolver, proxy };
   }
   it('lets a delegated reviewer open applications without granting marketplace settings', async () => {
     const { invoke, handoffs } = fixture();
@@ -109,5 +120,36 @@ describe('Karavan module destination permissions', () => {
     state.permissions = [];
     await expect(invoke('manage')).rejects.toThrow('недоступно');
     expect(handoffs.issue).not.toHaveBeenCalled();
+  });
+  it('previews the same route as the relay and never substitutes a general catalog after enrollment', async () => {
+    const { state, invokeModule, resolver } = fixture();
+    state.marketplace!.status = 'active';
+    state.access = { reason: 'allowed', canRecover: false };
+    await expect(invokeModule()).resolves.toMatchObject({
+      publicationPreview: { mode: 'chat_marketplace' },
+    });
+    state.marketplace!.status = 'paused';
+    await expect(invokeModule()).resolves.toMatchObject({
+      publicationPreview: { mode: 'unavailable', reason: 'closed' },
+    });
+    state.binding = null;
+    await expect(invokeModule()).resolves.toMatchObject({
+      publicationPreview: { mode: 'unavailable', reason: 'connection' },
+    });
+    resolver.shouldUseScopedRelay.mockResolvedValue(false);
+    await expect(invokeModule()).resolves.toMatchObject({
+      publicationPreview: { mode: 'catalog' },
+    });
+  });
+  it('does not invent a preview for an unverified module or read enrollment before authorization', async () => {
+    const { state, invokeModule, resolver, proxy } = fixture();
+    state.marketplace!.status = 'active';
+    await expect(invokeModule()).resolves.toMatchObject({
+      publicationPreview: { mode: 'unavailable', reason: 'verification' },
+    });
+    resolver.shouldUseScopedRelay.mockClear();
+    proxy.module.mockRejectedValue(new Error('denied'));
+    await expect(invokeModule()).rejects.toThrow('denied');
+    expect(resolver.shouldUseScopedRelay).not.toHaveBeenCalled();
   });
 });

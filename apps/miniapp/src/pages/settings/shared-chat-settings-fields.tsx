@@ -519,8 +519,8 @@ function Commands({ fields }: BodyProps) {
   return <SharedSettingsCommandFields fields={fields} />;
 }
 
-function Storefront({ fields }: BodyProps) {
-  return <SharedSettingsStorefrontFields fields={fields} />;
+function Storefront({ fields, context }: BodyProps) {
+  return <SharedSettingsStorefrontFields fields={fields} scope={context.mode} />;
 }
 
 function Extra(props: BodyProps) {

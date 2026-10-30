@@ -34,10 +34,10 @@ try {
     try {
       for (const width of process.env.SHOP_BROWSER_WIDTH
         ? [Number(process.env.SHOP_BROWSER_WIDTH)]
-        : [320, 360, 390, 430])
+        : [320, 360, 375, 390, 430, 480])
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({
-            viewport: { width, height: 780 },
+            viewport: { width, height: Number(process.env.SHOP_BROWSER_HEIGHT ?? 780) },
             isMobile: true,
             hasTouch: true,
             colorScheme: theme,
@@ -86,7 +86,7 @@ try {
                     .filter(
                       (control) =>
                         control.getBoundingClientRect().width > 0 &&
-                        !['checkbox', 'file'].includes(control.type),
+                        !['checkbox', 'radio', 'file'].includes(control.type),
                     )
                     .every((control) => control.getBoundingClientRect().height >= 43),
                 ),
@@ -96,14 +96,29 @@ try {
                 path: `${output}/${engineName}-${width}-${theme}-${name}.png`,
               });
             };
-            const close = async (name) =>
-              page
-                .getByRole('dialog', { name, exact: true })
-                .getByRole('button', { name: 'Закрыть панель', exact: true })
-                .click();
+            const close = async (name) => {
+              await page.getByRole('dialog', { name, exact: true }).waitFor();
+              await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+              await home.waitFor();
+            };
             await shot('home', home);
             await home.getByRole('button', { name: 'Каталог', exact: true }).click();
             let panel = page.getByRole('dialog', { name: 'Каталог', exact: true });
+            assert.equal(await page.getByRole('dialog').count(), 1, 'one storefront workspace');
+            await panel.getByRole('tab', { name: 'Объявления', exact: true }).focus();
+            await page.keyboard.press('ArrowRight');
+            await panel
+              .getByRole('tabpanel', { name: 'Продавцы', exact: true })
+              .getByText('Продавцов пока нет')
+              .waitFor();
+            assert.equal(
+              await panel
+                .getByRole('tab', { name: 'Продавцы', exact: true })
+                .getAttribute('aria-selected'),
+              'true',
+            );
+            await page.keyboard.press('ArrowLeft');
+            await panel.getByRole('tabpanel', { name: 'Объявления', exact: true }).waitFor();
             await panel.getByRole('button', { name: 'Закрепить', exact: true }).click();
             await panel.getByText('Закреплённые · 1', { exact: true }).waitFor();
             await panel.getByRole('button', { name: 'Скрыть', exact: true }).click();
@@ -125,6 +140,26 @@ try {
             );
             assert.ok(swatches.every((value) => value !== 'rgba(0, 0, 0, 0)'));
             await panel.getByLabel('Название', { exact: true }).fill('Новая главная соседей');
+            await close('Оформление');
+            await home.getByRole('button', { name: 'Оформление', exact: true }).click();
+            assert.equal(
+              await panel.getByLabel('Название', { exact: true }).inputValue(),
+              'Новая главная соседей',
+              'internal Back preserves unsaved design',
+            );
+            await close('Оформление');
+            await home.getByRole('button', { name: 'Чаты', exact: true }).click();
+            await page.getByRole('button', { name: 'Подключить чаты', exact: true }).click();
+            await page.getByRole('radio', { name: 'Выбрать существующий', exact: true }).waitFor();
+            await page.evaluate(() => window.__MAXIM_VISUAL_BRIDGE_PRESS_BACK__());
+            await page.getByRole('button', { name: 'Подключить чаты', exact: true }).waitFor();
+            await close('Чаты');
+            await home.getByRole('button', { name: 'Оформление', exact: true }).click();
+            assert.equal(
+              await panel.getByLabel('Название', { exact: true }).inputValue(),
+              'Новая главная соседей',
+              'connecting chats preserves other editor drafts',
+            );
             await panel.getByRole('button', { name: 'Сохранить черновик', exact: true }).click();
             await panel
               .getByRole('button', { name: 'Применить оформление', exact: true })
@@ -178,8 +213,8 @@ try {
               () => window.__shopPublished.name === 'Новая главная соседей',
             );
             await close('Оформление');
-            await home.getByRole('button', { name: 'Категории', exact: true }).click();
-            panel = page.getByRole('dialog', { name: 'Категории', exact: true });
+            await home.getByRole('button', { name: 'Категории и правила', exact: true }).click();
+            panel = page.getByRole('dialog', { name: 'Категории и правила', exact: true });
             await panel.getByText('Услуги', { exact: true }).first().click();
             assert.equal(
               await panel
@@ -190,7 +225,9 @@ try {
             );
             await panel.getByRole('checkbox', { name: 'Ремонт', exact: true }).uncheck();
             await panel.getByRole('button', { name: 'Продолжить', exact: true }).click();
-            await panel.getByRole('button', { name: 'Подтвердить', exact: true }).waitFor();
+            await panel
+              .getByRole('button', { name: 'Применить категории и правила', exact: true })
+              .waitFor();
             const preview = await page.evaluate(
               () =>
                 window.__shopRequests
@@ -201,11 +238,15 @@ try {
               Date.parse(preview.effectiveAt) > Date.now() + 14 * 86400000,
               'hidden approved sellers retain notice period',
             );
-            await panel.getByRole('button', { name: 'Подтвердить', exact: true }).click();
+            await panel
+              .getByRole('button', { name: 'Применить категории и правила', exact: true })
+              .click();
             await panel.getByRole('button', { name: 'Обновить данные', exact: true }).click();
             await panel.getByRole('button', { name: 'Продолжить', exact: true }).waitFor();
             assert.equal(
-              await panel.getByRole('button', { name: 'Подтвердить', exact: true }).count(),
+              await panel
+                .getByRole('button', { name: 'Применить категории и правила', exact: true })
+                .count(),
               0,
             );
             assert.equal(
@@ -213,7 +254,9 @@ try {
               false,
             );
             await panel.getByRole('button', { name: 'Продолжить', exact: true }).click();
-            await panel.getByRole('button', { name: 'Подтвердить', exact: true }).waitFor();
+            await panel
+              .getByRole('button', { name: 'Применить категории и правила', exact: true })
+              .waitFor();
             assert.equal(
               await page.evaluate(
                 () =>
@@ -223,43 +266,147 @@ try {
               ),
               2,
             );
-            await panel.getByRole('button', { name: 'Подтвердить', exact: true }).click();
             await panel
-              .getByRole('button', { name: 'Подтвердить', exact: true })
+              .getByRole('button', { name: 'Применить категории и правила', exact: true })
+              .click();
+            await panel
+              .getByRole('button', { name: 'Применить категории и правила', exact: true })
               .waitFor({ state: 'detached' });
             await shot('categories', panel);
-            await close('Категории');
+            await close('Категории и правила');
             await home.getByRole('button', { name: 'Заявки', exact: true }).click();
             panel = page.getByRole('dialog', { name: 'Заявки', exact: true });
             await panel.getByRole('button', { name: 'Принять', exact: true }).click();
             await panel.getByText('Новых заявок нет').waitFor();
             await close('Заявки');
-            await home.getByRole('button', { name: 'Публикации', exact: true }).click();
-            panel = page.getByRole('dialog', { name: 'Публикации', exact: true });
+            await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+            panel = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
             await panel
-              .getByRole('textbox', { name: /^Текст сообщения/ })
+              .getByRole('textbox', { name: /^Текст ответа бота/ })
               .fill('Магазин нашего чата');
             assert.equal(await page.evaluate(() => window.__shopSaves.length), 0);
+            await close('Кнопка в чате');
+            await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+            assert.equal(
+              await panel.getByRole('textbox', { name: /^Текст ответа бота/ }).inputValue(),
+              'Магазин нашего чата',
+              'internal Back preserves unsaved response',
+            );
             await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
             assert.equal(
               await page.evaluate(() => window.__shopSaves.at(-1).karavanStorefrontMessageText),
               'Магазин нашего чата',
             );
-            await close('Публикации');
-            await home.getByRole('button', { name: 'Публикации', exact: true }).click();
+            await close('Кнопка в чате');
+            await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
             assert.equal(
-              await panel.getByRole('textbox', { name: /^Текст сообщения/ }).inputValue(),
+              await panel.getByRole('textbox', { name: /^Текст ответа бота/ }).inputValue(),
               'Магазин нашего чата',
             );
-            await panel
-              .getByRole('checkbox', { name: 'Включить кнопку витрины Караван' })
-              .uncheck();
+            await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).uncheck();
             await panel.getByRole('button', { name: 'Сохранить', exact: true }).click();
             assert.equal(await page.evaluate(() => window.__shopSaves.length), 2);
             await shot('publications', panel);
-            await close('Публикации');
+            await close('Кнопка в чате');
+            if (width === 320) {
+              await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              panel = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
+              await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).check();
+              const scenario = panel.getByRole('button', {
+                name: 'Нет витрины продавца',
+                exact: true,
+              });
+              await scenario.click();
+              assert.equal(await scenario.getAttribute('aria-pressed'), 'true');
+              assert.equal(
+                await scenario.evaluate((el) => getComputedStyle(el).color),
+                'rgb(255, 255, 255)',
+              );
+              assert.equal(
+                await panel.locator('.settings-storefront-editor__preview-button').count(),
+                1,
+                'chat marketplace has one catalog button',
+              );
+              await panel
+                .getByRole('radio', { name: 'Администраторы и выбранные пользователи' })
+                .check();
+              await panel.locator('.settings-storefront__entry').nth(99).waitFor();
+              await panel.getByRole('button', { name: 'Ещё пользователи' }).click();
+              await panel.locator('.settings-storefront__entry').nth(101).waitFor();
+              const longName =
+                'Александра Константинопольская-Рождественская — представитель районного сообщества';
+              const entry = panel
+                .locator('.settings-storefront__entry')
+                .filter({ hasText: longName });
+              await entry.getByRole('button', { name: `Отозвать доступ: ${longName}` }).click();
+              const confirmation = page.getByRole('dialog', {
+                name: 'Отозвать доступ к добавлению ссылки?',
+              });
+              const name = confirmation.locator('.action-confirm-sheet__preview-title');
+              assert.equal(await name.innerText(), longName);
+              assert.ok(
+                await name.evaluate(
+                  (node) => node.clientWidth >= 240 && node.scrollWidth <= node.clientWidth + 1,
+                ),
+              );
+              await page.screenshot({
+                path: `${output}/${engineName}-${width}-${theme}-revoke.png`,
+              });
+              await confirmation
+                .getByRole('button', { name: 'Отозвать доступ', exact: true })
+                .click();
+              await confirmation.waitFor({ state: 'detached' });
+              await entry.waitFor({ state: 'detached' });
+              await panel.locator('.settings-drilldown__body').evaluate((node) => {
+                node.scrollTop = 250;
+              });
+              const scroll = await panel
+                .locator('.settings-drilldown__body')
+                .evaluate((node) => node.scrollTop);
+              await close('Кнопка в чате');
+              await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              assert.equal(
+                await panel.locator('.settings-drilldown__body').evaluate((node) => node.scrollTop),
+                scroll,
+                'Back restores scroll',
+              );
+              await page.setViewportSize({ width: 320, height: 480 });
+              await page.evaluate(() => {
+                document.documentElement.style.fontSize = '24px';
+              });
+              const response = panel.getByRole('textbox', { name: /^Текст ответа бота/ });
+              await response.fill('Несохранённый текст');
+              await response.focus();
+              await shot('short-large-text', panel);
+              const save = panel.getByRole('button', { name: 'Сохранить', exact: true });
+              assert.ok(
+                await save.evaluate((node) => {
+                  const r = node.getBoundingClientRect();
+                  return r.top >= 0 && r.bottom <= innerHeight;
+                }),
+                'save remains visible on short viewport',
+              );
+              await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+              const discard = page.getByRole('dialog', { name: 'Не сохранять изменения?' });
+              await discard
+                .getByRole('button', { name: 'Продолжить настройку', exact: true })
+                .click();
+              assert.equal(await response.inputValue(), 'Несохранённый текст');
+              await panel.getByRole('button', { name: 'Закрыть панель', exact: true }).click();
+              await discard.getByRole('button', { name: 'Не сохранять', exact: true }).click();
+              await page.getByRole('dialog').waitFor({ state: 'detached' });
+              await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
+              await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              assert.equal(
+                await panel.getByRole('checkbox', { name: 'Ответ бота на $' }).isChecked(),
+                false,
+                'explicit discard restores saved settings',
+              );
+              await close('Кнопка в чате');
+            }
             assert.deepEqual(errors, []);
             count++;
+            console.log(`Shop journey ${engineName}/${width}/${theme}: passed (${count}).`);
             if (width === 360 && theme === 'light')
               for (const scenario of ['empty', 'error', 'unbound']) {
                 await page.goto(`${url}?theme=${theme}&scenario=${scenario}`);

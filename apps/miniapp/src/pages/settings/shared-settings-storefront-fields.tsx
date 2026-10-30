@@ -1,3 +1,4 @@
+import { StorefrontAudience } from './storefront-audience';
 import { useEffect, useRef } from 'react';
 import type {
   ChatSettingsFieldAdapter,
@@ -51,28 +52,30 @@ function StorefrontToggle({
     </div>
   );
 }
-export function SharedSettingsStorefrontFields({ fields }: { fields: ChatSettingsFieldAdapter }) {
+export function SharedSettingsStorefrontFields({
+  fields,
+  scope,
+}: {
+  fields: ChatSettingsFieldAdapter;
+  scope: 'single' | 'network';
+}) {
   const enabled = fields.read('karavanStorefrontEnabled');
   return (
     <>
       <StorefrontToggle
-        title="Кнопка по $"
-        label="Включить кнопку витрины Караван"
+        title="Ответ бота на $"
+        label="Ответ бота на $"
         state={enabled}
         disabled={fields.readOnly}
         onChange={(value) => fields.setScalar('karavanStorefrontEnabled', value)}
       />
       {enabled.kind !== 'common' || enabled.value ? (
         <>
-          <SettingsStorefrontTextEditor fields={fields} />
-          <StorefrontToggle
-            title="Только администраторы"
-            label="Разрешать витрину только администраторам и пользователям из списка"
+          <SettingsStorefrontTextEditor fields={fields} scope={scope} />
+          <StorefrontAudience
             state={fields.read('karavanStorefrontAdminsOnly')}
             disabled={fields.readOnly}
-            nested
             onChange={(value) => fields.setScalar('karavanStorefrontAdminsOnly', value)}
-            description="Кнопка будет доступна администраторам и пользователям из списка."
           />
         </>
       ) : null}

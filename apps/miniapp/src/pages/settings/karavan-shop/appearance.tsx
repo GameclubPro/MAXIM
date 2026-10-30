@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { StorefrontActions, useStorefrontDirty } from '../storefront-workspace';
 import {
   marketplaceAppearanceSchema,
   type MarketplaceAppearance,
@@ -48,13 +49,7 @@ async function imageData(file: File, cover: boolean): Promise<string> {
     bitmap.close();
   }
 }
-export default function ShopAppearance({
-  onDirty,
-  onView,
-}: {
-  onDirty: (dirty: boolean) => void;
-  onView?: () => void;
-}) {
+export default function ShopAppearance({ onView }: { onView?: () => void }) {
   const { api, scope } = useShop();
   const query = useShopQuery<'appearance'>({ operation: 'appearance' });
   const [draft, setDraft] = useState<MarketplaceAppearance | null>(null),
@@ -65,10 +60,7 @@ export default function ShopAppearance({
   });
   const value = draft ?? query.data?.draft;
   const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(query.data?.draft);
-  useEffect(() => {
-    onDirty(dirty || uploading);
-    return () => onDirty(false);
-  }, [dirty, uploading, onDirty]);
+  useStorefrontDirty('appearance', dirty || uploading);
   if (query.isPending) return <ShopLoading />;
   if (query.isError || !value)
     return <ShopFailure error={query.error} retry={() => void query.refetch()} />;
@@ -211,53 +203,66 @@ export default function ShopAppearance({
         </fieldset>
       </fieldset>
       {uploading ? <p role="status">Загружаем изображение…</p> : null}
-      {dirty ? (
-        <button
-          type="button"
-          className="karavan-module__primary"
-          disabled={uploading || mutation.isPending}
-          onClick={() => {
-            const parsed = marketplaceAppearanceSchema.safeParse(value);
-            if (!parsed.success) {
-              setError('Проверьте название и выберите хотя бы один раздел.');
-              return;
-            }
-            void mutation
-              .mutateAsync({
-                operation: 'appearance_save',
-                input: {
-                  commandId: crypto.randomUUID(),
-                  expectedRevision: query.data.revision,
-                  appearance: parsed.data,
-                },
+      <p className="karavan-shop__draft-status" role="status">
+        {dirty
+          ? 'Есть несохранённые изменения'
+          : query.data.hasChanges
+            ? 'Черновик сохранён. Примените оформление, чтобы его увидели покупатели.'
+            : 'Покупатели видят это оформление'}
+      </p>
+      <StorefrontActions page="appearance">
+        {dirty ? (
+          <button
+            type="button"
+            className="karavan-module__primary"
+            disabled={uploading || mutation.isPending}
+            onClick={() => {
+              const parsed = marketplaceAppearanceSchema.safeParse(value);
+              if (!parsed.success) {
+                setError('Проверьте название и выберите хотя бы один раздел.');
+                return;
+              }
+              void mutation
+                .mutateAsync({
+                  operation: 'appearance_save',
+                  input: {
+                    commandId: crypto.randomUUID(),
+                    expectedRevision: query.data.revision,
+                    appearance: parsed.data,
+                  },
+                })
+                .then(() => setDraft(null))
+                .catch(() => {});
+            }}
+          >
+            Сохранить черновик
+          </button>
+        ) : null}
+        {onView ? (
+          <button
+            type="button"
+            disabled={dirty || uploading || mutation.isPending}
+            onClick={onView}
+          >
+            Посмотреть магазин
+          </button>
+        ) : null}
+        {!dirty && query.data.hasChanges ? (
+          <button
+            type="button"
+            className="karavan-module__primary"
+            disabled={uploading || mutation.isPending}
+            onClick={() =>
+              mutation.mutate({
+                operation: 'appearance_publish',
+                input: { commandId: crypto.randomUUID(), expectedRevision: query.data.revision },
               })
-              .then(() => setDraft(null))
-              .catch(() => {});
-          }}
-        >
-          Сохранить черновик
-        </button>
-      ) : null}
-      {onView ? (
-        <button type="button" disabled={dirty || uploading || mutation.isPending} onClick={onView}>
-          Посмотреть магазин
-        </button>
-      ) : null}
-      {!dirty && query.data.hasChanges ? (
-        <button
-          type="button"
-          className="karavan-module__primary"
-          disabled={uploading || mutation.isPending}
-          onClick={() =>
-            mutation.mutate({
-              operation: 'appearance_publish',
-              input: { commandId: crypto.randomUUID(), expectedRevision: query.data.revision },
-            })
-          }
-        >
-          Применить оформление
-        </button>
-      ) : null}
+            }
+          >
+            Применить оформление
+          </button>
+        ) : null}
+      </StorefrontActions>
     </>
   );
 }

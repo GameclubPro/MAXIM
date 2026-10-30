@@ -195,6 +195,15 @@ export const karavanMarketplaceBindingSchema = z.object({
   revision: z.number().int().positive(),
   verifiedAt: z.string().datetime().nullable(),
 });
+export const karavanPublicationPreviewSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('catalog') }),
+  z.object({ mode: z.literal('chat_marketplace') }),
+  z.object({
+    mode: z.literal('unavailable'),
+    reason: z.enum(['closed', 'connection', 'verification']),
+  }),
+]);
+export type KaravanPublicationPreview = z.infer<typeof karavanPublicationPreviewSchema>;
 export const karavanMarketplaceModuleSchema = z.object({
   marketplace: karavanMarketplaceSummarySchema.nullable(),
   binding: karavanMarketplaceBindingSchema.nullable(),
@@ -233,6 +242,7 @@ export const karavanMarketplaceModuleSchema = z.object({
   currentChatTitle: z.string().max(300).optional(),
   buyerUrl: z.string().url().nullable().optional(),
   previewUrl: z.string().url().nullable().optional(),
+  publicationPreview: karavanPublicationPreviewSchema.optional(),
   bindings: z.array(karavanMarketplaceBindingSchema).max(48).optional(),
 });
 export type KaravanMarketplaceModule = z.infer<typeof karavanMarketplaceModuleSchema>;

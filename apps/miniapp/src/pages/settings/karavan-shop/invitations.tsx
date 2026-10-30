@@ -4,6 +4,7 @@ export default function ShopInvitations() {
   const [cursor, setCursor] = useState<string | null>(null),
     [link, setLink] = useState<string | null>(null),
     [copied, setCopied] = useState(false),
+    [copyError, setCopyError] = useState(false),
     [lost, setLost] = useState(false);
   const query = useShopQuery<'invitations'>({
     operation: 'invitations',
@@ -30,6 +31,7 @@ export default function ShopInvitations() {
         onClick={() => {
           setLost(false);
           setCopied(false);
+          setCopyError(false);
           void mutation
             .mutateAsync({
               operation: 'invitation_create',
@@ -54,14 +56,21 @@ export default function ShopInvitations() {
           <button
             type="button"
             onClick={() => {
+              setCopyError(false);
               void (navigator.clipboard?.writeText(link) ?? Promise.reject())
                 .then(() => setLost(false))
                 .then(() => setCopied(true))
-                .catch(() => setCopied(false));
+                .catch(() => {
+                  setCopied(false);
+                  setCopyError(true);
+                });
             }}
           >
             {copied ? 'Скопировано' : 'Скопировать ссылку'}
           </button>
+          {copyError ? (
+            <p role="alert">Не удалось скопировать. Нажмите на ссылку и выберите «Копировать».</p>
+          ) : null}
           <p>Действует 7 дней. Продавцы подают заявки на размещение.</p>
         </>
       ) : null}
