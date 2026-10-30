@@ -27,6 +27,12 @@ const scenarios = [
   'recovery',
   'recovery_conflict',
   'recovery_conflict_unknown',
+  'recovery_conflict_superseded',
+  'recovery_restored_superseded',
+  'recovery_restored_current',
+  'recovery_restored_unavailable',
+  'recovery_restored_cached',
+  'recovery_restored_actor_switch',
   'access_changed',
   'disconnect',
   'reviewer',
@@ -70,7 +76,17 @@ Object.assign(document.body.style,{margin:'0',padding:'20px 16px',background:'va
 const uuid='a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10';
 const marketplace={id:uuid,networkId:'c41eba17-407e-4e51-b23c-1dd3edca4e63',publicSlug:'synthetic-shop',name:'Магазин соседей — длинное название для проверки переноса',description:null,kind:'chat',status:scenario==='paused'?'paused':['active','existing','existing_unknown','existing_rules_changed','existing_options_error','choice','public_view','switch_chat','bridge_error'].includes(scenario)?'active':'draft',admissionPolicy:'applications',logoImageUrl:null,coverImageUrl:null,editRevision:1,policyRevision:1,orderRevision:1,visibilityRevision:1};
 const binding={id:'9c9e1a8e-533f-49f8-9d5e-2bbad494bb74',chatId:'-123',chatTitle:'Соседи',state:scenario==='recovery'?'revoked':'verified',generation:1,revision:1,verifiedAt:new Date().toISOString()};
-let connected=['active','draft','draft_empty','paused','preview_missing','public_view','switch_chat','bridge_error','recovery','recovery_conflict','recovery_conflict_unknown','access_changed','disconnect','reviewer','choice'].includes(scenario); let reads=0; let setups=Number(sessionStorage.getItem('setups')||0); let operation=JSON.parse(sessionStorage.getItem('operation')||'null'); let chosen=false; let optionReads=0; let previewReads=0; let recovered=false;
+let connected=['active','draft','draft_empty','paused','preview_missing','public_view','switch_chat','bridge_error','recovery','recovery_conflict','recovery_conflict_unknown','recovery_restored_superseded','recovery_restored_current','access_changed','disconnect','reviewer','choice'].includes(scenario); let reads=0; let setups=Number(sessionStorage.getItem('setups')||0); let operation=JSON.parse(sessionStorage.getItem('operation')||'null'); let chosen=false; let optionReads=0; let previewReads=0; let recovered=false;
+let moduleActor='777';
+if(scenario.startsWith('recovery_restored_')) {
+  connected=true; marketplace.status='active'; binding.generation=['recovery_restored_current','recovery_restored_actor_switch'].includes(scenario)?1:2;
+  if(!sessionStorage.getItem('restored-seeded')) {
+    localStorage.setItem('karavan-binding:v1:777:-123',JSON.stringify({marketplaceId:uuid,commandId:'b0d9b7ce-0040-4c85-a7ec-e3cf6da94c10',expectedBindingGeneration:1,action:'recover_chat'}));
+    sessionStorage.setItem('restored-seeded','yes');
+    if(scenario==='recovery_restored_actor_switch') localStorage.setItem('karavan-binding:v1:888:-123',JSON.stringify({marketplaceId:uuid,commandId:'c0d9b7ce-0040-4c85-a7ec-e3cf6da94c10',expectedBindingGeneration:2,action:'recover_chat'}));
+  }
+}
+if(scenario==='recovery_conflict_superseded') connected=true;
 if(scenario==='server_restore') { const request={operationId:uuid,chatIds:['-123','-456'],create:{name:'Сохранённый магазин',rules:{text:'Rules',allowedCategoryIds:['services'],allowedSubcategoryIds:[]}}}; operation={operationId:uuid,state:'partial',request,checkpoints:{marketplaceId:uuid,bindings:request.chatIds.map(chatId=>({chatId,state:'failed',bindingId:null,generation:null}))}}; }
 window.__karavanRequests=[]; window.__karavanOpened=[]; window.__karavanClosed=0; window.WebApp={openMaxLink:(url)=>{if(scenario==='bridge_error'&&!window.__bridgeRetry) throw new Error('Bridge unavailable');window.__karavanOpened.push(url)},close:()=>{window.__karavanClosed++}};
 const api={request:async(path,init={})=>{
@@ -84,8 +100,8 @@ const api={request:async(path,init={})=>{
   if(path.endsWith('/available')) return {marketplaces:[{marketplace,permissions:['manage_network','bind_chat']}],nextCursor:null};
   if(path.includes('/bindings/')) {
     if(scenario==='existing_unknown'&&!sessionStorage.getItem('bind-attempted')) {sessionStorage.setItem('bind-attempted','yes'); throw new Error('Ответ потерян');}
-    if(scenario==='recovery_conflict_unknown'&&!sessionStorage.getItem('bind-attempted')) {sessionStorage.setItem('bind-attempted','yes');throw new Error('Ответ потерян');}
-    if(scenario.startsWith('recovery_conflict')) {recovered=true;binding.generation=2;marketplace.status='active';throw new ApiRequestError(409,JSON.stringify({code:'MARKETPLACE_BINDING_CHANGED'}),'Подключение изменилось');}
+    if(['recovery_conflict_unknown','recovery_conflict_superseded'].includes(scenario)&&!sessionStorage.getItem('bind-attempted')) {sessionStorage.setItem('bind-attempted','yes');throw new Error('Ответ потерян');}
+    if(scenario.startsWith('recovery_conflict')) {recovered=true;binding.generation=scenario==='recovery_conflict_unknown'?1:2;marketplace.status='active';throw new ApiRequestError(409,JSON.stringify({code:'MARKETPLACE_BINDING_CHANGED'}),'Подключение изменилось');}
     const input=JSON.parse(init.body); recovered=input.action==='recover_chat'; connected=true; marketplace.status=input.action==='unbind_chat'?'paused':'active'; binding.state=input.action==='unbind_chat'?'disconnected':'verified';
     return {marketplace,bindingId:binding.id,generation:1};
   }
@@ -102,10 +118,17 @@ const api={request:async(path,init={})=>{
   if(path.includes('/operations/')) return operation;
   if(scenario==='error' && reads++===0) throw new Error('Сеть недоступна');
   if(scenario==='loading') await new Promise(resolve=>setTimeout(resolve,800));
-  return {enabled:true,actorMaxUserId:'777',sellerBotUrl:'https://max.ru/synthetic_seller_bot',setupOperation:scenario==='server_restore'?operation:null,currentChatTitle:'Соседи',buyerUrl:connected?'https://max.ru/synthetic_buyer_bot?startapp=m_'+(path.includes('/-456/')?'other-shop':'synthetic-shop'):null,previewUrl:connected&&scenario!=='preview_missing'&&['draft','paused'].includes(marketplace.status)?'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop':null,bindings:connected?[binding]:[],publicationChoices:scenario==='choice'&&!chosen?[{id:uuid,marketplaceId:uuid,marketplaceName:marketplace.name,chatId:'-123',expiresAt:new Date(Date.now()+900000).toISOString(),stores:[{id:uuid,name:'Первая витрина'},{id:'bb669048-0279-4a35-987c-60f94593163e',name:'Вторая витрина'}]}]:[],marketplace:connected?(path.includes('/-456/')?{...marketplace,name:'Другой магазин'}:marketplace):null,binding:connected?binding:null,access:{reason:!recovered&&(scenario==='access_changed'||scenario==='recovery'||scenario.startsWith('recovery_conflict'))?'binding_changed':scenario==='public_view'?'forbidden':'allowed',canRecover:!recovered&&(scenario==='recovery'||scenario==='access_changed'||scenario.startsWith('recovery_conflict'))},permissions:scenario==='public_view'||(!recovered&&scenario==='access_changed')?[]:scenario==='reviewer'?['review_listing']:['manage_network','bind_chat','manage_marketplace','review_listing'],counts:{listings:connected&&scenario!=='draft_empty'?12:0,pendingApplications:connected&&scenario!=='draft_empty'?3:0,chats:connected?2:0},canManage:scenario!=='reviewer'};
+  if(scenario==='recovery_restored_unavailable'&&!sessionStorage.getItem('restored-allow-read')) throw new Error('Проверка временно недоступна');
+  return {enabled:true,actorMaxUserId:moduleActor,sellerBotUrl:'https://max.ru/synthetic_seller_bot',setupOperation:scenario==='server_restore'?operation:null,currentChatTitle:'Соседи',buyerUrl:connected?'https://max.ru/synthetic_buyer_bot?startapp=m_'+(path.includes('/-456/')?'other-shop':'synthetic-shop'):null,previewUrl:connected&&scenario!=='preview_missing'&&['draft','paused'].includes(marketplace.status)?'https://max.ru/synthetic_buyer_bot?startapp=mp_synthetic-shop':null,bindings:connected?[binding]:[],publicationChoices:scenario==='choice'&&!chosen?[{id:uuid,marketplaceId:uuid,marketplaceName:marketplace.name,chatId:'-123',expiresAt:new Date(Date.now()+900000).toISOString(),stores:[{id:uuid,name:'Первая витрина'},{id:'bb669048-0279-4a35-987c-60f94593163e',name:'Вторая витрина'}]}]:[],marketplace:connected?(path.includes('/-456/')?{...marketplace,name:'Другой магазин'}:marketplace):null,binding:connected?binding:null,access:{reason:!recovered&&(scenario==='access_changed'||scenario==='recovery'||scenario.startsWith('recovery_conflict'))?'binding_changed':scenario==='public_view'?'forbidden':'allowed',canRecover:!recovered&&(scenario==='recovery'||scenario==='access_changed'||scenario.startsWith('recovery_conflict'))},permissions:scenario==='public_view'||(!recovered&&scenario==='access_changed')?[]:scenario==='reviewer'?['review_listing']:['manage_network','bind_chat','manage_marketplace','review_listing'],counts:{listings:connected&&scenario!=='draft_empty'?12:0,pendingApplications:connected&&scenario!=='draft_empty'?3:0,chats:connected?2:0},canManage:scenario!=='reviewer'};
 },requestKeepalive:()=>{}};
 function Harness(){const [chatId,setChatId]=React.useState('-123');window.__switchKaravanChat=()=>setChatId('-456');return <StorefrontWorkspace key={chatId} open onClose={()=>{}}><Panel api={api} chatId={chatId}/></StorefrontWorkspace>;}
-createRoot(document.getElementById('test-root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}})}><Harness/></QueryClientProvider>);
+const queryClient=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+window.__switchKaravanActor=()=>{moduleActor='888';binding.generation=2;return queryClient.invalidateQueries({queryKey:['karavan-marketplace','-123']});};
+if(scenario==='recovery_restored_cached') {
+  const snapshot=await api.request('/chats/-123/karavan-marketplace');
+  queryClient.setQueryData(['karavan-marketplace','-123'],{...snapshot,binding:{...binding,generation:1}});
+}
+createRoot(document.getElementById('test-root')).render(<QueryClientProvider client={queryClient}><Harness/></QueryClientProvider>);
 `,
 );
 let server;
@@ -157,13 +180,14 @@ try {
           colorScheme: theme,
           reducedMotion: 'reduce',
         });
+        let page;
         try {
           await context.route('**/*', (route) =>
             new URL(route.request().url()).origin === new URL(base).origin
               ? route.continue()
               : route.abort(),
           );
-          const page = await context.newPage();
+          page = await context.newPage();
           const errors = [];
           page.on('pageerror', (error) => errors.push(error.message));
           await page.goto(path + '?scenario=' + scenario + '&theme=' + theme);
@@ -393,21 +417,116 @@ try {
               null,
             );
           }
-          if (scenario === 'recovery_conflict_unknown') {
+          if (['recovery_conflict_unknown', 'recovery_conflict_superseded'].includes(scenario)) {
             await page.getByRole('button', { name: 'Восстановить подключение' }).click();
             await page.getByText('Результат изменения ещё не подтверждён.').waitFor();
             await page.getByRole('button', { name: 'Повторить проверку', exact: true }).click();
-            await page.getByText('Подключение изменилось', { exact: true }).waitFor();
-            assert.equal(
-              await page.getByRole('button', { name: 'Обновить состояние', exact: true }).count(),
-              0,
-              'An earlier unknown result remains fenced',
-            );
+            if (scenario === 'recovery_conflict_unknown') {
+              await page.getByText('Подключение изменилось', { exact: true }).waitFor();
+              assert.equal(
+                await page.getByRole('button', { name: 'Обновить состояние', exact: true }).count(),
+                0,
+                'An earlier unknown result at the same generation remains fenced',
+              );
+              assert.ok(
+                await page.evaluate(() => localStorage.getItem('karavan-binding:v1:777:-123')),
+              );
+            } else {
+              await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).waitFor();
+              assert.equal(
+                await page.evaluate(() => localStorage.getItem('karavan-binding:v1:777:-123')),
+                null,
+              );
+            }
             const writes = await page.evaluate(() =>
               window.__karavanRequests.filter((item) => item.path.includes('/bindings/')),
             );
             assert.equal(writes.length, 2);
             assert.equal(writes[0].body.commandId, writes[1].body.commandId);
+          }
+          if (scenario === 'recovery_restored_unavailable') {
+            await page
+              .getByRole('alert')
+              .filter({ hasText: 'Не удалось проверить магазин.' })
+              .waitFor();
+            assert.ok(
+              await page.evaluate(() => localStorage.getItem('karavan-binding:v1:777:-123')),
+            );
+            assert.equal(
+              await page.evaluate(
+                () => window.__karavanRequests.filter((item) => item.body).length,
+              ),
+              0,
+            );
+            await page.evaluate(() => {
+              sessionStorage.setItem('restored-allow-read', 'yes');
+            });
+            await page.getByRole('button', { name: 'Повторить', exact: true }).click();
+          }
+          if (
+            [
+              'recovery_restored_superseded',
+              'recovery_restored_cached',
+              'recovery_restored_unavailable',
+            ].includes(scenario)
+          ) {
+            await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).waitFor();
+            assert.equal(
+              await page.evaluate(() => localStorage.getItem('karavan-binding:v1:777:-123')),
+              null,
+            );
+            assert.equal(
+              await page.evaluate(
+                () => window.__karavanRequests.filter((item) => item.body).length,
+              ),
+              0,
+              'Restored obsolete request must not send a mutation',
+            );
+            await page.reload();
+            await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).waitFor();
+            assert.equal(
+              await page.evaluate(
+                () => window.__karavanRequests.filter((item) => item.body).length,
+              ),
+              0,
+            );
+          }
+          if (scenario === 'recovery_restored_current') {
+            await page.getByText('Результат изменения ещё не подтверждён.').waitFor();
+            assert.ok(
+              await page.evaluate(() => localStorage.getItem('karavan-binding:v1:777:-123')),
+            );
+            assert.equal(
+              await page.evaluate(
+                () => window.__karavanRequests.filter((item) => item.body).length,
+              ),
+              0,
+              'A current uncertain request must not be replayed or discarded',
+            );
+          }
+          if (scenario === 'recovery_restored_actor_switch') {
+            await page.getByText('Результат изменения ещё не подтверждён.').waitFor();
+            await page.evaluate(() => window.__switchKaravanActor());
+            await page.evaluate(
+              () =>
+                new Promise((resolve) =>
+                  requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                ),
+            );
+            assert.ok(
+              await page.evaluate(() => localStorage.getItem('karavan-binding:v1:777:-123')),
+              'Keep the previous actor request',
+            );
+            assert.ok(
+              await page.evaluate(() => localStorage.getItem('karavan-binding:v1:888:-123')),
+              'Never clear the next actor request using a previous actor state',
+            );
+            assert.equal(
+              await page.evaluate(
+                () => window.__karavanRequests.filter((item) => item.body).length,
+              ),
+              0,
+            );
           }
           if (scenario === 'disconnect') {
             await page.getByRole('button', { name: 'Чаты', exact: true }).click();
@@ -430,7 +549,7 @@ try {
               0,
             );
           }
-          await page.locator('.karavan-module h3').waitFor();
+          await page.locator('.karavan-module h3:visible').waitFor();
           await geometry(page, `${width}-${theme}-${scenario}`);
           if (['active', 'public_view', 'bridge_error'].includes(scenario)) {
             await page.getByRole('button', { name: 'Посмотреть магазин', exact: true }).click();
@@ -507,7 +626,7 @@ try {
           });
         } catch (error) {
           console.error(
-            `${width}/${theme}/${scenario}: ${(await page.locator('body').innerText()).slice(-2500)}`,
+            `${width}/${theme}/${scenario}: ${page ? (await page.locator('body').innerText()).slice(-2500) : 'Page unavailable'}`,
           );
           throw error;
         } finally {
