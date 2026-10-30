@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261030020000_karavan_binding_observation_epoch",
-  "baselineNamesSha256": "38e747641e1cfb97556cf6d0236e75bd2dcf64e77bf55d7d2530dfa01f60b3a4",
-  "baselineContentsSha256": "1a8676435c3baa321c36512154290f3bd820cdb7f32915441761909d679e1d20",
+  "baselineThrough": "20261030030000_karavan_stable_routing_authority",
+  "baselineNamesSha256": "8ca20d8b545da08af4635ab3b5717edff10c1229f4498e25f6745c1c5b078494",
+  "baselineContentsSha256": "c92e3fc137ad0e9704819b29130403cd3d0bfab533984bf32d3b6e199fd36371",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -171,6 +171,11 @@
       "reason": "Reviewed additive immutable capability predicate and static row trigger. EXECUTE FUNCTION is a parser false positive; no dynamic SQL, row deletion, index build, table rewrite or existing-data backfill.",
       "twoPhaseRelease": true,
       "runtimeCompatibilityEvidence": "Existing membership and durable reconcile contracts remain compatible. The additive trigger only retains a request when effective night-mode capabilities change; old readers can consume the same request. Existing manual unknown-effect fences remain unchanged."
+    },
+    "20261030030000_karavan_stable_routing_authority": {
+      "reason": "Reviewed additive columns and a static row trigger. EXECUTE FUNCTION is a parser classification; no dynamic SQL, destructive DDL, table scan or existing-row backfill.",
+      "twoPhaseRelease": true,
+      "runtimeCompatibilityEvidence": "Older clients ignore the new columns. The trigger records actual effective moderator/entity changes without altering routing_version or scheduling. Existing witnesses keep the old routing_version check through a nullable epoch; only explicit new bindings adopt stable authority. Old rollback readers remain stricter and cannot reopen revoked access."
     }
   },
   "nonConcurrentIndexExceptions": {
