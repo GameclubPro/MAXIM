@@ -93,7 +93,9 @@ try {
   ]) {
     const browser = await engine.launch(captureBrowserLaunchOptions(engineName, base));
     try {
-      for (const width of [320, 360, 390, 430]) {
+      for (const width of process.env.STOREFRONT_BROWSER_WIDTH
+        ? [Number(process.env.STOREFRONT_BROWSER_WIDTH)]
+        : [320, 360, 390, 430]) {
         for (const theme of ['light', 'dark']) {
           for (const scenario of scenarios) {
             const context = await browser.newContext({
@@ -136,8 +138,8 @@ try {
                 await sheet.getByRole('button', { name: 'Повторить', exact: true }).click();
               }
               await sheet.getByText('Магазин чата пока недоступен.', { exact: true }).waitFor();
-              await sheet.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
-              sheet = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
+              await sheet.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
+              sheet = page.getByRole('dialog', { name: 'Кнопки в чате', exact: true });
               const toggle = sheet.getByRole('checkbox', {
                 name: 'Ответ бота на $',
               });
@@ -151,8 +153,18 @@ try {
               assert.equal(await toggle.isChecked(), scenario !== 'off');
               assert.equal(
                 await sheet.locator('#karavanStorefrontMessageText').isVisible(),
-                scenario !== 'off',
+                false,
+                'text editing starts collapsed',
               );
+              if (scenario !== 'off') {
+                await sheet.getByText('Изменить текст', { exact: true }).click();
+                await sheet.locator('#karavanStorefrontMessageText').waitFor();
+                assert.equal(
+                  await sheet.locator('.settings-storefront-editor__preview').count(),
+                  0,
+                  'unavailable marketplace does not invent a bot response',
+                );
+              }
               assert.equal(
                 await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
                 true,
@@ -208,7 +220,7 @@ try {
                 scenario === 'off',
               );
               await page.keyboard.press('Escape');
-              await rootSheet.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+              await rootSheet.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
               await toggle.waitFor({ state: 'visible' });
               assert.equal(
                 await toggle.isChecked(),

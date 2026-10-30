@@ -89,14 +89,26 @@ try {
         });
         await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
         const home = page.getByRole('dialog', { name: 'Интернет-витрина', exact: true });
-        await home.getByRole('button', { name: 'Посмотреть магазин', exact: true }).waitFor();
-        assert.equal(await home.locator('.karavan-shop__menu button').count(), 6);
+        await home.getByRole('button', { name: 'Посмотреть магазин чата', exact: true }).waitFor();
+        assert.deepEqual(await home.locator('.karavan-shop__menu button').allTextContents(), [
+          'Витрины',
+          'Заявки',
+          'Кнопки в чате',
+          'Настройки',
+        ]);
         assert.equal(await home.locator('#karavanStorefrontMessageText').count(), 0);
         await settleVisualFrame(page);
         await page.screenshot({ path: `${output}/${engineName}-home.png` });
-        await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
-        const publications = page.getByRole('dialog', { name: 'Кнопка в чате', exact: true });
+        await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
+        const publications = page.getByRole('dialog', { name: 'Кнопки в чате', exact: true });
         await publications.getByRole('checkbox', { name: 'Ответ бота на $' }).check();
+        await publications
+          .getByRole('group', { name: 'Кто может вызвать ответ на $', exact: true })
+          .waitFor();
+        await publications.locator('.settings-storefront-editor__preview').waitFor();
+        await settleVisualFrame(page);
+        await page.screenshot({ path: `${output}/${engineName}-publications-enabled.png` });
+        await publications.getByText('Изменить текст', { exact: true }).click();
         const message = publications.getByRole('textbox', { name: /^Текст ответа бота/ });
         await message.fill('Объявления нашего чата');
         await page.evaluate(() => {
@@ -133,7 +145,8 @@ try {
         await publications.getByRole('button', { name: 'Сохранить', exact: true }).click();
         await page.getByText('Блок «Интернет-витрина» сохранен', { exact: true }).waitFor();
         await page.getByRole('button', { name: 'Интернет-витрина', exact: true }).click();
-        await home.getByRole('button', { name: 'Кнопка в чате', exact: true }).click();
+        await home.getByRole('button', { name: 'Кнопки в чате', exact: true }).click();
+        await publications.getByText('Изменить текст', { exact: true }).click();
         assert.equal(await message.inputValue(), 'Объявления нашего чата');
         await settleVisualFrame(page);
         assert.ok(await publications.evaluate((node) => node.scrollWidth <= node.clientWidth + 1));

@@ -338,4 +338,13 @@
   body[data-miniapp-profile='moderation'] .karavan-shop__draft-status {
     padding-block: 8px;
   }
+  body[data-miniapp-profile='moderation'] .karavan-module__setup-rules {
+    display: grid;
+    gap: 14px;
+    margin-block: 12px;
+  }
+  body[data-miniapp-profile='moderation'] .storefront-workspace .karavan-shop__hero button {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }

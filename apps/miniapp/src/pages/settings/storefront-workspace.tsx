@@ -15,12 +15,13 @@ import { SettingsSectionIcon } from '../../components/ui/settings-section-toggle
 
 const pages = {
   home: 'Интернет-витрина',
-  catalog: 'Каталог',
+  catalog: 'Витрины',
   applications: 'Заявки',
   appearance: 'Оформление',
   categories: 'Категории и правила',
-  chats: 'Чаты',
-  publications: 'Кнопка в чате',
+  chats: 'Подключённые чаты',
+  publications: 'Кнопки в чате',
+  settings: 'Настройки',
 } as const;
 export type StorefrontPage = keyof typeof pages;
 type Navigation = {
@@ -171,7 +172,8 @@ export function StorefrontWorkspace({
     () => ({ page, visited, navigate, reportDirty, footerTarget, setBack }),
     [page, visited, navigate, reportDirty, footerTarget, setBack],
   );
-  const goBack = customBack ?? (page !== 'home' ? () => navigate('home') : undefined);
+  const parent = ['appearance', 'categories', 'chats'].includes(page) ? 'settings' : 'home';
+  const goBack = customBack ?? (page !== 'home' ? () => navigate(parent) : undefined);
   return (
     <WorkspaceContext.Provider value={context}>
       <SettingsDrilldownPanel
@@ -191,7 +193,7 @@ export function StorefrontWorkspace({
             <button
               type="button"
               className="storefront-workspace__back"
-              aria-label="Назад к магазину"
+              aria-label="Назад"
               onClick={goBack}
             >
               ←

@@ -121,6 +121,11 @@ export function SettingsStorefrontTextEditor(props: Props) {
     const value = state(field);
     return value.kind === 'mixed' || (value.kind === 'common' && Boolean(value.value));
   });
+  const hasFieldErrors = paths.some((field) => Boolean(props.fields?.error(field)));
+  const [editing, setEditing] = useState(hasFieldErrors);
+  useEffect(() => {
+    if (hasFieldErrors) setEditing(true);
+  }, [hasFieldErrors]);
   const previewButtons =
     variant === 'storefront'
       ? [preview('karavanStorefrontOpenButtonText')]
@@ -144,72 +149,10 @@ export function SettingsStorefrontTextEditor(props: Props) {
       multiline={multiline}
     />
   );
-  const shownButtons = available
-    ? variant === 'storefront'
-      ? buttonFields.slice(0, 1)
-      : publication?.mode === 'chat_marketplace'
-        ? buttonFields.slice(1, 2)
-        : buttonFields.slice(1)
-    : buttonFields;
+  const shownButtons =
+    available && publication?.mode === 'chat_marketplace' ? buttonFields.slice(0, 2) : buttonFields;
   return (
-    <section className="settings-storefront-editor" aria-labelledby="storefront-text-title">
-      <div className="settings-storefront-editor__head">
-        <h3 id="storefront-text-title">Текст и кнопки ответа</h3>
-        <button
-          type="button"
-          className="settings-storefront-editor__reset"
-          aria-label="Вернуть стандартные тексты витрины"
-          title="Вернуть стандартные тексты"
-          disabled={
-            disabled || !hasCustomText || paths.some((field) => state(field).kind === 'loading')
-          }
-          onClick={() => {
-            if (props.fields)
-              props.fields.transact(paths.map((path) => ({ op: 'set', path, value: '' })));
-            else for (const field of paths) props.onChange(field, '');
-            for (const field of paths) props.fields?.setError(field, null);
-            setResetVersion((version) => version + 1);
-          }}
-        >
-          <IconoirSprite variant="iconoir" icon="Undo" aria-hidden />
-        </button>
-      </div>
-      {available ? (
-        <div
-          className="settings-storefront-editor__modes"
-          role="group"
-          aria-label="Сценарий ответа"
-        >
-          {(
-            [
-              ['storefront', 'Есть витрина продавца'],
-              ['directory', 'Нет витрины продавца'],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              className="settings-storefront-editor__mode"
-              key={value}
-              type="button"
-              aria-pressed={variant === value}
-              onClick={() => setVariant(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {textField('karavanStorefrontMessageText', 'Текст ответа бота', true)}
-      <div className="settings-storefront-editor__buttons">
-        {shownButtons.map(([field, label]) =>
-          textField(
-            field,
-            field === 'karavanStorefrontCatalogButtonText' &&
-              publication?.mode === 'chat_marketplace'
-              ? 'Кнопка магазина чата'
-              : label,
-          ),
-        )}
-      </div>
+    <section className="settings-storefront-editor" aria-label="Текст и пример ответа">
       {!network && !available ? (
         <p className="settings-storefront-editor__unavailable" role="status">
           {publication?.mode === 'unavailable' && publication.reason === 'closed'
@@ -218,27 +161,86 @@ export function SettingsStorefrontTextEditor(props: Props) {
         </p>
       ) : null}
       {available ? (
-        <>
-          <h4>Пример ответа</h4>
+        <div
+          className="settings-storefront-editor__preview"
+          aria-label="Предпросмотр сообщения витрины"
+        >
+          <h3>Пример ответа</h3>
           <div
-            className="settings-storefront-editor__preview"
-            aria-label="Предпросмотр сообщения витрины"
+            className="settings-storefront-editor__modes"
+            role="group"
+            aria-label="Сценарий примера"
           >
-            <div className="settings-storefront-editor__message">
-              <span className="settings-storefront-editor__sender">Бот</span>
-              <p>{preview('karavanStorefrontMessageText')}</p>
-            </div>
-            <div className="settings-storefront-editor__preview-buttons">
-              {previewButtons.map((label, index) => (
-                <div className="settings-storefront-editor__preview-button" key={index}>
-                  <span>{label}</span>
-                  <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
-                </div>
-              ))}
-            </div>
+            {(
+              [
+                ['storefront', 'С витриной'],
+                ['directory', 'Без витрины'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                className="settings-storefront-editor__mode"
+                key={value}
+                type="button"
+                aria-pressed={variant === value}
+                onClick={() => setVariant(value)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        </>
+          <div className="settings-storefront-editor__message">
+            <span className="settings-storefront-editor__sender">Бот</span>
+            <p>{preview('karavanStorefrontMessageText')}</p>
+          </div>
+          <div className="settings-storefront-editor__preview-buttons">
+            {previewButtons.map((label, index) => (
+              <div className="settings-storefront-editor__preview-button" key={index}>
+                <span>{label}</span>
+                <IconoirSprite variant="iconoir" icon="ArrowUpRight" aria-hidden />
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
+      <details
+        className="settings-storefront-editor__edit"
+        open={editing}
+        onToggle={(event) => setEditing(event.currentTarget.open)}
+      >
+        <summary>Изменить текст</summary>
+        <div className="settings-storefront-editor__edit-fields">
+          {textField('karavanStorefrontMessageText', 'Текст ответа бота', true)}
+          <div className="settings-storefront-editor__buttons">
+            {shownButtons.map(([field, label]) =>
+              textField(
+                field,
+                field === 'karavanStorefrontCatalogButtonText' &&
+                  publication?.mode === 'chat_marketplace'
+                  ? 'Кнопка магазина чата'
+                  : label,
+              ),
+            )}
+          </div>
+          <button
+            type="button"
+            className="settings-storefront-editor__reset"
+            aria-label="Вернуть стандартные тексты витрины"
+            title="Вернуть стандартные тексты"
+            disabled={
+              disabled || !hasCustomText || paths.some((field) => state(field).kind === 'loading')
+            }
+            onClick={() => {
+              if (props.fields)
+                props.fields.transact(paths.map((path) => ({ op: 'set', path, value: '' })));
+              else for (const field of paths) props.onChange(field, '');
+              for (const field of paths) props.fields?.setError(field, null);
+              setResetVersion((version) => version + 1);
+            }}
+          >
+            <IconoirSprite variant="iconoir" icon="Undo" aria-hidden />
+          </button>
+        </div>
+      </details>
     </section>
   );
 }

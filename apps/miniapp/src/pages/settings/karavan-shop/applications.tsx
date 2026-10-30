@@ -1,6 +1,7 @@
-import { lazy, Suspense, useState } from 'react';
+import { useState } from 'react';
 import { useStorefrontDirty } from '../storefront-workspace';
 import type { MarketplaceApplication } from '@maxim/contracts/karavan-marketplace-management';
+import { ListingContentDisclosure } from './listing-content-disclosure';
 import {
   MutationFailure,
   ShopFailure,
@@ -8,9 +9,7 @@ import {
   useShopMutation,
   useShopQuery,
 } from './runtime';
-const Invitations = lazy(() => import('./invitations'));
-export default function ShopApplications({ canInvite }: { canInvite: boolean }) {
-  const [inviteOpen, setInviteOpen] = useState(false);
+export default function ShopApplications() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [selected, setSelected] = useState<MarketplaceApplication | null>(null);
   const [reason, setReason] = useState('');
@@ -44,16 +43,6 @@ export default function ShopApplications({ canInvite }: { canInvite: boolean }) 
   };
   return (
     <>
-      {canInvite ? (
-        <button type="button" onClick={() => setInviteOpen((value) => !value)}>
-          {inviteOpen ? 'Закрыть приглашения' : 'Пригласить продавцов'}
-        </button>
-      ) : null}
-      {inviteOpen ? (
-        <Suspense fallback={<ShopLoading />}>
-          <Invitations />
-        </Suspense>
-      ) : null}
       <MutationFailure mutation={mutation} />
       {!query.data.applications.length ? <p>Новых заявок нет</p> : null}
       {query.data.applications.map((application) => (
@@ -69,6 +58,7 @@ export default function ShopApplications({ canInvite }: { canInvite: boolean }) 
           application.publishedProfile.name !== application.profile.name ? (
             <p>Сейчас: {application.publishedProfile.name}</p>
           ) : null}
+          <ListingContentDisclosure listingId={application.listingId} />
           {application.canReview ? (
             <div className="karavan-module__entry-actions">
               <button
@@ -77,7 +67,7 @@ export default function ShopApplications({ canInvite }: { canInvite: boolean }) 
                 disabled={mutation.isPending}
                 onClick={() => void decide(application, 'approve').catch(() => {})}
               >
-                Принять
+                Одобрить
               </button>
               <button
                 type="button"

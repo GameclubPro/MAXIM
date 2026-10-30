@@ -13,7 +13,7 @@ export function StorefrontAudience({
   const name = useId();
   return (
     <fieldset className="storefront-audience" disabled={disabled || state.kind === 'loading'}>
-      <legend>Кто может добавить ссылку</legend>
+      <legend>Кто может вызвать ответ на $</legend>
       {([false, true] as const).map((adminsOnly) => (
         <label key={String(adminsOnly)}>
           <input

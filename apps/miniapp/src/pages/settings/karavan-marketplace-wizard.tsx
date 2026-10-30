@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   karavanMarketplaceSetupSchema,
@@ -19,6 +19,7 @@ import {
 } from '../../lib/native-storage';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import { useStorefrontBack, useStorefrontWorkspace } from './storefront-workspace';
+import { changedMarketplaceSetupReview } from './karavan-marketplace-setup-review';
 
 const defaultRules =
   'Продавец отвечает за описание, актуальность предложений и выполнение договорённостей. Размещение витрин — после проверки администратора. Запрещены товары и услуги, нарушающие закон и правила MAX.';
@@ -72,7 +73,9 @@ export default function KaravanMarketplaceWizard({
     chatIds: [chatId],
   });
   const [hydrated, setHydrated] = useState(false);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [checking, setChecking] = useState(false);
+  const submitting = useRef(false);
+  const rulesDetails = useRef<HTMLDetailsElement>(null);
   const [showChats, setShowChats] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [visibleChats, setVisibleChats] = useState(20);
@@ -98,13 +101,27 @@ export default function KaravanMarketplaceWizard({
     staleTime: 30_000,
     retry: false,
   });
-  const preview = useMutation({
-    mutationFn: () =>
-      previewKaravanMarketplace(api, chatId, {
-        chatIds: draft.chatIds,
-        marketplaceId: draft.mode === 'existing' ? draft.existingId : null,
-      }),
+  const previewInput = {
+    chatIds: draft.chatIds,
+    marketplaceId: draft.mode === 'existing' ? draft.existingId : null,
+  };
+  const preview = useQuery({
+    queryKey: ['karavan-setup-preview', actorId, chatId, previewInput],
+    enabled: hydrated && (draft.mode === 'new' || !!draft.existingId),
+    queryFn: () => previewKaravanMarketplace(api, chatId, previewInput),
+    retry: false,
+    refetchOnWindowFocus: false,
   });
+  const previousReview = useRef<typeof preview.data>(undefined);
+  useEffect(() => {
+    if (
+      preview.data &&
+      previousReview.current &&
+      changedMarketplaceSetupReview(previousReview.current, preview.data)
+    )
+      setAccepted(false);
+    previousReview.current = preview.data;
+  }, [preview.data]);
   useEffect(() => {
     let active = true;
     void hydrateMirroredItem(storageKey)
@@ -149,31 +166,17 @@ export default function KaravanMarketplaceWizard({
     setDraft((value) => ({ ...value, ...patch }));
     setNotice(null);
     setAccepted(false);
-    preview.reset();
   };
   const back = () => {
-    if (preview.isPending) return false;
-    if (step === 1) onCancel();
-    else setStep(step === 3 ? 2 : 1);
-    setAccepted(false);
+    if (checking || preview.isFetching) return false;
+    onCancel();
     return true;
   };
   const workspace = useStorefrontWorkspace();
   useStorefrontBack(back, workspace?.page !== 'publications');
-  async function next() {
+  async function submit() {
+    if (!preview.data || !accepted || submitting.current) return;
     setNotice(null);
-    if (step === 1) {
-      if (draft.mode === 'existing') {
-        try {
-          await preview.mutateAsync();
-        } catch (error) {
-          setNotice(describeUserFacingError(error, 'Не удалось проверить выбранный магазин.'));
-          return;
-        }
-      }
-      setStep(2);
-      return;
-    }
     if (
       draft.mode === 'new' &&
       (!draft.name.trim() ||
@@ -190,76 +193,82 @@ export default function KaravanMarketplaceWizard({
             ),
         ))
     ) {
+      if (rulesDetails.current) rulesDetails.current.open = true;
       setNotice(
         'Укажите название и правила. Выберите хотя бы одно направление в каждой категории.',
       );
       return;
     }
+    submitting.current = true;
+    setChecking(true);
     try {
-      const reviewedRevision = preview.data?.target?.marketplace.policyRevision;
-      const latest = await preview.mutateAsync();
-      setAccepted(false);
-      if (
-        draft.mode === 'existing' &&
-        reviewedRevision !== latest.target?.marketplace.policyRevision
-      ) {
-        setNotice('Правила изменились. Проверьте их ещё раз.');
+      const reviewed = preview.data;
+      const refreshed = await preview.refetch();
+      if (refreshed.isError || !refreshed.data) throw refreshed.error;
+      const latest = refreshed.data;
+      const changed = changedMarketplaceSetupReview(reviewed, latest);
+      if (changed) {
+        setAccepted(false);
+        setNotice(
+          changed === 'rules'
+            ? 'Правила изменились. Проверьте их ещё раз.'
+            : 'Подключения изменились. Проверьте выбранные чаты ещё раз.',
+        );
         return;
       }
-      setStep(3);
+      const parsed = karavanMarketplaceSetupSchema.safeParse({
+        operationId: crypto.randomUUID(),
+        chatIds: draft.chatIds,
+        ...(draft.mode === 'new'
+          ? {
+              create: {
+                name: draft.name,
+                admissionPolicy: draft.admissionPolicy,
+                rules: {
+                  text: draft.rules,
+                  allowedCategoryIds: draft.categories,
+                  allowedSubcategoryIds: draft.subcategories.filter((id) =>
+                    options.data?.categories.some(
+                      (category) =>
+                        draft.categories.includes(category.id) &&
+                        category.subcategories.some((sub) => sub.id === id),
+                    ),
+                  ),
+                  categoryOrder: draft.categories,
+                },
+              },
+            }
+          : {
+              existingMarketplaceId: draft.existingId,
+              expectedPolicyRevision: latest.target?.marketplace.policyRevision,
+            }),
+        bindingExpectations: latest.chats.map((chat) => ({
+          chatId: chat.chatId,
+          generation: chat.binding?.generation ?? null,
+          action: !chat.binding
+            ? 'bind_chat'
+            : chat.marketplace?.id === draft.existingId && draft.mode === 'existing'
+              ? chat.binding.state === 'verified'
+                ? 'bind_chat'
+                : 'recover_chat'
+              : 'transfer_chat',
+        })),
+      });
+      if (!parsed.success) {
+        setNotice('Проверьте настройки и повторите проверку подключений.');
+        return;
+      }
+      // FLAG: The parent persists the immutable submitted command before any request.
+      onSubmit(parsed.data);
+      removeMirroredItem(storageKey);
     } catch (error) {
       setNotice(
-        describeUserFacingError(error, 'Не удалось проверить подключения. Повторите попытку.'),
+        describeUserFacingError(error, 'Не удалось проверить подключение. Повторите попытку.'),
       );
+    } finally {
+      submitting.current = false;
+      setChecking(false);
     }
-  }
-  function submit() {
-    if (!preview.data || !accepted) return;
-    const parsed = karavanMarketplaceSetupSchema.safeParse({
-      operationId: crypto.randomUUID(),
-      chatIds: draft.chatIds,
-      ...(draft.mode === 'new'
-        ? {
-            create: {
-              name: draft.name,
-              admissionPolicy: draft.admissionPolicy,
-              rules: {
-                text: draft.rules,
-                allowedCategoryIds: draft.categories,
-                allowedSubcategoryIds: draft.subcategories.filter((id) =>
-                  options.data?.categories.some(
-                    (category) =>
-                      draft.categories.includes(category.id) &&
-                      category.subcategories.some((sub) => sub.id === id),
-                  ),
-                ),
-                categoryOrder: draft.categories,
-              },
-            },
-          }
-        : {
-            existingMarketplaceId: draft.existingId,
-            expectedPolicyRevision: preview.data.target?.marketplace.policyRevision,
-          }),
-      bindingExpectations: preview.data.chats.map((chat) => ({
-        chatId: chat.chatId,
-        generation: chat.binding?.generation ?? null,
-        action: !chat.binding
-          ? 'bind_chat'
-          : chat.marketplace?.id === draft.existingId && draft.mode === 'existing'
-            ? chat.binding.state === 'verified'
-              ? 'bind_chat'
-              : 'recover_chat'
-            : 'transfer_chat',
-      })),
-    });
-    if (!parsed.success) {
-      setNotice('Проверьте настройки и повторите проверку подключений.');
-      return;
-    }
-    // The parent persists the immutable submitted command before any request.
-    onSubmit(parsed.data);
-    removeMirroredItem(storageKey);
   }
   const target = preview.data?.target;
   const eligible =
@@ -280,150 +289,140 @@ export default function KaravanMarketplaceWizard({
     ) ?? [];
   return (
     <div className="karavan-module__wizard">
-      <p role="status">Шаг {step} из 3</p>
-      <h3>
-        {step === 1
-          ? 'Магазин и чаты'
-          : step === 2
-            ? draft.mode === 'new'
-              ? 'Название и правила'
-              : 'Правила выбранного магазина'
-            : 'Проверка подключения'}
-      </h3>
       {notice ? (
         <p role="alert" className="karavan-module__notice">
           {notice}
         </p>
       ) : null}
-      <fieldset className="karavan-module__wizard-fields" disabled={!hydrated || preview.isPending}>
-        {step === 1 ? (
-          <>
+      <fieldset
+        className="karavan-module__wizard-fields"
+        disabled={!hydrated || preview.isFetching || checking}
+      >
+        <>
+          <fieldset className="karavan-module__choices">
+            <legend>Магазин</legend>
+            <label>
+              <input
+                type="radio"
+                name="karavan-setup-mode"
+                checked={draft.mode === 'new'}
+                onChange={() => change({ mode: 'new' })}
+              />
+              Создать магазин
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="karavan-setup-mode"
+                checked={draft.mode === 'existing'}
+                onChange={() => change({ mode: 'existing' })}
+              />
+              Выбрать существующий
+            </label>
+          </fieldset>
+          {draft.mode === 'existing' ? (
             <fieldset className="karavan-module__choices">
-              <legend>Магазин</legend>
-              <label>
-                <input
-                  type="radio"
-                  name="karavan-setup-mode"
-                  checked={draft.mode === 'new'}
-                  onChange={() => change({ mode: 'new' })}
-                />
-                Создать магазин
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="karavan-setup-mode"
-                  checked={draft.mode === 'existing'}
-                  onChange={() => change({ mode: 'existing' })}
-                />
-                Выбрать существующий
-              </label>
+              <legend>Доступные магазины</legend>
+              {available.isPending ? (
+                <p>Загружаем магазины…</p>
+              ) : available.isError ? (
+                <>
+                  <p role="alert">Не удалось загрузить магазины.</p>
+                  <button type="button" onClick={() => void available.refetch()}>
+                    Повторить
+                  </button>
+                </>
+              ) : eligible.length === 0 ? (
+                <p>Нет доступных магазинов.</p>
+              ) : (
+                eligible.map((item) => (
+                  <label key={item.marketplace.id}>
+                    <input
+                      type="radio"
+                      name="karavan-existing"
+                      checked={draft.existingId === item.marketplace.id}
+                      onChange={() => change({ existingId: item.marketplace.id })}
+                    />
+                    {item.marketplace.name}
+                  </label>
+                ))
+              )}
+              {available.hasNextPage ? (
+                <button
+                  type="button"
+                  disabled={available.isFetchingNextPage}
+                  onClick={() => void available.fetchNextPage()}
+                >
+                  Показать ещё
+                </button>
+              ) : null}
             </fieldset>
-            {draft.mode === 'existing' ? (
-              <fieldset className="karavan-module__choices">
-                <legend>Доступные магазины</legend>
-                {available.isPending ? (
-                  <p>Загружаем магазины…</p>
-                ) : available.isError ? (
-                  <>
-                    <p role="alert">Не удалось загрузить магазины.</p>
-                    <button type="button" onClick={() => void available.refetch()}>
-                      Повторить
-                    </button>
-                  </>
-                ) : eligible.length === 0 ? (
-                  <p>Нет магазинов, которые вы можете подключить.</p>
-                ) : (
-                  eligible.map((item) => (
-                    <label key={item.marketplace.id}>
-                      <input
-                        type="radio"
-                        name="karavan-existing"
-                        checked={draft.existingId === item.marketplace.id}
-                        onChange={() => change({ existingId: item.marketplace.id })}
-                      />
-                      {item.marketplace.name}
-                    </label>
-                  ))
-                )}
-                {available.hasNextPage ? (
-                  <button
-                    type="button"
-                    disabled={available.isFetchingNextPage}
-                    onClick={() => void available.fetchNextPage()}
-                  >
-                    Показать ещё магазины
+          ) : null}
+          <p className="karavan-module__selected-chat">
+            {chatTitle || options.data?.chatTitle || 'Текущий чат'}
+          </p>
+          <button type="button" aria-expanded={showChats} onClick={() => setShowChats(!showChats)}>
+            {draft.chatIds.length > 1
+              ? `Выбранные чаты · ${draft.chatIds.length}`
+              : 'Добавить мои чаты'}
+          </button>
+          {showChats ? (
+            <fieldset className="karavan-module__choices">
+              <legend>Чаты магазина</legend>
+              <p>Общие продавцы, правила и порядок витрин.</p>
+              <label className="karavan-module__field">
+                <span>Найти чат</span>
+                <input
+                  value={chatSearch}
+                  onChange={(event) => {
+                    setChatSearch(event.target.value);
+                    setVisibleChats(20);
+                  }}
+                />
+              </label>
+              {chats.isPending ? (
+                <p>Загружаем чаты…</p>
+              ) : chats.isError ? (
+                <>
+                  <p role="alert">Не удалось загрузить чаты.</p>
+                  <button type="button" onClick={() => void chats.refetch()}>
+                    Повторить
                   </button>
-                ) : null}
-              </fieldset>
-            ) : null}
-            <p className="karavan-module__selected-chat">
-              {chatTitle || options.data?.chatTitle || 'Текущий чат'}
-            </p>
-            <button
-              type="button"
-              aria-expanded={showChats}
-              onClick={() => setShowChats(!showChats)}
-            >
-              Добавить мои чаты · {draft.chatIds.length}
-            </button>
-            {showChats ? (
-              <fieldset className="karavan-module__choices">
-                <legend>Чаты общего магазина</legend>
-                <p>Общие продавцы, правила и порядок витрин.</p>
-                <label className="karavan-module__field">
-                  <span>Найти чат</span>
-                  <input
-                    value={chatSearch}
-                    onChange={(event) => {
-                      setChatSearch(event.target.value);
-                      setVisibleChats(20);
-                    }}
-                  />
-                </label>
-                {chats.isPending ? (
-                  <p>Загружаем чаты…</p>
-                ) : chats.isError ? (
-                  <>
-                    <p role="alert">Не удалось загрузить чаты.</p>
-                    <button type="button" onClick={() => void chats.refetch()}>
-                      Повторить
-                    </button>
-                  </>
-                ) : (
-                  matchingChats.slice(0, visibleChats).map((chat) => (
-                    <label key={chat.id}>
-                      <input
-                        type="checkbox"
-                        checked={draft.chatIds.includes(chat.id)}
-                        disabled={draft.chatIds.length >= 20 && !draft.chatIds.includes(chat.id)}
-                        onChange={(event) =>
-                          change({
-                            chatIds: event.target.checked
-                              ? [...draft.chatIds, chat.id]
-                              : draft.chatIds.filter((id) => id !== chat.id),
-                          })
-                        }
-                      />
-                      {chat.title}
-                    </label>
-                  ))
-                )}
-                {!chats.isPending && !chats.isError && matchingChats.length === 0 ? (
-                  <p>Других подходящих чатов нет.</p>
-                ) : null}
-                {matchingChats.length > visibleChats ? (
-                  <button type="button" onClick={() => setVisibleChats((value) => value + 20)}>
-                    Показать ещё чаты
-                  </button>
-                ) : null}
-                {draft.chatIds.length === 20 ? (
-                  <p>За одно подключение можно выбрать до 20 чатов.</p>
-                ) : null}
-              </fieldset>
-            ) : null}
-          </>
-        ) : step === 2 && draft.mode === 'new' ? (
+                </>
+              ) : (
+                matchingChats.slice(0, visibleChats).map((chat) => (
+                  <label key={chat.id}>
+                    <input
+                      type="checkbox"
+                      checked={draft.chatIds.includes(chat.id)}
+                      disabled={draft.chatIds.length >= 20 && !draft.chatIds.includes(chat.id)}
+                      onChange={(event) =>
+                        change({
+                          chatIds: event.target.checked
+                            ? [...draft.chatIds, chat.id]
+                            : draft.chatIds.filter((id) => id !== chat.id),
+                        })
+                      }
+                    />
+                    {chat.title}
+                  </label>
+                ))
+              )}
+              {!chats.isPending && !chats.isError && matchingChats.length === 0 ? (
+                <p>Других подходящих чатов нет.</p>
+              ) : null}
+              {matchingChats.length > visibleChats ? (
+                <button type="button" onClick={() => setVisibleChats((value) => value + 20)}>
+                  Показать ещё чаты
+                </button>
+              ) : null}
+              {draft.chatIds.length === 20 ? (
+                <p>За одно подключение можно выбрать до 20 чатов.</p>
+              ) : null}
+            </fieldset>
+          ) : null}
+        </>
+        {draft.mode === 'new' ? (
           <>
             <label className="karavan-module__field">
               <span>Название магазина</span>
@@ -434,87 +433,91 @@ export default function KaravanMarketplaceWizard({
               />
             </label>
             {options.isPending ? (
-              <p>Загружаем категории…</p>
+              <p role="status">Загружаем категории…</p>
             ) : options.isError ? (
-              <>
-                <p role="alert">Не удалось загрузить категории.</p>
+              <div role="alert">
+                <p>Не удалось загрузить категории.</p>
                 <button type="button" onClick={() => void options.refetch()}>
                   Повторить
                 </button>
-              </>
-            ) : (
-              <fieldset className="karavan-module__choices">
-                <legend>Разрешённые категории</legend>
-                {options.data?.categories.map((category) => (
-                  <div key={category.id}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={draft.categories.includes(category.id)}
-                        onChange={(event) =>
-                          change({
-                            categories: event.target.checked
-                              ? [...draft.categories, category.id]
-                              : draft.categories.filter((id) => id !== category.id),
-                            subcategories: event.target.checked
-                              ? [
-                                  ...new Set([
-                                    ...draft.subcategories,
-                                    ...category.subcategories.map((sub) => sub.id),
-                                  ]),
-                                ]
-                              : draft.subcategories.filter(
-                                  (id) => !category.subcategories.some((sub) => sub.id === id),
-                                ),
-                          })
-                        }
-                      />
-                      {category.label}
-                    </label>
-                    {draft.categories.includes(category.id) && category.subcategories.length ? (
-                      <details className="karavan-module__subcategories">
-                        <summary>
-                          Направления ·{' '}
-                          {
-                            category.subcategories.filter((sub) =>
-                              draft.subcategories.includes(sub.id),
-                            ).length
-                          }{' '}
-                          из {category.subcategories.length}
-                        </summary>
-                        {category.subcategories.map((sub) => (
-                          <label key={sub.id}>
-                            <input
-                              type="checkbox"
-                              checked={draft.subcategories.includes(sub.id)}
-                              onChange={(event) =>
-                                change({
-                                  subcategories: event.target.checked
-                                    ? [...draft.subcategories, sub.id]
-                                    : draft.subcategories.filter((id) => id !== sub.id),
-                                })
-                              }
-                            />
-                            {sub.label}
-                          </label>
-                        ))}
-                      </details>
-                    ) : null}
-                  </div>
-                ))}
-              </fieldset>
-            )}
-            <label className="karavan-module__field">
-              <span>Правила для продавцов</span>
-              <textarea
-                rows={5}
-                maxLength={12000}
-                value={draft.rules}
-                onChange={(event) => change({ rules: event.target.value })}
-              />
-            </label>
+              </div>
+            ) : null}
+            <details ref={rulesDetails} className="karavan-module__setup-rules">
+              <summary>Категории и правила</summary>
+              {options.data ? (
+                <fieldset className="karavan-module__choices">
+                  <legend>Разрешённые категории</legend>
+                  {options.data?.categories.map((category) => (
+                    <div key={category.id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={draft.categories.includes(category.id)}
+                          onChange={(event) =>
+                            change({
+                              categories: event.target.checked
+                                ? [...draft.categories, category.id]
+                                : draft.categories.filter((id) => id !== category.id),
+                              subcategories: event.target.checked
+                                ? [
+                                    ...new Set([
+                                      ...draft.subcategories,
+                                      ...category.subcategories.map((sub) => sub.id),
+                                    ]),
+                                  ]
+                                : draft.subcategories.filter(
+                                    (id) => !category.subcategories.some((sub) => sub.id === id),
+                                  ),
+                            })
+                          }
+                        />
+                        {category.label}
+                      </label>
+                      {draft.categories.includes(category.id) && category.subcategories.length ? (
+                        <details className="karavan-module__subcategories">
+                          <summary>
+                            Направления ·{' '}
+                            {
+                              category.subcategories.filter((sub) =>
+                                draft.subcategories.includes(sub.id),
+                              ).length
+                            }{' '}
+                            из {category.subcategories.length}
+                          </summary>
+                          {category.subcategories.map((sub) => (
+                            <label key={sub.id}>
+                              <input
+                                type="checkbox"
+                                checked={draft.subcategories.includes(sub.id)}
+                                onChange={(event) =>
+                                  change({
+                                    subcategories: event.target.checked
+                                      ? [...draft.subcategories, sub.id]
+                                      : draft.subcategories.filter((id) => id !== sub.id),
+                                  })
+                                }
+                              />
+                              {sub.label}
+                            </label>
+                          ))}
+                        </details>
+                      ) : null}
+                    </div>
+                  ))}
+                </fieldset>
+              ) : null}
+              <label className="karavan-module__field">
+                <span>Правила для продавцов</span>
+                <textarea
+                  rows={5}
+                  maxLength={12000}
+                  value={draft.rules}
+                  onChange={(event) => change({ rules: event.target.value })}
+                />
+              </label>
+            </details>
             <fieldset className="karavan-module__choices">
-              <legend>Приём продавцов</legend>
+              <legend>Приём витрин</legend>
               <label>
                 <input
                   type="radio"
@@ -522,7 +525,7 @@ export default function KaravanMarketplaceWizard({
                   checked={draft.admissionPolicy === 'applications'}
                   onChange={() => change({ admissionPolicy: 'applications' })}
                 />
-                Заявки после проверки
+                Все желающие
               </label>
               <label>
                 <input
@@ -531,22 +534,21 @@ export default function KaravanMarketplaceWizard({
                   checked={draft.admissionPolicy === 'invitation'}
                   onChange={() => change({ admissionPolicy: 'invitation' })}
                 />
-                Только по приглашению
+                По приглашению
               </label>
             </fieldset>
           </>
-        ) : step === 2 ? (
+        ) : draft.existingId ? (
           target ? (
             <>
               <strong>{target.marketplace.name}</strong>
               <p>
                 Витрины: {target.counts.listings} · Чаты: {target.counts.chats}
               </p>
-              <p>Подключаемые чаты получат существующий состав и порядок витрин.</p>
               <p>
                 {target.marketplace.admissionPolicy === 'invitation'
-                  ? 'Продавцы принимаются по приглашению.'
-                  : 'Заявки продавцов рассматривает администратор.'}
+                  ? 'Приём витрин: по приглашению'
+                  : 'Приём витрин: все желающие'}
               </p>
               <p>
                 {target.rules.allowedCategoryIds
@@ -564,33 +566,45 @@ export default function KaravanMarketplaceWizard({
               ) : null}
               <p className="karavan-module__rules">{target.rules.text}</p>
             </>
-          ) : (
-            <p role="alert">Вернитесь к выбору магазина и повторите проверку.</p>
-          )
-        ) : (
+          ) : null
+        ) : null}
+        {preview.isError ? (
+          <div className="karavan-module__notice" role="alert">
+            <p>{describeUserFacingError(preview.error, 'Не удалось проверить подключение.')}</p>
+            <button type="button" onClick={() => void preview.refetch()}>
+              Повторить
+            </button>
+          </div>
+        ) : preview.isFetching ? (
+          <p role="status">Проверяем подключение…</p>
+        ) : null}
+        {preview.data && (draft.mode === 'new' || target) ? (
           <>
-            <strong>{target?.marketplace.name ?? draft.name}</strong>
             <p>
               {draft.mode === 'new'
-                ? 'Создадим черновик. Открытие покупателям — отдельное действие.'
-                : 'Подключим чаты к выбранному магазину. Его доступность для покупателей не изменится.'}
+                ? 'Создадим черновик. Покупателям он пока недоступен.'
+                : 'Подключаемые чаты получат витрины и правила этого магазина.'}
             </p>
-            <ul className="karavan-module__progress">
-              {preview.data?.chats.map((chat) => (
-                <li key={chat.chatId}>
-                  <span>
-                    {chat.title || 'Выбранный чат'}
-                    {chat.binding && chat.marketplace?.id !== draft.existingId ? (
-                      <small>
-                        Прежний магазин отключится. Его продавцы и заказы не переносятся.
-                      </small>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            {preview.data.chats.length > 1 ||
+            preview.data.chats.some(
+              (chat) => chat.binding && chat.marketplace?.id !== draft.existingId,
+            ) ? (
+              <ul className="karavan-module__progress">
+                {preview.data.chats.map((chat) => (
+                  <li key={chat.chatId}>
+                    <span>
+                      {chat.title || 'Выбранный чат'}
+                      {chat.binding && chat.marketplace?.id !== draft.existingId ? (
+                        <small>
+                          Прежний магазин отключится. Его продавцы и заказы не переносятся.
+                        </small>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <fieldset className="karavan-module__choices">
-              <legend>Подтверждение</legend>
               <label>
                 <input
                   type="checkbox"
@@ -601,28 +615,28 @@ export default function KaravanMarketplaceWizard({
               </label>
             </fieldset>
           </>
-        )}
+        ) : null}
         <div className="karavan-module__actions">
           <button
             type="button"
             className="karavan-module__primary"
             disabled={
-              (step === 1 && draft.mode === 'existing' && !draft.existingId) ||
-              (step === 2 && draft.mode === 'new' && !options.data) ||
-              (step === 3 && !accepted)
+              !accepted ||
+              !preview.data ||
+              preview.isError ||
+              (draft.mode === 'existing' && (!draft.existingId || !target)) ||
+              (draft.mode === 'new' && !options.data)
             }
-            onClick={() => (step === 3 ? submit() : void next())}
+            onClick={() => void submit()}
           >
-            {preview.isPending
+            {checking || preview.isFetching
               ? 'Проверяем…'
-              : step === 3
-                ? draft.mode === 'new'
-                  ? 'Создать черновик'
-                  : 'Подключить'
-                : 'Продолжить'}
+              : draft.mode === 'new'
+                ? 'Создать черновик'
+                : 'Подключить'}
           </button>
           <button type="button" onClick={back}>
-            {step === 1 ? 'Отмена' : 'Назад'}
+            Отмена
           </button>
         </div>
       </fieldset>

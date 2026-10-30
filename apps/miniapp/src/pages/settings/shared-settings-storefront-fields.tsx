@@ -71,12 +71,12 @@ export function SharedSettingsStorefrontFields({
       />
       {enabled.kind !== 'common' || enabled.value ? (
         <>
-          <SettingsStorefrontTextEditor fields={fields} scope={scope} />
           <StorefrontAudience
             state={fields.read('karavanStorefrontAdminsOnly')}
             disabled={fields.readOnly}
             onChange={(value) => fields.setScalar('karavanStorefrontAdminsOnly', value)}
           />
+          <SettingsStorefrontTextEditor fields={fields} scope={scope} />
         </>
       ) : null}
     </>
