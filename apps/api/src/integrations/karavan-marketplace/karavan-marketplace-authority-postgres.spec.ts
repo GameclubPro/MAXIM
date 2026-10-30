@@ -5,7 +5,7 @@ import {
 } from './karavan-marketplace-proxy.service';
 import { KaravanMarketplaceBindingStatusService } from './karavan-marketplace-binding-status.service';
 import { KaravanMarketplaceActorAccessService } from './karavan-marketplace-actor-access.service';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient, createPrismaAdapter } from '../../prisma/prisma-client';
@@ -477,6 +477,34 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
       active: false,
       reason: 'binding_changed',
     });
+  });
+
+  it('reports bounded, anonymous binding refusals without changing recovery or access decisions', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const input = await bound();
+    const status = bindingStatus();
+    expect(await status.status(input)).toMatchObject({ active: true });
+    expect(warn).not.toHaveBeenCalled();
+    await db.karavanMarketplaceBindingWitness.updateMany({
+      where: { chatId },
+      data: { routingAuthorityEpoch: null },
+    });
+    await db.chat.update({ where: { id: chatId }, data: { routingVersion: { increment: 1 } } });
+    for (let attempt = 0; attempt < 3; attempt++)
+      expect(await status.status(input)).toMatchObject({
+        active: false,
+        reason: 'binding_changed',
+      });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith({
+      event: 'karavan_marketplace_binding_refused',
+      chatRef: karavanHash({ chatId }).slice(0, 16),
+      reason: 'legacy_route_changed',
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(chatId);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(input.authorityEpoch);
+    expect(await status.status(await bound())).toMatchObject({ active: true });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('persists denial-restoration epoch and requires explicit fresh binding recovery', async () => {

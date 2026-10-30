@@ -59,6 +59,21 @@ export function useKaravanMarketplaceBinding(api: ApiTransport, chatId: string, 
       void queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', chatId] });
     },
     onError: (cause) => {
+      if (
+        cause instanceof ApiRequestError &&
+        cause.status === 409 &&
+        cause.code === 'MARKETPLACE_BINDING_CHANGED' &&
+        !hadUnknownOutcome.current
+      ) {
+        // FLAG: Only a definitively rejected fresh request can be discarded. Never
+        // replay a mutation or discard an earlier unknown outcome to refresh the screen.
+        if (storageKey) removeMirroredItem(storageKey);
+        setRequest(null);
+        setError(null);
+        setRejected(false);
+        void queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', chatId] });
+        return;
+      }
       const definitive =
         cause instanceof ApiRequestError &&
         (cause.code === 'KARAVAN_COMMAND_REJECTED' ||
