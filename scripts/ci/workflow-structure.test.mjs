@@ -137,6 +137,7 @@ test('native race lane lists existing literal test paths without shell operators
   }
   for (const path of [
     'src/max/max-fixed-moderator-assignment-postgres.spec.ts',
+    'src/max/max-moderation-api-budget.redis-integration.spec.ts',
     'src/max/max-fixed-moderator-preservation-postgres.spec.ts',
     'src/webhook/webhook-multibot-fixed-fullpath.spec.ts',
     'src/scripts/cancel-webhook-backlog-v2-postgres.spec.ts',

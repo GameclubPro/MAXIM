@@ -15,6 +15,7 @@ import { ChannelAutoPostScanManager } from '../moderation/channel-auto-post-runt
 import { ChannelPostDemandRuntime } from '../moderation/channel-post-demand-runtime';
 import { createRecoveryGovernorFixture } from '../system/background-runtime-governor.spec-support';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
+import type { EnsureModerationDeleteIntentInput } from '../moderation/moderation-delete-intent.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import {
@@ -878,6 +879,216 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     expect(deletions).toHaveLength(5);
     for (const id of ids) await s.moderation.processWebhookEvent(id);
     expect(s.effects.filter((effect) => effect.method === 'delete')).toEqual(deletions);
+    expect(s.failures).toEqual([]);
+  });
+
+  it('bounds every MAX request for mirrored active-mute stickers while other actors and chats progress', async () => {
+    const s = await fixture(2);
+    const [chatId, otherChatId] = await s.seedCatalog(2, {
+      maxMessageLengthEnabled: false,
+      antiSpamEnabled: false,
+    });
+    const attacker = `muted-attacker-${randomUUID()}`;
+    const otherUser = `muted-independent-${randomUUID()}`;
+    const sourceAt = new Date();
+    const retryUntilAt = new Date(sourceAt.getTime() + 300_000);
+    async function mute(chat: string, userId: string) {
+      return s.prisma.moderationEvent.create({
+        data: {
+          chatId: chat,
+          userId,
+          eventType: 'MEMBER_ACTION',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
+          operator: 'ADMIN',
+          score: 1,
+          createdAt: new Date(sourceAt.getTime() - 1_000),
+          metadata: { mutePermanent: true },
+        },
+      });
+    }
+    async function mirroredSticker(chat: string, userId: string, muteEventId: string) {
+      const messageId = `muted-flood-sticker-${randomUUID()}`;
+      s.messages.set(messageId, {
+        sender: { user_id: userId, is_bot: false },
+        recipient: { chat_id: chat, chat_type: 'chat' },
+        timestamp: sourceAt.getTime(),
+        body: {
+          mid: messageId,
+          text: '',
+          attachments: [{ type: 'sticker', payload: { code: 'fixture-sticker' } }],
+        },
+      });
+      const input: EnsureModerationDeleteIntentInput = {
+        chatId: chat,
+        messageId,
+        subjectUserId: userId,
+        sourceMessageAt: sourceAt,
+        retryUntilAt,
+        routingPolicy: 'origin_first',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        reasonKey: 'MUTE_ACTIVE_DELETE',
+        ruleCode: 'MUTE_ACTIVE_DELETE',
+        event: { userId, eventType: 'MESSAGE', metadata: { muteEventId } },
+      };
+      const ids = await Promise.all(
+        s.bots.map((bot) =>
+          s.intents.ensureIntent({ ...input, originBotId: bot.id }, { enqueue: false }),
+        ),
+      );
+      const id = ids[0]!.intentId;
+      if (!id) throw new Error('Expected a durable active-mute DELETE intent');
+      expect(ids.map((row) => row.intentId)).toEqual(s.bots.map(() => id));
+      return { id, messageId };
+    }
+    const attackMute = await mute(chatId!, attacker);
+    const independentMute = await mute(chatId!, otherUser);
+    const otherChatMute = await mute(otherChatId!, attacker);
+    const stickers: Array<Awaited<ReturnType<typeof mirroredSticker>>> = [];
+    for (let index = 0; index < 40; index++)
+      stickers.push(await mirroredSticker(chatId!, attacker, attackMute.id));
+
+    // FLAG: Count every real adapter request, including global source GETs and bot/author probes.
+    // No webhook work or retry sweep is scheduled in this isolated durable-intent attempt window.
+    const requestsBefore = s.requests.length;
+    const attemptsStartedAt = Date.now();
+    let requestsAtFirstDenial: number | undefined;
+    for (const sticker of stickers) {
+      const attemptRequestsBefore = s.requests.length;
+      const result = await s.intents.attemptIntent(sticker.id);
+      expect(s.requests.length - attemptRequestsBefore).toBeLessThanOrEqual(12);
+      if (requestsAtFirstDenial !== undefined)
+        expect(s.requests).toHaveLength(requestsAtFirstDenial);
+      if (!result.confirmed) requestsAtFirstDenial ??= s.requests.length;
+    }
+    const attackRequests = s.requests.slice(requestsBefore);
+    const refillAllowance = Math.ceil(((Date.now() - attemptsStartedAt) * 120) / 60_000);
+    expect(attackRequests.length).toBeGreaterThan(0);
+    expect(attackRequests.length).toBeLessThanOrEqual(72 + refillAllowance);
+    expect(requestsAtFirstDenial).toBeDefined();
+    expect(attackRequests.some((call) => call.method === 'get' && call.path === '/messages')).toBe(
+      true,
+    );
+    expect(
+      attackRequests.some(
+        (call) =>
+          call.method === 'get' &&
+          call.path.endsWith('/members') &&
+          call.params?.user_ids === attacker,
+      ),
+    ).toBe(true);
+    const stored = await s.prisma.moderationDeleteIntent.findMany({
+      where: { id: { in: stickers.map((sticker) => sticker.id) } },
+      include: { reasons: true },
+    });
+    expect(stored).toHaveLength(stickers.length);
+    expect(stored.some((row) => row.status === 'SUCCEEDED')).toBe(true);
+    const deferred = stored.filter((row) => row.status !== 'SUCCEEDED');
+    expect(deferred.length).toBeGreaterThan(0);
+    for (const row of stored) {
+      expect(row.reasons).toHaveLength(1);
+      expect(row.retryUntilAt).toEqual(retryUntilAt);
+      expect(row.sourceMessageAt).toEqual(sourceAt);
+      if (row.status === 'SUCCEEDED') {
+        expect(row.remoteDeleteSucceededAt).not.toBeNull();
+        expect(s.messages.has(row.messageId)).toBe(false);
+        expect(row.reasons[0]!.metadata).toEqual(
+          expect.objectContaining({ moderationDeleteVerified: true }),
+        );
+      } else {
+        expect(['RETRYABLE', 'EXPIRED']).toContain(row.status);
+        expect(row).toMatchObject({
+          leaseToken: null,
+          leaseExpiresAt: null,
+          deleteDispatchStartedAt: null,
+          remoteDeleteSucceededAt: null,
+          succeededBotId: null,
+        });
+        expect(s.messages.has(row.messageId)).toBe(true);
+        expect(row.reasons[0]!.metadata).not.toEqual(
+          expect.objectContaining({ moderationDeleteVerified: true }),
+        );
+        expect(s.effects.some((effect) => effect.messageId === row.messageId)).toBe(false);
+      }
+    }
+    const requestsAfterFlood = s.requests.length;
+    for (const row of deferred) await s.intents.attemptIntent(row.id);
+    expect(s.requests).toHaveLength(requestsAfterFlood);
+
+    for (const [chat, userId, eventId] of [
+      [chatId!, otherUser, independentMute.id],
+      [otherChatId!, attacker, otherChatMute.id],
+    ] as const) {
+      const independent = await mirroredSticker(chat, userId, eventId);
+      expect(await s.intents.attemptIntent(independent.id)).toMatchObject({
+        confirmed: true,
+        status: 'SUCCEEDED',
+      });
+      await waitForUserDelete(s, chat, independent.messageId);
+    }
+    expect(s.effects.every((effect) => effect.method === 'delete')).toBe(true);
+    expect(s.failures).toEqual([]);
+  });
+
+  it('revokes a queued active-mute deletion when the exact author becomes an administrator', async () => {
+    const s = await fixture(2);
+    const [chatId] = await s.seedCatalog(1, { maxMessageLengthEnabled: false });
+    const mute = await s.prisma.moderationEvent.create({
+      data: {
+        chatId: chatId!,
+        userId: 'fixture-user',
+        eventType: 'MEMBER_ACTION',
+        ruleCode: 'MANUAL_MUTE',
+        action: 'MUTE',
+        operator: 'ADMIN',
+        score: 1,
+        createdAt: new Date(Date.now() - 1_000),
+        metadata: { mutePermanent: true },
+      },
+    });
+    const messageId = `muted-new-admin-${randomUUID()}`;
+    const at = source(s, chatId!, messageId);
+    const ensured = await s.intents.ensureIntent(
+      {
+        chatId: chatId!,
+        messageId,
+        subjectUserId: 'fixture-user',
+        sourceMessageAt: at,
+        originBotId: s.bots[0]!.id,
+        routingPolicy: 'origin_first',
+        entityType: 'CHAT',
+        messageAuthorKind: 'user',
+        reasonKey: 'MUTE_ACTIVE_DELETE',
+        ruleCode: 'MUTE_ACTIVE_DELETE',
+        event: { userId: 'fixture-user', eventType: 'MESSAGE', metadata: { muteEventId: mute.id } },
+      },
+      { enqueue: false },
+    );
+    if (!ensured.intentId) throw new Error('Expected a queued active-mute DELETE intent');
+    s.allowAdminUser('fixture-user');
+    expect(await s.intents.attemptIntent(ensured.intentId)).toMatchObject({
+      confirmed: false,
+      status: 'FAILED_TERMINAL',
+    });
+    const stored = await s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+      where: { id: ensured.intentId },
+      include: { reasons: true },
+    });
+    expect(stored.remoteDeleteSucceededAt).toBeNull();
+    expect(stored.reasons[0]!.metadata).not.toEqual(
+      expect.objectContaining({ moderationDeleteVerified: true }),
+    );
+    expect(s.messages.has(messageId)).toBe(true);
+    expect(s.effects).toEqual([]);
+    expect(
+      s.requests.some(
+        (call) =>
+          call.method === 'get' &&
+          call.path.endsWith('/members') &&
+          call.params?.user_ids === 'fixture-user',
+      ),
+    ).toBe(true);
     expect(s.failures).toEqual([]);
   });
 
