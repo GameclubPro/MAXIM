@@ -13,6 +13,7 @@ const admin = new pg.Pool({ connectionString: url, max: 1 });
 const pool = new pg.Pool({
   connectionString: url,
   max: 4,
+  application_name: schema,
   options: `-c search_path=${schema} -c timezone=UTC`,
 });
 const store = new Store(pool, true);
@@ -419,7 +420,8 @@ test('policy locking serializes period lengthening against final dispatch in eit
     while (Date.now() < deadline) {
       const count = (
         await admin.query<{ count: number }>(
-          "SELECT COUNT(*)::int AS count FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%eraser_policies%' AND query LIKE '%FOR UPDATE%'",
+          "SELECT COUNT(*)::int AS count FROM pg_stat_activity WHERE application_name=$1 AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%eraser_policies%' AND query LIKE '%FOR UPDATE%'",
+          [schema],
         )
       ).rows[0]!.count;
       if (count > 0) return;
