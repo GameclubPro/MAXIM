@@ -349,7 +349,7 @@ export class KaravanMarketplaceAuthorityService {
         });
         const chat = await tx.chat.findUniqueOrThrow({
           where: { id: scope.chatId },
-          select: { routingVersion: true },
+          select: { routingVersion: true, commerceRoutingEpoch: true },
         });
         const membership = await tx.chatBotMembership.findUniqueOrThrow({
           where: { chatId_botId: { chatId: scope.chatId, botId: witness.botId } },
@@ -368,6 +368,7 @@ export class KaravanMarketplaceAuthorityService {
             chatId: scope.chatId,
             botId: witness.botId,
             routingVersion: chat.routingVersion,
+            routingAuthorityEpoch: chat.commerceRoutingEpoch,
             botRevocationEpoch: membership.commerceRevocationEpoch,
             lifecycleEventAt: membership.lifecycleEventAt,
           },

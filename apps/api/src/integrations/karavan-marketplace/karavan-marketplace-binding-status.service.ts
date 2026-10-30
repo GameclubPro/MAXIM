@@ -91,6 +91,7 @@ export class KaravanMarketplaceBindingStatusService {
         primaryBotId: true,
         botId: true,
         routingVersion: true,
+        commerceRoutingEpoch: true,
       },
     });
     const membership = await tx.chatBotMembership.findUnique({
@@ -111,7 +112,11 @@ export class KaravanMarketplaceBindingStatusService {
       witness.botId !== input.botId ||
       chat?.entityType !== 'CHAT' ||
       (chat.fixedModeratorBotId ?? chat.primaryBotId ?? chat.botId) !== input.botId ||
-      witness.routingVersion !== chat.routingVersion ||
+      // FLAG: Old witnesses have no stable route history. Preserve their strict legacy
+      // check; new witnesses survive cache refreshes but fence real switch-away-and-back.
+      (witness.routingAuthorityEpoch === null
+        ? witness.routingVersion !== chat.routingVersion
+        : witness.routingAuthorityEpoch !== chat.commerceRoutingEpoch) ||
       membership?.status !== 'ACTIVE' ||
       witness.botRevocationEpoch !== membership.commerceRevocationEpoch ||
       ((witness.lifecycleEventAt?.getTime() ?? null) !==
@@ -124,7 +129,7 @@ export class KaravanMarketplaceBindingStatusService {
     )
       return null;
     return karavanHash({
-      routingVersion: chat.routingVersion,
+      routingAuthorityEpoch: witness.routingAuthorityEpoch ?? chat.routingVersion,
       // FLAG: Positive observation timestamps are not revocations. The database epoch
       // retains real removal/denial/lifecycle changes even after a later positive probe.
       botRevocationEpoch: membership.commerceRevocationEpoch,

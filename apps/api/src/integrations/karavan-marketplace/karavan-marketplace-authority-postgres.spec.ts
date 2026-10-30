@@ -385,6 +385,27 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     ).toMatchObject({ phase: 'pending' });
   });
 
+  it('keeps the original binding through positive membership refresh and routing cache reconciliation', async () => {
+    const input = await bound();
+    const status = bindingStatus();
+    expect(await status.status(input)).toMatchObject({ active: true });
+    for (let entry = 0; entry < 3; entry += 1) {
+      await db.chatBotMembership.update({
+        where: { chatId_botId: { chatId, botId } },
+        data: { botAccessState: 'CONFIRMED_ADMIN', botAccessCheckedAt: new Date() },
+      });
+      // The real membership trigger schedules this operational cache reconciliation.
+      const pending = await db.$queryRaw<Array<{ chat_id: string }>>`
+        SELECT chat_id FROM chat_routing_reconcile_requests WHERE chat_id=${chatId}`;
+      expect(pending).toHaveLength(1);
+      await db.chat.update({ where: { id: chatId }, data: { routingVersion: { increment: 1 } } });
+      expect(await status.status(input)).toMatchObject({ active: true, reason: 'active' });
+      // A new Major session obtains its own actor proof while the original binding survives.
+      const proof = await service.issue(scope(), principal);
+      expect(await service.introspect(proof)).toMatchObject({ chatId, botId, actorMaxUserId });
+    }
+  });
+
   it('public status has no human admin dependency and fences bot switch-away-and-back even in the positive cache', async () => {
     const input = await bound();
     const status = bindingStatus();
@@ -401,6 +422,63 @@ postgres('Karavan exact authority and actor-bound handoffs', () => {
     });
     expect(await status.status(input)).toMatchObject({ active: false, reason: 'binding_changed' });
   });
+  it.each(['fixedModeratorBotId', 'primaryBotId', 'botId'] as const)(
+    'retains a durable fence when effective %s changes away and back',
+    async (field) => {
+      await db.chat.update({
+        where: { id: chatId },
+        data: {
+          fixedModeratorBotId: null,
+          primaryBotId: null,
+          botId: null,
+          [field]: botId,
+        },
+      });
+      const input = await bound();
+      expect(await bindingStatus().status(input)).toMatchObject({ active: true });
+      await db.chat.update({ where: { id: chatId }, data: { [field]: 'other_bot' } });
+      await db.chat.update({ where: { id: chatId }, data: { [field]: botId } });
+      expect(await bindingStatus().status(input)).toMatchObject({
+        active: false,
+        reason: 'binding_changed',
+      });
+    },
+  );
+
+  it('preserves fixed-moderator authority when only fallback routing metadata changes', async () => {
+    await db.chat.update({ where: { id: chatId }, data: { fixedModeratorBotId: botId } });
+    const input = await bound();
+    await db.chat.update({
+      where: { id: chatId },
+      data: { primaryBotId: 'other_bot', title: 'New title', routingVersion: { increment: 1 } },
+    });
+    expect(await bindingStatus().status(input)).toMatchObject({ active: true });
+  });
+
+  it('retains a durable fence for a changed entity type, including restoration', async () => {
+    const input = await bound();
+    await db.chat.update({ where: { id: chatId }, data: { entityType: 'CHANNEL' } });
+    await db.chat.update({ where: { id: chatId }, data: { entityType: 'CHAT' } });
+    expect(await bindingStatus().status(input)).toMatchObject({
+      active: false,
+      reason: 'binding_changed',
+    });
+  });
+
+  it('never invents stable routing history for a legacy binding witness', async () => {
+    const input = await bound();
+    await db.karavanMarketplaceBindingWitness.updateMany({
+      where: { chatId },
+      data: { routingAuthorityEpoch: null },
+    });
+    expect(await bindingStatus().status(input)).toMatchObject({ active: true });
+    await db.chat.update({ where: { id: chatId }, data: { routingVersion: { increment: 1 } } });
+    expect(await bindingStatus().status(input)).toMatchObject({
+      active: false,
+      reason: 'binding_changed',
+    });
+  });
+
   it('persists denial-restoration epoch and requires explicit fresh binding recovery', async () => {
     const input = await bound();
     const status = bindingStatus();
