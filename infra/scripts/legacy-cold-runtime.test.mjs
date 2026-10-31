@@ -398,3 +398,101 @@ test('diagnostic property getters cannot replace the original startup failure', 
   assert.equal(h.apiStarts().length, 0);
   assert.doesNotMatch(JSON.stringify(h.events), /private-getter/u);
 });
+
+function synchronousRuntimeHarness({ stopped = false, failCommand, report } = {}) {
+  const rows = legacyColdFleet(stopped);
+  const calls = [];
+  const events = [];
+  const runtime = createLegacyColdRuntime({
+    bindings,
+    baseline: inspectLegacyColdGenerations(legacyColdFleet(), bindings),
+    run: (_executable, args) => {
+      calls.push([...args]);
+      if (args[0] === 'stop') {
+        for (const row of rows) Object.assign(row.State, { Running: false, Status: 'exited' });
+      }
+      failCommand?.(args);
+      if (args[0] === 'ps') return rows.map((row) => row.Id).join('\n');
+      if (args[0] === 'inspect') return JSON.stringify(rows);
+      assert.equal(args[0], 'stop');
+      return '';
+    },
+    report: (event) => {
+      events.push(event);
+      report?.(event);
+    },
+  });
+  return { runtime, rows, calls, events };
+}
+
+for (const [stage, command] of [
+  ['stopRuntime', 'ps'],
+  ['stopRuntime', 'inspect'],
+  ['stopRuntime', 'stop'],
+  ['readStoppedRuntime', 'ps'],
+  ['readStoppedRuntime', 'inspect'],
+  ['readRuntimeIdentity', 'ps'],
+  ['readRuntimeIdentity', 'inspect'],
+])
+  test(`${stage} ${command} failure stays synchronous and reports only safe process fields`, () => {
+    const original = Object.assign(new Error('private-command-and-token'), {
+      code: 'ETIMEDOUT',
+      status: 7,
+      signal: 'SIGTERM',
+      stdout: 'private-output',
+      stderr: 'private-error',
+      spawnargs: ['private-argument'],
+    });
+    const h = synchronousRuntimeHarness({
+      stopped: stage === 'readStoppedRuntime',
+      failCommand: (args) => {
+        if (args[0] === command) throw original;
+      },
+      report: () => {
+        throw new Error('private-diagnostic-write-failed');
+      },
+    });
+    assert.throws(
+      () => h.runtime[stage](),
+      (error) => error === original,
+    );
+    assert.equal(h.calls.filter((args) => args[0] === command).length, 1);
+    const failure = h.events.find((event) => event.event === 'failed');
+    assert.equal(failure?.stage, stage);
+    assert.equal(failure.command, command);
+    assert.equal(failure.code, 'unclassified_failure');
+    assert.equal(failure.spawnCode, 'ETIMEDOUT');
+    assert.equal(failure.exitCode, 7);
+    assert.equal(failure.signal, 'SIGTERM');
+    assert.doesNotMatch(JSON.stringify(h.events), /private-|spawnargs|stdout|stderr/u);
+    if (command === 'stop') assert.ok(h.rows.every((row) => row.State.Running === false));
+  });
+
+test('synchronous read diagnostics distinguish a failed guard from a completed Docker command', () => {
+  const h = synchronousRuntimeHarness({ stopped: true });
+  h.rows[0].State.Paused = true;
+  assert.throws(() => h.runtime.readStoppedRuntime(), { message: 'runtime_generation_unproved' });
+  const failure = h.events.find((event) => event.event === 'failed');
+  assert.equal(failure?.stage, 'readStoppedRuntime');
+  assert.equal(failure.code, 'runtime_generation_unproved');
+  assert.equal(Object.hasOwn(failure, 'command'), false);
+  const serialized = JSON.stringify(h.events);
+  for (const value of [bindings.targetSha, bindings.targetImageId, ...h.rows.map((row) => row.Id)])
+    assert.equal(serialized.includes(value), false);
+  assert.doesNotMatch(serialized, /Config|HostConfig|DATABASE_URL|REDIS_URL/u);
+});
+
+test('successful stop and reads preserve synchronous results and report complete stages', () => {
+  const h = synchronousRuntimeHarness();
+  assert.equal(h.runtime.stopRuntime(), undefined);
+  assert.equal(h.runtime.readStoppedRuntime().complete, true);
+  for (const row of h.rows) Object.assign(row.State, { Running: true, Status: 'running' });
+  assert.equal(h.runtime.readRuntimeIdentity().exactGenerationCount, 14);
+  assert.deepEqual(
+    h.events.map(({ stage, event }) => [stage, event]),
+    ['stopRuntime', 'readStoppedRuntime', 'readRuntimeIdentity'].flatMap((stage) => [
+      [stage, 'begin'],
+      [stage, 'complete'],
+    ]),
+  );
+});

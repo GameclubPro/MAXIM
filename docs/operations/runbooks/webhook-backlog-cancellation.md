@@ -17,6 +17,12 @@ require re-attestation through the identical request; do not infer that an unkno
 owned or change the journal to pass. Historical direct-host emergency exceptions do not waive
 the normal connector's exact-SHA CI gate.
 
+Runtime diagnostics identify the stop, stopped-readback, startup or running-readback stage and
+allowlisted command/failure metadata, without Docker arguments, stderr or inventory. A command
+failure may occur after containers changed state; re-attest the exact captured generations before
+continuing the identical request. These diagnostics neither establish a missing-object race as
+the cause nor authorize retries, changed scope or manual journal completion.
+
 ## Exact nominated sources: v2
 
 Prefer v2 when the operator elects to cancel a finite list of old started, unfinished
