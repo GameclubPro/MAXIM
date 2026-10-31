@@ -222,6 +222,8 @@ export const karavanMarketplaceModuleSchema = z.object({
   ),
   counts: z.object({
     listings: z.number().int().nonnegative(),
+    readyListings: z.number().int().nonnegative().optional(),
+    approvedListings: z.number().int().nonnegative().optional(),
     pendingApplications: z.number().int().nonnegative(),
     chats: z.number().int().nonnegative(),
   }),

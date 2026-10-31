@@ -46,6 +46,9 @@ export const marketplaceManagementOperationSchema = /* @__PURE__ */ (() =>
   z.discriminatedUnion('operation', [
     z.object({ operation: z.literal('appearance') }).strict(),
     z
+      .object({ operation: z.literal('appearance_apply'), input: marketplaceAppearanceSaveSchema })
+      .strict(),
+    z
       .object({ operation: z.literal('appearance_save'), input: marketplaceAppearanceSaveSchema })
       .strict(),
     z
@@ -145,6 +148,10 @@ export const marketplaceManagementRequestSchema = /* @__PURE__ */ (() =>
 export const marketplaceManagementResponseSchema = /* @__PURE__ */ (() =>
   z.discriminatedUnion('operation', [
     z.object({ operation: z.literal('appearance'), data: marketplaceAppearanceResponseSchema }),
+    z.object({
+      operation: z.literal('appearance_apply'),
+      data: marketplaceAppearanceResponseSchema,
+    }),
     z.object({
       operation: z.literal('appearance_save'),
       data: marketplaceAppearanceResponseSchema,

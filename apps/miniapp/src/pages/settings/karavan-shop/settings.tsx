@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import type { KaravanMarketplaceModule } from '@maxim/contracts/karavan-marketplace';
 import { SettingsSectionToggle } from '../../../components/ui/settings-section-toggle';
 import {
@@ -11,19 +11,44 @@ import { SellerAccessAction, useSellerAccess } from './seller-access';
 
 const Invitations = lazy(() => import('./invitations'));
 
-export default function ShopSettings({ module }: { module: KaravanMarketplaceModule }) {
+export default function ShopSettings({
+  module,
+  hasPublications,
+  availability,
+}: {
+  module: KaravanMarketplaceModule;
+  hasPublications: boolean;
+  availability: ReactNode;
+}) {
   const workspace = useStorefrontWorkspace();
   const marketplace = module.marketplace!;
   const canManage = module.permissions.includes('manage_marketplace');
   const access = useSellerAccess();
   const [policy, setPolicy] = useState<typeof marketplace.admissionPolicy | null>(null);
-  const mutation = useShopMutation(() => setPolicy(null));
+  const mutation = useShopMutation({ owner: 'settings', page: 'settings' }, () => setPolicy(null));
+  useEffect(() => {
+    if (
+      mutation.pendingCommand?.operation === 'settings' &&
+      mutation.pendingCommand.input.admissionPolicy
+    )
+      setPolicy(mutation.pendingCommand.input.admissionPolicy);
+  }, [mutation.pendingCommand]);
   const value = policy ?? marketplace.admissionPolicy;
   const dirty = value !== marketplace.admissionPolicy;
   useStorefrontDirty('admission', dirty);
   return (
     <>
       <div className="karavan-shop__menu">
+        {hasPublications ? (
+          <SettingsSectionToggle
+            title="Объявления в чате"
+            icon="send"
+            tone="sky"
+            open={false}
+            controls="karavan-shop-publications"
+            onClick={() => workspace?.navigate('publications')}
+          />
+        ) : null}
         {canManage ? (
           <>
             <SettingsSectionToggle
@@ -58,13 +83,7 @@ export default function ShopSettings({ module }: { module: KaravanMarketplaceMod
       {canManage ? (
         <fieldset
           className="karavan-module__choices"
-          disabled={
-            mutation.isPending ||
-            mutation.isError ||
-            access.sharing ||
-            access.mutation.isPending ||
-            access.mutation.isError
-          }
+          disabled={mutation.editingBlocked || access.sharing || access.mutation.editingBlocked}
         >
           <legend>Кто может подать заявку</legend>
           {(
@@ -98,7 +117,7 @@ export default function ShopSettings({ module }: { module: KaravanMarketplaceMod
           <button
             type="button"
             className="karavan-module__primary"
-            disabled={mutation.isPending || mutation.isError}
+            disabled={mutation.blocked}
             onClick={() =>
               mutation.mutate({
                 operation: 'settings',
@@ -114,6 +133,7 @@ export default function ShopSettings({ module }: { module: KaravanMarketplaceMod
           </button>
         </StorefrontActions>
       ) : null}
+      {availability}
     </>
   );
 }

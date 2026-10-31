@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { canShareNativeContent, shareNativeContent } from '../../../lib/max-bridge';
+import { canShareNativeContent, openMaxBotLink, shareNativeContent } from '../../../lib/max-bridge';
 import { MutationFailure, useShop, useShopMutation } from './runtime';
 import { sellerApplicationUrl } from './shop-journey';
 
@@ -17,11 +17,9 @@ function useSellerAccessState() {
   const [copyError, setCopyError] = useState(false);
   const [sharing, setSharing] = useState(false);
   const epoch = useRef(0);
-  const invitationAttempt = useRef<{ commandId: string; epoch: number } | null>(null);
-  const mutation = useShopMutation();
+  const mutation = useShopMutation({ owner: 'seller-invitation', page: 'settings' });
   const clear = () => {
     epoch.current++;
-    invitationAttempt.current = null;
     setLink(null);
     setRevealed(false);
     setCopied(false);
@@ -41,28 +39,24 @@ function useSellerAccessState() {
     return () => clearTimeout(timer);
   }, [copied]);
   useEffect(() => {
+    const response = mutation.receipt?.response;
     if (
       !allowed ||
       !invitation ||
       !mutation.isSuccess ||
-      mutation.variables?.operation !== 'invitation_create' ||
-      invitationAttempt.current?.commandId !== mutation.variables.input.commandId ||
-      invitationAttempt.current.epoch !== epoch.current ||
-      !mutation.data ||
-      !('url' in mutation.data) ||
-      !('id' in mutation.data)
+      response?.operation !== 'invitation_create'
     )
       return;
     setLink({
-      id: mutation.data.id,
-      url: mutation.data.url as string | null,
-      expiresAt: Date.parse(mutation.data.expiresAt),
+      id: response.data.id,
+      url: response.data.url,
+      expiresAt: Date.parse(response.data.expiresAt),
     });
     setRevealed(true);
-  }, [allowed, invitation, mutation.isSuccess, mutation.data, mutation.variables]);
+  }, [allowed, invitation, mutation.isSuccess, mutation.receipt]);
   const url = invitation ? (link?.url ?? null) : publicUrl;
   const share = async (copyOnly = false) => {
-    if (!allowed || mutation.isPending || mutation.isError || sharing) return;
+    if (!allowed || mutation.blocked || sharing) return;
     const current = ++epoch.current;
     setSharing(true);
     setCopied(false);
@@ -73,7 +67,6 @@ function useSellerAccessState() {
       let target = url;
       if (invitation && (!link || link.expiresAt <= Date.now())) {
         const commandId = crypto.randomUUID();
-        invitationAttempt.current = { commandId, epoch: current };
         const result = await mutation.mutateAsync({
           operation: 'invitation_create',
           input: {
@@ -132,13 +125,36 @@ export function useSellerAccess() {
   if (!value) throw new Error('Missing seller access');
   return value;
 }
+export function AddOwnOfferAction({
+  primary = false,
+  storeId,
+}: {
+  primary?: boolean;
+  storeId?: string;
+}) {
+  const { module } = useShop();
+  const target = module.marketplace;
+  const url =
+    target && target.status !== 'archived'
+      ? sellerApplicationUrl(module.sellerBotUrl, target.id, storeId)
+      : null;
+  if (!url) return null;
+  return (
+    <button
+      type="button"
+      className={primary ? 'karavan-module__primary' : undefined}
+      onClick={() => openMaxBotLink(url)}
+    >
+      {storeId ? 'Добавить в мой магазин' : 'Добавить свой товар или услугу'}
+    </button>
+  );
+}
 export function SellerAccessAction({ primary = false }: { primary?: boolean }) {
   const access = useSellerAccess();
   if (!access.allowed) return null;
   const disabled =
     access.sharing ||
-    access.mutation.isPending ||
-    access.mutation.isError ||
+    access.mutation.blocked ||
     (access.invitation ? !!access.link && !access.url : !access.url);
   return (
     <div className="karavan-module__actions karavan-shop__seller-access">

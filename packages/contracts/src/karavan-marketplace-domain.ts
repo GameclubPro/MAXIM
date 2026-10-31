@@ -294,6 +294,7 @@ export const marketplaceApplicationSchema = /* @__PURE__ */ (() =>
     decidedAt: instant.nullable(),
     reason: z.string().nullable(),
     canReview: z.boolean(),
+    canPublishOwn: z.boolean().optional(),
   }))();
 export const marketplaceApplicationListResponseSchema = /* @__PURE__ */ (() =>
   z.object({

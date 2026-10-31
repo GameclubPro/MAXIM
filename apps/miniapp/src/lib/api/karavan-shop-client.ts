@@ -1,5 +1,6 @@
 import {
   marketplaceManagementResponseSchema,
+  marketplaceManagementRequestSchema,
   type MarketplaceManagementOperation,
   type MarketplaceManagementRequest,
   type MarketplaceManagementResponse,
@@ -21,13 +22,33 @@ export async function manageKaravanShop<K extends ShopCommand['operation']>(
   command: Extract<ShopCommand, { operation: K }>,
   signal?: AbortSignal,
 ): Promise<ShopResponse<K>> {
+  const result = await dispatchShopRequest(api, prepareShopRequest(scope, command), signal);
+  return result.data as ShopResponse<K>;
+}
+export function prepareShopRequest(
+  scope: ShopScope,
+  command: ShopCommand,
+): MarketplaceManagementRequest {
   const commandId =
     'input' in command && 'commandId' in command.input
       ? command.input.commandId
       : crypto.randomUUID();
-  const request: MarketplaceManagementRequest = { ...scope, commandId, command };
+  return marketplaceManagementRequestSchema.parse({
+    chatId: scope.chatId,
+    marketplaceId: scope.marketplaceId,
+    expectedBindingGeneration: scope.expectedBindingGeneration,
+    commandId,
+    command,
+  });
+}
+export async function dispatchShopRequest(
+  api: ApiTransport,
+  input: MarketplaceManagementRequest,
+  signal?: AbortSignal,
+): Promise<MarketplaceManagementResponse> {
+  const request = marketplaceManagementRequestSchema.parse(input);
   const result = marketplaceManagementResponseSchema.parse(
-    await api.request(`/chats/${encodeURIComponent(scope.chatId)}/karavan-marketplace/manage`, {
+    await api.request(`/chats/${encodeURIComponent(request.chatId)}/karavan-marketplace/manage`, {
       method: 'POST',
       body: JSON.stringify(request),
       signal,
@@ -35,7 +56,7 @@ export async function manageKaravanShop<K extends ShopCommand['operation']>(
       retryMutationOnTransportError: false,
     }),
   );
-  if (result.operation !== command.operation)
+  if (result.operation !== request.command.operation)
     throw new Error('Ответ магазина изменился. Обновите экран.');
-  return result.data as ShopResponse<K>;
+  return result;
 }

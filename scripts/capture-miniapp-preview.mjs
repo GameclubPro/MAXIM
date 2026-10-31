@@ -4559,6 +4559,12 @@ async function assertFavoriteCategoryIndicatorsContained(page, scenario) {
         const row = card.querySelector('.chat-card__row-actions');
         const settings = row?.querySelector('.chat-card__action--settings');
         const statistics = row?.querySelector('.chat-card__action--statistics');
+        const identityUrl =
+          identity instanceof HTMLAnchorElement ? new URL(identity.href) : null;
+        const settingsUrl =
+          settings instanceof HTMLAnchorElement ? new URL(settings.href) : null;
+        const entityType = identityUrl?.pathname.match(/\/(chat|channel)\/[^/]+\/settings$/u)?.[1];
+        const opensChatShop = entityType === 'chat';
         if (
           !(identity instanceof HTMLAnchorElement) ||
           !(row instanceof HTMLElement) ||
@@ -4571,7 +4577,14 @@ async function assertFavoriteCategoryIndicatorsContained(page, scenario) {
           identity.dataset.action !== 'settings' ||
           settings.dataset.action !== 'settings' ||
           statistics.dataset.action !== 'statistics' ||
-          !settings.textContent?.includes('Настройки') ||
+          !entityType ||
+          settingsUrl?.origin !== identityUrl?.origin ||
+          settingsUrl?.pathname !== identityUrl?.pathname ||
+          (opensChatShop && settingsUrl?.searchParams.get('focus') !== 'storefront') ||
+          settings.textContent?.trim() !== (opensChatShop ? 'Магазин' : 'Настройки') ||
+          !settings
+            .getAttribute('aria-label')
+            ?.startsWith(opensChatShop ? 'Открыть магазин чата: ' : 'Открыть настройки: ') ||
           !statistics.textContent?.includes('Статистика')
         ) {
           return [

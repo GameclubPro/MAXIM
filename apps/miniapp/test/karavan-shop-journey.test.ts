@@ -29,9 +29,24 @@ test('seller links fail closed for invalid bot origins, credentials, paths and s
   for (const value of ['', `${id}__i_injected`, 'not-a-shop', `placement_${id}`])
     assert.equal(sellerApplicationUrl('https://max.ru/seller_bot', value), null);
 });
+test('a personal application opens the exact existing seller profile in the same shop', () => {
+  const storeId = 'a0d9b7ce-0040-4c85-a7ec-e3cf6da94c11';
+  assert.equal(
+    new URL(sellerApplicationUrl('https://max.ru/seller_bot', id, storeId)!).searchParams.get(
+      'startapp',
+    ),
+    `placement_${id}__s_${storeId}`,
+  );
+  assert.equal(
+    sellerApplicationUrl('https://max.ru/seller_bot', id, `${storeId}__i_injected`),
+    null,
+  );
+});
 const closed = {
   status: 'draft',
   listings: 0,
+  approvedListings: 0,
+  readyListings: 0,
   pendingApplications: 0,
   canManage: true,
   canReview: true,
@@ -41,12 +56,21 @@ test('an empty closed shop leads to its first seller, while pending applications
   assert.equal(shopNextAction({ ...closed, pendingApplications: 2 }), 'review');
 });
 test('only verified ready storefronts make public opening the next action', () => {
-  assert.equal(shopNextAction({ ...closed, listings: 2 }), 'sellers');
-  assert.equal(shopNextAction({ ...closed, listings: 2, readyListings: 0 }), 'sellers');
-  assert.equal(shopNextAction({ ...closed, listings: 2, readyListings: 1 }), 'open');
+  assert.equal(shopNextAction({ ...closed, approvedListings: 2, readyListings: undefined }), null);
+  assert.equal(shopNextAction({ ...closed, approvedListings: 2 }), 'sellers');
+  assert.equal(shopNextAction({ ...closed, approvedListings: 2, readyListings: 1 }), 'open');
   assert.equal(
-    shopNextAction({ ...closed, status: 'paused', listings: 2, readyListings: 1 }),
+    shopNextAction({ ...closed, status: 'paused', approvedListings: 2, readyListings: 1 }),
     'open',
+  );
+});
+test('publicly invisible closed shops can be ready, and missing readiness never means empty', () => {
+  assert.equal(shopNextAction({ ...closed, listings: 0, readyListings: 1 }), 'open');
+  assert.equal(shopNextAction({ ...closed, readyListings: undefined }), null);
+  assert.equal(shopNextAction({ ...closed, approvedListings: undefined }), null);
+  assert.equal(
+    shopNextAction({ ...closed, readyListings: undefined, pendingApplications: 1 }),
+    'review',
   );
 });
 test('an open shop keeps public view primary and offers review only when needed', () => {

@@ -76,6 +76,12 @@
     margin: 0;
     border: 0;
   }
+  body[data-miniapp-profile='moderation'] .karavan-shop__appearance-options > summary {
+    min-height: 44px;
+    box-sizing: border-box;
+    padding-block: 12px;
+    cursor: pointer;
+  }
   body[data-miniapp-profile='moderation'] .karavan-shop__media {
     display: grid;
     grid-template-columns: 1fr 2fr;

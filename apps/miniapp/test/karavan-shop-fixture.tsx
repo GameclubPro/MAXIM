@@ -2,39 +2,55 @@ import '../src/styles.css';
 import React from 'react';
 import { runNativeBackHandlers } from '../src/lib/native-back';
 import { ApiRequestError } from '../src/lib/api-request-error';
-import { createRoot } from 'react-dom/client';
+import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from '../src/components/ui/toast';
 import { SettingsStorefrontSection } from '../src/pages/settings/settings-storefront-section';
 import { SharedChatSettingsSection } from '../src/pages/settings/shared-chat-settings-section';
 import { createChatSettingsFieldAdapter } from '../src/features/network-settings/settings-field-bindings';
 import { chatSettingsSchema } from '@maxim/contracts/settings';
-import type { KaravanMarketplaceModule } from '@maxim/contracts/karavan-marketplace';
+import {
+  karavanMarketplaceModuleSchema,
+  type KaravanMarketplaceModule,
+} from '@maxim/contracts/karavan-marketplace';
 import type { MarketplaceManagementResponse } from '@maxim/contracts/karavan-marketplace-management';
 import '../src/pages/settings-page';
 import '../src/styles/moderation-workspace.css';
 const params = new URLSearchParams(location.search);
+const providerResponse = (window as Window & { __shopProviderModule?: unknown })
+  .__shopProviderModule;
+const providerModule = providerResponse
+  ? karavanMarketplaceModuleSchema.parse(providerResponse)
+  : null;
+const fixtureChatId = providerModule?.binding?.chatId ?? '-123';
 document.documentElement.dataset.maxTheme = params.get('theme') ?? 'light';
 document.body.dataset.miniappProfile = 'moderation';
 document.body.classList.add('settings-home-page-open');
 const id = 'a0d9b7ce-0040-4c85-a7ec-e3cf6da94c10';
 const second = 'bb669048-0279-4a35-987c-60f94593163e';
-const market: NonNullable<KaravanMarketplaceModule['marketplace']> = {
-  id,
-  networkId: second,
-  publicSlug: 'synthetic-shop',
-  name: 'Магазин соседей',
-  description: null,
-  kind: 'chat',
-  status: ['draft', 'draft_empty'].includes(params.get('scenario') ?? '') ? 'draft' : 'active',
-  admissionPolicy: params.get('scenario') === 'invitation_paged' ? 'invitation' : 'applications',
-  logoImageUrl: null,
-  coverImageUrl: null,
-  editRevision: 1,
-  policyRevision: 1,
-  orderRevision: 1,
-  visibilityRevision: 1,
-};
+const market: NonNullable<KaravanMarketplaceModule['marketplace']> =
+  providerModule?.marketplace ?? {
+    id,
+    networkId: second,
+    publicSlug: 'synthetic-shop',
+    name: 'Магазин соседей',
+    description: null,
+    kind: 'chat',
+    status: ['draft', 'draft_empty', 'daily_appearance_closed'].includes(
+      params.get('scenario') ?? '',
+    )
+      ? 'draft'
+      : 'active',
+    admissionPolicy: ['invitation_paged', 'daily_paged'].includes(params.get('scenario') ?? '')
+      ? 'invitation'
+      : 'applications',
+    logoImageUrl: null,
+    coverImageUrl: null,
+    editRevision: 1,
+    policyRevision: 1,
+    orderRevision: 1,
+    visibilityRevision: 1,
+  };
 const rules = {
   id: second,
   text: 'Правила магазина',
@@ -46,7 +62,7 @@ const rules = {
   createdAt: new Date().toISOString(),
   requiresAcceptance: true,
 };
-const binding = {
+const binding = providerModule?.binding ?? {
   id: second,
   chatId: '-123',
   chatTitle: 'Соседи',
@@ -55,14 +71,26 @@ const binding = {
   revision: 1,
   verifiedAt: new Date().toISOString(),
 };
-const permissions = ['manage_marketplace', 'review_listing', 'arrange_listings', 'bind_chat'];
-const counts = {
-  listings: params.get('scenario') === 'draft_empty' ? 0 : 2,
+const permissions = providerModule?.permissions ?? [
+  'manage_marketplace',
+  'review_listing',
+  'arrange_listings',
+  'bind_chat',
+];
+if (params.get('scenario') === 'daily_no_arrange')
+  permissions.splice(permissions.indexOf('arrange_listings'), 1);
+if (params.get('scenario') === 'daily_arrange_only')
+  permissions.splice(0, permissions.length, 'arrange_listings', 'bind_chat');
+const counts = providerModule?.counts ?? {
+  listings: ['draft', 'draft_empty'].includes(params.get('scenario') ?? '') ? 0 : 2,
   readyListings: params.get('scenario') === 'draft' ? 2 : 0,
-  approvedListings: 2,
+  approvedListings: params.get('scenario') === 'draft_empty' ? 0 : 2,
   pendingApplications: ['draft', 'draft_empty'].includes(params.get('scenario') ?? '') ? 0 : 1,
   chats: 1,
 };
+const detailCounts =
+  (window as Window & { __shopProviderDetailCounts?: typeof counts }).__shopProviderDetailCounts ??
+  counts;
 const offer = {
   id,
   storeId: second,
@@ -100,27 +128,29 @@ const allowedUsers = Array.from({ length: 102 }, (_, index) => ({
   updatedAt: new Date().toISOString(),
 }));
 let catalogReads = 0;
+let detailReads = 0;
 let pendingApplication = true;
-let rulesConflict = true;
+let applicationRevision = 1;
+let rulesConflict = !params.get('scenario')?.startsWith('daily_');
 let admissionFailure = true;
 let statusFailure = params.get('scenario') === 'draft_empty';
 let invitation:
   | Extract<MarketplaceManagementResponse, { operation: 'invitation_create' }>['data']
   | null = null;
-const invitationHistory =
-  params.get('scenario') === 'invitation_paged'
-    ? Array.from({ length: 25 }, (_, index) => ({
-        id: `a0d9b7ce-0040-4c85-a7ec-${String(index + 1).padStart(12, '0')}`,
-        expiresAt: new Date(Date.now() + 2 * 86400000).toISOString(),
-        maxUses: 1000,
-        usedCount: index + 1,
-        revoked: false,
-      }))
-    : [];
+const invitationHistory = ['invitation_paged', 'daily_paged'].includes(params.get('scenario') ?? '')
+  ? Array.from({ length: 25 }, (_, index) => ({
+      id: `a0d9b7ce-0040-4c85-a7ec-${String(index + 1).padStart(12, '0')}`,
+      expiresAt: new Date(Date.now() + 2 * 86400000).toISOString(),
+      maxUses: 1000,
+      usedCount: index + 1,
+      revoked: false,
+    }))
+  : [];
 const state = window as Window & {
   __shopRequests: Array<{ path: string; body: any }>;
   __shopOpened: string[];
   __shopPublished: typeof appearance;
+  __shopMarket: typeof market;
   WebApp: unknown;
   __shopSaves: unknown[];
   __shopClipboard: string[];
@@ -130,10 +160,13 @@ const state = window as Window & {
   __deferShopClipboard?: boolean;
   __finishShopClipboard?: () => void;
   __loseShopManage?: () => Promise<void>;
+  __shopNextFailure?: { operation: string; status: number; code?: string; message?: string };
+  __shopReactRoot?: Root;
 };
 state.__shopRequests = [];
 state.__shopOpened = [];
 state.__shopPublished = appearance;
+state.__shopMarket = market;
 state.__shopSaves = [];
 state.__shopClipboard = [];
 Object.defineProperty(navigator, 'clipboard', {
@@ -214,25 +247,60 @@ const api = {
       };
     if (path.endsWith('/manage')) {
       const { operation, input } = body.command;
+      if (state.__shopNextFailure?.operation === operation) {
+        const failure = state.__shopNextFailure;
+        state.__shopNextFailure = undefined;
+        if (failure.code === 'MARKETPLACE_REVISION_CONFLICT') applicationRevision++;
+        throw new ApiRequestError(
+          failure.status,
+          JSON.stringify({ code: failure.code }),
+          failure.message ?? 'Не удалось выполнить действие.',
+        );
+      }
       let data;
-      if (operation === 'detail')
+      if (operation === 'detail') {
+        if (params.get('scenario') === 'detail_error' && detailReads++ === 0)
+          throw new Error('Offline');
         data = {
           marketplace: market,
           rules,
           scheduledRules: null,
           permissions,
-          counts,
+          counts: detailCounts,
           bindings: [binding],
         };
-      else if (operation === 'catalog') {
-        if (params.get('scenario') === 'error' && catalogReads++ === 0) throw new Error('Offline');
+      } else if (operation === 'catalog') {
+        if (
+          params.get('scenario') === 'error' &&
+          input.kind === 'product' &&
+          input.limit > 1 &&
+          catalogReads++ === 0
+        )
+          throw new Error('Offline');
         data = {
           items:
             params.get('scenario') === 'empty' ||
             (input.q && !offer.title.toLowerCase().includes(input.q.toLowerCase()))
               ? []
-              : [offer],
-          nextCursor: null,
+              : input.kind === 'property'
+                ? params.get('scenario') === 'daily_existing_property'
+                  ? [
+                      {
+                        ...offer,
+                        kind: 'property',
+                        title: 'Квартира у школы',
+                        allowedCategory: false,
+                        available: false,
+                      },
+                    ]
+                  : []
+                : input.cursor
+                  ? [{ ...offer, id: second, title: 'Доставка продуктов' }]
+                  : [offer],
+          nextCursor:
+            params.get('scenario') === 'daily_paged' && !input.cursor && input.limit > 1
+              ? 'page2'
+              : null,
         };
       } else if (operation === 'content') {
         const { id: offerId, kind, title, imageUrl, allowedCategory, restriction } = offer;
@@ -285,7 +353,12 @@ const api = {
         data = { revoked: true };
       } else if (operation === 'pins') data = pins;
       else if (operation === 'pins_save') {
-        pins = { revision: pins.revision + 1, offers: input.offers.map(() => offer) };
+        pins = {
+          revision: pins.revision + 1,
+          offers: input.offers.map((row: typeof offer) =>
+            row.id === second ? { ...offer, id: second, title: 'Доставка продуктов' } : offer,
+          ),
+        };
         data = pins;
       } else if (operation === 'moderate_content') {
         offer.restriction = {
@@ -309,6 +382,19 @@ const api = {
           revision: design.revision + 1,
         };
         data = design;
+      } else if (operation === 'appearance_apply') {
+        design = {
+          draft: input.appearance,
+          published: input.appearance,
+          hasChanges: false,
+          revision: design.revision + 1,
+        };
+        Object.assign(market, input.appearance, {
+          editRevision: market.editRevision + 1,
+          visibilityRevision: market.visibilityRevision + 1,
+        });
+        state.__shopPublished = design.published;
+        data = design;
       } else if (operation === 'appearance_publish') {
         design = {
           ...design,
@@ -328,7 +414,7 @@ const api = {
                   marketplaceId: id,
                   storeId: second,
                   storeName: 'Мастерская',
-                  revision: 1,
+                  revision: applicationRevision,
                   attempt: 1,
                   state: 'pending',
                   profileVersionId: id,
@@ -343,7 +429,10 @@ const api = {
                   submittedAt: new Date().toISOString(),
                   decidedAt: null,
                   reason: null,
-                  canReview: true,
+                  canReview: !['daily_self_review', 'own_profile'].includes(
+                    params.get('scenario') ?? '',
+                  ),
+                  canPublishOwn: params.get('scenario') === 'own_profile',
                 },
               ]
             : [],
@@ -377,13 +466,40 @@ const api = {
           },
         };
       } else if (operation === 'listings')
-        data = { listings: [], nextCursor: null, orderRevision: 1, total: 0, orderableTotal: 0 };
+        data = {
+          listings:
+            params.get('scenario') === 'daily_reorder'
+              ? [id, second].map((listingId, index) => ({
+                  id: listingId,
+                  marketplaceId: id,
+                  storeId: second,
+                  storeName: `Продавец ${index + 1}`,
+                  marketplaceName: market.name,
+                  revision: 1,
+                  reviewState: 'approved',
+                  sellerState: 'enabled',
+                  publicationReason: 'published',
+                  rank: String(index + 1),
+                  position: index + 1,
+                  approvedProfileVersionId: id,
+                  pendingApplicationId: null,
+                  acceptedRulesVersion: 1,
+                  requiredRulesVersion: 1,
+                  decisionReason: null,
+                }))
+              : [],
+          nextCursor: null,
+          orderRevision: market.orderRevision,
+          total: 2,
+          orderableTotal: 2,
+        };
+      else if (operation === 'reorder_listings') data = { orderRevision: ++market.orderRevision };
       else if (operation === 'rules_preview')
         data = {
           fingerprint: 'a'.repeat(64),
           calculatedAt: new Date().toISOString(),
-          hiddenOffers: 1,
-          affectedStores: 1,
+          hiddenOffers: params.get('scenario') === 'daily_safe_categories' ? 0 : 1,
+          affectedStores: params.get('scenario') === 'daily_safe_categories' ? 0 : 1,
           emptiedStores: 0,
           affectedChats: 1,
           stores: [],
@@ -396,15 +512,17 @@ const api = {
           throw new ApiRequestError(409, '{}', 'Правила изменились. Обновите данные.');
         }
         Object.assign(rules, input.rules);
+        market.policyRevision++;
         data = {
-          rules: { ...rules, version: 2, effectiveAt: input.effectiveAt },
-          policyRevision: 2,
+          rules: { ...rules, version: market.policyRevision, effectiveAt: input.effectiveAt },
+          policyRevision: market.policyRevision,
         };
       } else throw new Error('Unexpected operation: ' + operation);
       return { operation, data };
     }
     if (path.endsWith('/karavan-marketplace'))
       return {
+        ...providerModule,
         enabled: true,
         actorMaxUserId: '777',
         sellerBotUrl: 'https://max.ru/synthetic_seller_bot',
@@ -467,7 +585,7 @@ function Harness() {
         />
       }
       api={api}
-      chatId="-123"
+      chatId={fixtureChatId}
       draft={draft}
       expanded={open}
       summary=""
@@ -498,9 +616,9 @@ const queryClient = new QueryClient({
 });
 state.__loseShopManage = () => {
   permissions.splice(0, permissions.length, 'bind_chat');
-  return queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', '-123'] });
+  return queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', fixtureChatId] });
 };
-createRoot(document.getElementById('root')!).render(
+(state.__shopReactRoot ??= createRoot(document.getElementById('root')!)).render(
   <QueryClientProvider client={queryClient}>
     <ToastProvider>
       <Harness />

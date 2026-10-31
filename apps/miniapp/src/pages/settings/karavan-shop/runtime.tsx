@@ -1,6 +1,5 @@
-import { ApiRequestError } from '../../../lib/api-request-error';
-import { createContext, useContext } from 'react';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KaravanMarketplaceModule } from '@maxim/contracts/karavan-marketplace';
 import type { ApiTransport } from '../../../lib/api/transport';
 import {
@@ -10,7 +9,18 @@ import {
   type ShopResponse,
 } from '../../../lib/api/karavan-shop-client';
 import { describeUserFacingError } from '../../../lib/user-facing-error';
-export type ShopModule = KaravanMarketplaceModule & { sellerBotUrl?: string };
+import {
+  pendingShopCommand,
+  ShopCommandRunRejectedError,
+  useShopCommands,
+} from './command-runtime';
+import type { ShopCommandUi } from './command-journal';
+import { shopMutationFailureKind } from './command-failure';
+export { shopMutationFailureKind } from './command-failure';
+export type ShopModule = KaravanMarketplaceModule & {
+  actorMaxUserId: string;
+  sellerBotUrl?: string;
+};
 export const ShopContext = createContext<{
   api: ApiTransport;
   scope: ShopScope;
@@ -21,12 +31,17 @@ export function useShop() {
   if (!value) throw new Error('Missing shop');
   return value;
 }
-export function useShopPages<K extends 'listings' | 'applications'>(
-  command: Extract<ShopCommand, { operation: 'listings' | 'applications' }> & { operation: K },
+export function useShopPages<K extends 'listings' | 'applications' | 'catalog' | 'invitations'>(
+  command: Extract<
+    ShopCommand,
+    { operation: 'listings' | 'applications' | 'catalog' | 'invitations' }
+  > & { operation: K },
+  enabled = true,
 ) {
   const { api, scope } = useShop();
   return useInfiniteQuery({
     queryKey: ['karavan-shop', scope, 'pages', command],
+    enabled,
     initialPageParam: null as string | null,
     queryFn: ({ signal, pageParam }) =>
       manageKaravanShop<K>(
@@ -57,21 +72,87 @@ export function useShopQuery<K extends ShopCommand['operation']>(
   });
 }
 export function useShopMutation(
+  ui: Pick<ShopCommandUi, 'owner' | 'page'>,
   onSuccess?: (command: ShopCommand, data: ShopResponse<ShopCommand['operation']>) => void,
 ) {
-  const { api, scope } = useShop();
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (command: ShopCommand) => manageKaravanShop(api, scope, command),
-    onSuccess: async (data, thisCommand) => {
-      await Promise.all([
-        client.invalidateQueries({ queryKey: ['karavan-shop', scope] }),
-        client.invalidateQueries({ queryKey: ['karavan-marketplace', scope.chatId] }),
-      ]);
-      onSuccess?.(thisCommand, data);
+  const commands = useShopCommands();
+  const [error, setError] = useState<unknown>(null);
+  const [lastCommand, setLastCommand] = useState<ShopCommand | null>(null);
+  const callback = useRef(onSuccess);
+  callback.current = onSuccess;
+  const seen = useRef(new Set<string>());
+  const identity = `${commands.key}:${ui.owner}`;
+  const active = useRef({ identity, epoch: 0 });
+  if (active.current.identity !== identity)
+    active.current = { identity, epoch: active.current.epoch + 1 };
+  useEffect(() => {
+    return () => {
+      active.current.epoch++;
+    };
+  }, [identity]);
+  const journal = commands.journal?.key === commands.key ? commands.journal : null;
+  const pending = pendingShopCommand(journal, ui.owner);
+  const receipt = journal?.results[ui.owner] ?? null;
+  useEffect(() => {
+    if (!receipt || pending || commands.loading || commands.busy || commands.stale) return;
+    const id = receipt.request.commandId;
+    const expected =
+      lastCommand && 'input' in lastCommand && 'commandId' in lastCommand.input
+        ? lastCommand.input.commandId
+        : null;
+    if (expected && expected !== id) return;
+    setError(null);
+    if (seen.current.has(id)) return;
+    seen.current.add(id);
+    callback.current?.(receipt.request.command, receipt.response.data);
+  }, [commands.loading, commands.busy, commands.stale, lastCommand, pending, receipt]);
+  const mutateAsync = async (
+    command: ShopCommand,
+    extra: Omit<Partial<ShopCommandUi>, 'owner' | 'page'> = {},
+  ) => {
+    if (commands.blocked)
+      throw new ShopCommandRunRejectedError(
+        'not-started',
+        new Error('Сначала продолжите сохранённое действие.'),
+      );
+    const requestIdentity = { ...active.current };
+    setError(null);
+    setLastCommand(command);
+    try {
+      return await commands.run(command, { ...ui, ...extra });
+    } catch (cause) {
+      if (
+        !(cause instanceof ShopCommandRunRejectedError) &&
+        active.current.identity === requestIdentity.identity &&
+        active.current.epoch === requestIdentity.epoch
+      )
+        setError(cause);
+      throw cause;
+    }
+  };
+  const failure = error ? shopMutationFailureKind(error) : null;
+  return {
+    mutateAsync,
+    mutate: (command: ShopCommand, extra?: Omit<Partial<ShopCommandUi>, 'owner' | 'page'>) => {
+      void mutateAsync(command, extra).catch(() => undefined);
     },
-  });
+    reset: () => setError(null),
+    variables: pending ?? lastCommand ?? receipt?.request.command ?? undefined,
+    data: !pending ? receipt?.response.data : undefined,
+    receipt,
+    pendingCommand: pending,
+    error,
+    isPending: commands.busy && Boolean(pending),
+    isError: Boolean(error),
+    isSuccess: Boolean(receipt) && !pending && !commands.busy && !error,
+    failure,
+    blocked: commands.blocked || Boolean(error && failure !== 'validation'),
+    editingBlocked: commands.blocked || failure === 'unknown' || failure === 'forbidden',
+    uncertain: commands.busy || Boolean(commands.journal?.pending),
+    sharedRecovery: commands.storageError || Boolean(commands.journal?.pending),
+  };
 }
+
 export function ShopFailure({ error, retry }: { error: unknown; retry: () => void }) {
   return (
     <div className="karavan-module__notice" role="alert">
@@ -91,33 +172,29 @@ export function MutationFailure({
 }) {
   const { scope } = useShop();
   const client = useQueryClient();
-  if (!mutation.isError) return null;
-  const conflict =
-    mutation.error instanceof ApiRequestError &&
-    [400, 403, 404, 409, 422].includes(mutation.error.status);
+  if (!mutation.isError || mutation.sharedRecovery) return null;
+  const kind = shopMutationFailureKind(mutation.error);
   return (
     <div className="karavan-module__notice" role="alert">
       <p>{describeUserFacingError(mutation.error, 'Не удалось выполнить действие.')}</p>
-      {conflict ? (
+      {kind === 'validation' ? (
+        <button type="button" onClick={() => mutation.reset()}>
+          Исправить
+        </button>
+      ) : kind === 'refresh' ? (
         <button
           type="button"
           onClick={() => {
-            mutation.reset();
             onRefresh?.();
-            void client.invalidateQueries({ queryKey: ['karavan-shop', scope] });
-            void client.invalidateQueries({ queryKey: ['karavan-marketplace', scope.chatId] });
+            void Promise.all([
+              client.invalidateQueries({ queryKey: ['karavan-shop', scope] }),
+              client.invalidateQueries({ queryKey: ['karavan-marketplace', scope.chatId] }),
+            ]).then(() => mutation.reset());
           }}
         >
           Обновить данные
         </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => mutation.variables && mutation.mutate(mutation.variables)}
-        >
-          Повторить проверку
-        </button>
-      )}
+      ) : null}
     </div>
   );
 }
