@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import { assertCommercialLlmApiClient } from './commercial-llm-runtime.mjs';
+import {
+  assertCommercialLlmApiClient,
+  waitCommercialLlmCpuDispatcherReady,
+} from './commercial-llm-runtime.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const imageId = `sha256:${'a'.repeat(64)}`;
@@ -24,6 +27,162 @@ function client(service, role) {
     },
   };
 }
+
+function dispatcher() {
+  const value = client('api-moderation-background', 'moderation');
+  value.State.StartedAt = '2026-10-31T08:35:40.725000000Z';
+  value.State.Status = 'running';
+  value.State.Paused = false;
+  value.State.Restarting = false;
+  value.State.Dead = false;
+  value.RestartCount = 0;
+  return value;
+}
+
+function generation(value) {
+  return {
+    id: value.Id,
+    imageId: value.Image,
+    startedAt: value.State.StartedAt,
+    restartCount: value.RestartCount,
+  };
+}
+
+test('headless dispatcher with no Docker healthcheck becomes ready only after stable generation reads', async () => {
+  const value = dispatcher();
+  let now = 0;
+  let reads = 0;
+  const pauses = [];
+  await waitCommercialLlmCpuDispatcherReady(generation(value), {
+    inspect: () => {
+      reads += 1;
+      return structuredClone(value);
+    },
+    now: () => now,
+    pause: async (milliseconds) => {
+      pauses.push(milliseconds);
+      now += milliseconds;
+    },
+  });
+  assert.equal(value.State.Health, undefined);
+  assert.equal(reads, 2);
+  assert.deepEqual(pauses, [5000]);
+});
+
+for (const [name, mutate] of [
+  [
+    'container replacement',
+    (value) => {
+      value.Id = 'c'.repeat(64);
+    },
+  ],
+  [
+    'image replacement',
+    (value) => {
+      value.Image = `sha256:${'c'.repeat(64)}`;
+    },
+  ],
+  [
+    'process restart',
+    (value) => {
+      value.State.StartedAt = '2026-10-31T08:36:40.725000000Z';
+    },
+  ],
+  [
+    'restart counter change',
+    (value) => {
+      value.RestartCount += 1;
+    },
+  ],
+  [
+    'stopped process',
+    (value) => {
+      value.State.Running = false;
+    },
+  ],
+  [
+    'paused process',
+    (value) => {
+      value.State.Paused = true;
+    },
+  ],
+  [
+    'restarting process',
+    (value) => {
+      value.State.Restarting = true;
+    },
+  ],
+  [
+    'dead process',
+    (value) => {
+      value.State.Dead = true;
+    },
+  ],
+  [
+    'incomplete process state',
+    (value) => {
+      delete value.State.Paused;
+    },
+  ],
+  [
+    'foreign role',
+    (value) => {
+      value.Config.Env[0] = 'APP_ROLE=action';
+    },
+  ],
+]) {
+  test(`headless dispatcher refuses ${name} during its stability interval`, async () => {
+    const value = dispatcher();
+    const expected = generation(value);
+    let now = 0;
+    await assert.rejects(
+      waitCommercialLlmCpuDispatcherReady(expected, {
+        inspect: () => structuredClone(value),
+        now: () => now,
+        pause: async (milliseconds) => {
+          mutate(value);
+          now += milliseconds;
+        },
+      }),
+    );
+  });
+}
+
+test('headless dispatcher never extends the original readiness deadline', async () => {
+  const value = dispatcher();
+  let now = 0;
+  await assert.rejects(
+    waitCommercialLlmCpuDispatcherReady(generation(value), {
+      inspect: () => structuredClone(value),
+      now: () => now,
+      pause: async () => {
+        now += 180000;
+      },
+    }),
+    /dispatcher_readiness_deadline/u,
+  );
+});
+
+test('a slow final process inspection cannot complete readiness after its original deadline', async () => {
+  const value = dispatcher();
+  let now = 0;
+  let reads = 0;
+  await assert.rejects(
+    waitCommercialLlmCpuDispatcherReady(generation(value), {
+      inspect: () => {
+        reads += 1;
+        if (reads === 2) now = 180001;
+        return structuredClone(value);
+      },
+      now: () => now,
+      pause: async (milliseconds) => {
+        now += milliseconds;
+      },
+    }),
+    /dispatcher_readiness_deadline/u,
+  );
+  assert.equal(reads, 2);
+});
 
 test('recovery attests the manifest image, service, role and singleton identity, including stopped dispatchers', () => {
   for (const [service, role] of [
