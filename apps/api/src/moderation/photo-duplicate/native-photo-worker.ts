@@ -1,6 +1,10 @@
 import { PhotoDecodeBudget } from './photo-decode-resource';
 import { PhotoFingerprintRejectedError, PhotoFingerprintService } from './photo-fingerprint';
 import {
+  PhotoRecompressionRejectedError,
+  verifyNativePhotoRecompression,
+} from './photo-recompression';
+import {
   decodePhotoFrame,
   PHOTO_NATIVE_HEADER_BYTES,
   PHOTO_NATIVE_MAX_BYTES,
@@ -24,6 +28,15 @@ async function main(): Promise<void> {
   try {
     if (Date.now() >= request.deadlineAtMs) {
       result = { kind: 'rejected', reason: 'decode_deadline_exceeded' };
+    } else if (request.operation === 'verify_recompression') {
+      const boundary = request.originalBytes!;
+      if (boundary >= frame.payload.length)
+        throw new PhotoRecompressionRejectedError('unsupported_image');
+      result = await verifyNativePhotoRecompression(
+        frame.payload.subarray(0, boundary),
+        frame.payload.subarray(boundary),
+        request,
+      );
     } else {
       const service = new PhotoFingerprintService({
         canonicalOnly: true,
@@ -42,7 +55,11 @@ async function main(): Promise<void> {
       };
     }
   } catch (error) {
-    if (!(error instanceof PhotoFingerprintRejectedError)) throw error;
+    if (
+      !(error instanceof PhotoFingerprintRejectedError) &&
+      !(error instanceof PhotoRecompressionRejectedError)
+    )
+      throw error;
     result = { kind: 'rejected', reason: error.reason };
   }
   process.stdout.write(JSON.stringify(result));

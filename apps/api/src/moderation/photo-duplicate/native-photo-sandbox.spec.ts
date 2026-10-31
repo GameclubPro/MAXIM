@@ -14,9 +14,12 @@ import {
   PHOTO_NATIVE_MIN_WORK_MS,
   PHOTO_NATIVE_TEARDOWN_GRACE_MS,
   photoFrameLength,
+  parsePhotoRequest,
+  parsePhotoResult,
   type NativePhotoRequest,
   type NativePhotoResult,
 } from './native-photo-sandbox.protocol';
+import { PHOTO_RECOMPRESSION_VERSION } from './photo-recompression-version';
 
 const request = (): NativePhotoRequest => ({
   operation: 'fingerprint',
@@ -49,6 +52,20 @@ function deferred() {
 }
 
 describe('native photo proof transport', () => {
+  it('rejects malformed pair boundaries and mismatched proof versions', () => {
+    expect(() =>
+      parsePhotoRequest({ ...request(), operation: 'verify_recompression', originalBytes: 0 }),
+    ).toThrow('boundary');
+    expect(() => parsePhotoRequest({ ...request(), originalBytes: 2 })).toThrow('boundary');
+    expect(() =>
+      parsePhotoResult({
+        kind: 'recompression',
+        matched: true,
+        proof: { version: 'old', originalHash: 'a'.repeat(64), currentHash: 'b'.repeat(64) },
+        decodeCost: { encodedBytes: 10, pixels: 20 },
+      }),
+    ).toThrow('proof');
+  });
   it('rejects overlarge declarations before allocating payloads and ignores no trailing data', () => {
     const valid = encodePhotoFrame({ operation: 'probe' });
     expect(decodePhotoFrame(valid, 0)).toEqual({
@@ -73,6 +90,57 @@ describe('native photo proof transport', () => {
 
 describe('native photo process lifecycle', () => {
   jest.setTimeout(20_000);
+
+  it('returns hash-bound recompression evidence through the isolated worker', async () => {
+    const raw = Buffer.alloc(128 * 128 * 3);
+    for (let y = 0; y < 128; y += 1)
+      for (let x = 0; x < 128; x += 1) {
+        const offset = (y * 128 + x) * 3;
+        raw[offset] = 30 + x;
+        raw[offset + 1] = 40 + y;
+        raw[offset + 2] = 80;
+      }
+    const source = () => sharp(raw, { raw: { width: 128, height: 128, channels: 3 } });
+    const original = await source().webp({ quality: 92 }).toBuffer();
+    const current = await source().webp({ quality: 89 }).toBuffer();
+    const actual = await runNativePhotoWorker(
+      { ...request(), operation: 'verify_recompression', originalBytes: original.length },
+      Buffer.concat([original, current]),
+      new AbortController().signal,
+      workerOptions,
+    );
+    expect(actual).toMatchObject({
+      kind: 'recompression',
+      matched: true,
+      proof: {
+        version: PHOTO_RECOMPRESSION_VERSION,
+        originalHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        currentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      decodeCost: { encodedBytes: original.length + current.length, pixels: 128 * 128 * 2 },
+    });
+    expect(
+      await runNativePhotoWorker(
+        {
+          ...request(),
+          operation: 'verify_recompression',
+          originalBytes: original.length,
+          remainingPixels: 128 * 128,
+        },
+        Buffer.concat([original, current]),
+        new AbortController().signal,
+        workerOptions,
+      ),
+    ).toEqual({ kind: 'rejected', reason: 'album_decode_budget_exceeded' });
+    expect(
+      await runNativePhotoWorker(
+        { ...request(), operation: 'verify_recompression', originalBytes: original.length },
+        Buffer.concat([original, Buffer.from('not an image')]),
+        new AbortController().signal,
+        workerOptions,
+      ),
+    ).toEqual({ kind: 'rejected', reason: 'unsupported_image' });
+  });
 
   it('preserves exact native raster hashes across format, alpha, orientation and dimensions', async () => {
     const source = sharp({
@@ -175,6 +243,44 @@ describe('native photo process lifecycle', () => {
 });
 
 describe('native photo sandbox admission', () => {
+  it('attests pair support and carries bounded pair verification through the UDS client', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maxim-photo-pair-ipc-'));
+    const server = await startNativePhotoSandbox(
+      { PHOTO_NATIVE_SANDBOX_SOCKET_PATH: join(directory, 'photo.sock') },
+      {
+        networkInterfaces: () => ({}),
+        allowTestSocketPath: true,
+        runWorker: (work, payload, signal) =>
+          runNativePhotoWorker(work, payload, signal, workerOptions),
+      },
+    );
+    try {
+      const client = new NativePhotoSandboxClient(server.socketPath);
+      expect(await client.probe()).toMatchObject({
+        recompressionVersion: PHOTO_RECOMPRESSION_VERSION,
+      });
+      const original = await sharp({
+        create: { width: 128, height: 128, channels: 3, background: '#416279' },
+      })
+        .png()
+        .toBuffer();
+      const current = await sharp(original).webp({ lossless: true }).toBuffer();
+      expect(await client.verifyRecompression(original, current, request())).toMatchObject({
+        kind: 'recompression',
+        matched: true,
+      });
+      expect(
+        await client.verifyRecompression(original, current, {
+          ...request(),
+          maxInputBytes: original.length,
+        }),
+      ).toEqual({ kind: 'rejected', reason: 'image_byte_limit_exceeded' });
+    } finally {
+      await server.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([0, 499, 500, 800, 999])(
     'rejects budget %s before launching a child and keeps the next request usable',
     async (remainingMs) => {

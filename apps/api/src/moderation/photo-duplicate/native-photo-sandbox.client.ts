@@ -1,12 +1,16 @@
 import { createConnection } from 'node:net';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from './photo-fingerprint-version';
+import { PHOTO_RECOMPRESSION_VERSION } from './photo-recompression-version';
+import type { PhotoRecompressionLimits, PhotoRecompressionResult } from './photo-recompression';
 import {
   PHOTO_NATIVE_MAX_EXECUTION_MS,
+  PHOTO_NATIVE_MAX_BYTES,
   PHOTO_NATIVE_PROTOCOL_VERSION,
   encodePhotoFrame,
   parsePhotoResult,
   type NativePhotoRequest,
   type NativePhotoResult,
+  type NativePhotoFingerprintResult,
 } from './native-photo-sandbox.protocol';
 import { readPhotoFrame } from './native-photo-sandbox.transport';
 
@@ -24,7 +28,7 @@ export class NativePhotoSandboxClient {
   async fingerprint(
     input: Uint8Array,
     request: Omit<NativePhotoRequest, 'operation'>,
-  ): Promise<NativePhotoResult> {
+  ): Promise<NativePhotoFingerprintResult> {
     const deadlineAtMs = Math.min(request.deadlineAtMs, Date.now() + PHOTO_NATIVE_MAX_EXECUTION_MS);
     if (deadlineAtMs <= Date.now()) return { kind: 'rejected', reason: 'decode_deadline_exceeded' };
     const frame = await this.exchange(
@@ -32,7 +36,43 @@ export class NativePhotoSandboxClient {
       Buffer.from(input.buffer, input.byteOffset, input.byteLength),
       deadlineAtMs,
     );
-    return parsePhotoResult(frame.metadata);
+    const result = parsePhotoResult(frame.metadata);
+    if (result.kind === 'recompression') throw new Error('Unexpected photo result operation');
+    return result;
+  }
+
+  async verifyRecompression(
+    original: Uint8Array,
+    current: Uint8Array,
+    request: PhotoRecompressionLimits,
+  ): Promise<PhotoRecompressionResult | Extract<NativePhotoResult, { kind: 'rejected' }>> {
+    const deadlineAtMs = Math.min(request.deadlineAtMs, Date.now() + PHOTO_NATIVE_MAX_EXECUTION_MS);
+    if (deadlineAtMs <= Date.now()) return { kind: 'rejected', reason: 'decode_deadline_exceeded' };
+    const totalBytes = original.byteLength + current.byteLength;
+    if (
+      !original.byteLength ||
+      !current.byteLength ||
+      totalBytes > Math.min(request.maxInputBytes, PHOTO_NATIVE_MAX_BYTES)
+    )
+      return { kind: 'rejected', reason: 'image_byte_limit_exceeded' };
+    if (totalBytes > request.remainingEncodedBytes)
+      return { kind: 'rejected', reason: 'album_decode_budget_exceeded' };
+    const frame = await this.exchange(
+      {
+        ...request,
+        operation: 'verify_recompression',
+        originalBytes: original.byteLength,
+        deadlineAtMs,
+      },
+      Buffer.concat([
+        Buffer.from(original.buffer, original.byteOffset, original.byteLength),
+        Buffer.from(current.buffer, current.byteOffset, current.byteLength),
+      ]),
+      deadlineAtMs,
+    );
+    const result = parsePhotoResult(frame.metadata);
+    if (result.kind === 'complete') throw new Error('Unexpected photo result operation');
+    return result;
   }
 
   async probe(): Promise<Record<string, unknown>> {
@@ -41,6 +81,7 @@ export class NativePhotoSandboxClient {
     if (
       status.protocolVersion !== PHOTO_NATIVE_PROTOCOL_VERSION ||
       status.algorithmVersion !== PHOTO_FINGERPRINT_ALGORITHM_VERSION ||
+      status.recompressionVersion !== PHOTO_RECOMPRESSION_VERSION ||
       status.network !== 'none' ||
       status.environment !== 'allowlist' ||
       status.processGroupTeardown !== 'verified_or_cgroup_recycle' ||

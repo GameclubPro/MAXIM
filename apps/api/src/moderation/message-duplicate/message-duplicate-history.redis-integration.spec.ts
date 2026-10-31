@@ -14,7 +14,10 @@ import {
   MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
   MESSAGE_DUPLICATE_HISTORY_FENCE_STORAGE_VERSION,
 } from './message-duplicate-window.script';
-import type { MessageDuplicateBinding } from './message-duplicate-state';
+import {
+  messageDuplicateBindingSchema,
+  type MessageDuplicateBinding,
+} from './message-duplicate-state';
 import {
   MessageDuplicatePolicyService,
   MESSAGE_DUPLICATE_CONTROL_KEY,
@@ -1408,6 +1411,101 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
     }),
     mediaHashes: ['a'.repeat(64)],
   });
+
+  it('keeps exact source identities and individual counts for verified recompression copies', async () => {
+    const input = imageInput();
+    await observe('original', 0, '', input);
+    const imageOriginal = await history.findImageOriginal({
+      ...input,
+      chatId,
+      userId: '123',
+      messageId: 'original',
+      eventTimestampMs: start,
+      controlRevision: 1,
+      settings,
+    });
+    const copy = {
+      ...input,
+      mediaHashes: ['b'.repeat(64)],
+      imageRecompression: {
+        version: 'native-recompression-v1' as const,
+        originalHash: 'a'.repeat(64),
+        currentHash: 'b'.repeat(64),
+      },
+      imageOriginal: imageOriginal!,
+      userId: '456',
+    };
+    const match = await observe('copy', 100, '', copy);
+    expect(match?.binding.original?.messageId).toBe('original');
+    expect(match?.binding.mediaHashes).toEqual(copy.mediaHashes);
+    expect(match?.binding.original?.mediaHashes).toEqual(input.mediaHashes);
+    expect(await history.qualify(chatId, match!.binding)).toBe(1);
+    expect(await history.qualify(chatId, match!.binding)).toBe(1);
+    const withoutProof = { ...match!.binding, imageRecompression: undefined };
+    expect(messageDuplicateBindingSchema.safeParse(withoutProof).success).toBe(false);
+    expect(await history.stillMatches(chatId, withoutProof)).toBe(false);
+    expect(await history.qualify(chatId, withoutProof)).toBeNull();
+    const tampered = {
+      ...match!.binding,
+      imageRecompression: {
+        ...copy.imageRecompression,
+        currentHash: 'c'.repeat(64),
+      },
+    };
+    expect(messageDuplicateBindingSchema.safeParse(tampered).success).toBe(false);
+    expect(await history.qualify(chatId, tampered)).toBeNull();
+    const other = await observe('other-author', 200, '', { ...copy, userId: '789' });
+    expect(await history.qualify(chatId, other!.binding)).toBe(1);
+    await history.remove(chatId, 'original');
+    expect(await history.stillMatches(chatId, match!.binding)).toBe(false);
+    expect(await history.stillMatches(chatId, other!.binding)).toBe(false);
+  });
+
+  it.each(['remove', 'reset', 'edit'] as const)(
+    'never seeds an approximate copy after its accepted anchor changes (%s)',
+    async (change) => {
+      const input = imageInput();
+      await observe('original', 0, '', input);
+      const imageOriginal = await history.findImageOriginal({
+        ...input,
+        chatId,
+        userId: '123',
+        messageId: 'original',
+        eventTimestampMs: start,
+        controlRevision: 1,
+        settings,
+      });
+      expect(imageOriginal?.messageId).toBe('original');
+      if (change === 'remove') await history.remove(chatId, 'original');
+      else if (change === 'reset') await redis.resetDuplicateWindow(chatId, '123');
+      else
+        await history.observeLifecycle({
+          chatId,
+          messageId: 'original',
+          eventTimestampMs: start + 50,
+          content: { ...input.content, complete: false, reason: 'invalid_content' },
+        });
+      expect(
+        await observe('copy', 100, '', {
+          ...input,
+          userId: '456',
+          mediaHashes: ['b'.repeat(64)],
+          imageOriginal,
+          imageRecompression: {
+            version: 'native-recompression-v1',
+            originalHash: 'a'.repeat(64),
+            currentHash: 'b'.repeat(64),
+          },
+        }),
+      ).toBeNull();
+      expect(
+        await inspector.get(`${windowPrefix()}message:${digestDuplicateContent('copy')}:IMAGE`),
+      ).toBeNull();
+      expect(await observe('fresh-original', 200, '', { ...input, userId: '789' })).toBeNull();
+      const repeat = await observe('fresh-repeat', 300, '', { ...input, userId: '456' });
+      expect(repeat?.binding.original?.messageId).toBe('fresh-original');
+    },
+  );
 
   it.each(['retained', 'lost', 'lifecycle', 'invalidate'] as const)(
     'never freshens equal image bytes through a later locator after reset (%s)',

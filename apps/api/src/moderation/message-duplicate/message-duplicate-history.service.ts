@@ -23,8 +23,14 @@ import {
   messageDuplicateOriginalSchema,
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
+  hasValidImageComparisonEvidence,
   type MessageDuplicateBinding,
+  type MessageDuplicateOriginal,
 } from './message-duplicate-state';
+import {
+  PHOTO_RECOMPRESSION_VERSION,
+  type PhotoRecompressionProof,
+} from '../photo-duplicate/photo-recompression-version';
 
 export type MessageDuplicateObservation = {
   content: DuplicateMessageContent;
@@ -37,6 +43,8 @@ export type MessageDuplicateObservation = {
   settings: ChatSettings;
   mediaHashes?: readonly string[];
   imageScope?: 'SAME_AUTHOR' | 'CHAT';
+  imageRecompression?: PhotoRecompressionProof;
+  imageOriginal?: MessageDuplicateOriginal;
 };
 
 export type MessageDuplicateHistoryObservation = {
@@ -127,13 +135,35 @@ export class MessageDuplicateHistoryService {
     }
     const mediaHashes = [...(input.mediaHashes ?? [])];
     const identity = buildMessageDuplicateIdentity(input.content, mode, mediaHashes);
+    const recompression = input.imageRecompression;
+    if (
+      recompression &&
+      (mode !== 'IMAGE' ||
+        mediaHashes.length !== 1 ||
+        recompression.version !== PHOTO_RECOMPRESSION_VERSION ||
+        !/^[a-f0-9]{64}$/.test(recompression.originalHash) ||
+        recompression.currentHash !== mediaHashes[0] ||
+        recompression.currentHash === recompression.originalHash ||
+        !input.imageOriginal ||
+        input.imageOriginal.mediaHashes.length !== 1 ||
+        input.imageOriginal.mediaHashes[0] !== recompression.originalHash)
+    )
+      throw new Error('Invalid image recompression evidence');
+    const anchorIdentity = recompression
+      ? buildMessageDuplicateIdentity(input.content, 'IMAGE', [recompression.originalHash])
+      : identity;
     const flow = resolveDuplicateFlowConfig(input.settings);
     const windowSec = dailyWindow
       ? Math.ceil((dailyWindow.endMs - dailyWindow.startMs) / 1000)
       : flow.windowSec;
     const parts: DuplicateFingerprint[] = identity
       ? mode === 'IMAGE'
-        ? [{ type: input.content.media.length === 1 ? 'image' : 'image_set', value: identity }]
+        ? [
+            {
+              type: input.content.media.length === 1 ? 'image' : 'image_set',
+              value: anchorIdentity!,
+            },
+          ]
         : this.buildFingerprints(input.content, input.settings)
       : [];
     const settingsDigest =
@@ -176,6 +206,7 @@ export class MessageDuplicateHistoryService {
       identity: identity ?? '',
       pendingSafe: isDuplicateContentComparable(input.content, mode),
       mediaHashes,
+      ...(recompression ? { recompressionOriginal: input.imageOriginal } : {}),
       fingerprints: patterns.map((pattern) => pattern.hash),
       allowed: flow.allowedCount,
       windowMs: windowSec * 1000,
@@ -223,11 +254,14 @@ export class MessageDuplicateHistoryService {
       fingerprint: match.hash,
       mediaHashes,
       mediaVersion: MESSAGE_DUPLICATE_MEDIA_VERSION,
+      ...(recompression ? { imageRecompression: recompression } : {}),
       hasPhotos: mode !== 'TEXT' && input.content.media.some((media) => media.kind === 'photo'),
       photoControlRevision: null,
       windowSeconds: windowSec,
       requiredCount: flow.allowedCount + 2,
     };
+    if (!hasValidImageComparisonEvidence(binding))
+      return { outcome: 'CONTENT_UNVERIFIED', match: null };
     return {
       outcome: 'MATCHED',
       match: {
@@ -309,6 +343,34 @@ export class MessageDuplicateHistoryService {
     return result.kind === 'ok' ? (result.qualified ?? null) : null;
   }
 
+  async findImageOriginal(input: MessageDuplicateObservation) {
+    if (!input.imageScope || input.mediaHashes?.length !== 1) return null;
+    const identity = buildMessageDuplicateIdentity(input.content, 'IMAGE', input.mediaHashes);
+    const period = resolveDuplicateDailyWindow(input.settings, input.eventTimestampMs);
+    if (!identity || period === null) return null;
+    const fingerprint = digestDuplicateContent({
+      version: 1,
+      mode: 'IMAGE',
+      controlRevision: input.controlRevision,
+      settingsDigest: exactImageSettingsDigest(input.settings),
+      type: 'image',
+      textPresent: false,
+      value: identity,
+      actions: [],
+      media: [],
+    });
+    const result = await this.window(input.chatId, {
+      op: 'image_anchor',
+      mode: 'IMAGE',
+      fingerprint,
+      scope: input.imageScope === 'CHAT' ? 'chat' : digestDuplicateContent(input.userId),
+      at: input.eventTimestampMs,
+      ...(period ? { periodStart: period.startMs } : {}),
+    });
+    const original = messageDuplicateOriginalSchema.safeParse(result.original);
+    return result.kind === 'ok' && original.success ? original.data : null;
+  }
+
   async qualify(chatId: string, binding: MessageDuplicateBinding): Promise<number | null> {
     if (!this.hasCurrentRevision(binding)) return null;
     const result = await this.window(chatId, { ...this.checkInput(binding), op: 'qualify' });
@@ -354,6 +416,7 @@ export class MessageDuplicateHistoryService {
   private hasCurrentRevision(binding: MessageDuplicateBinding): boolean {
     return (
       binding.version === 3 &&
+      hasValidImageComparisonEvidence(binding) &&
       !!binding.lifecycleRevision &&
       !!binding.original?.revision &&
       !!binding.original.originalId

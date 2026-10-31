@@ -9,6 +9,12 @@ import type { OnModuleInit } from '@nestjs/common';
 import { PDQ } from 'pdq-wasm';
 import sharp from 'sharp';
 import {
+  recompressionCandidateHash,
+  verifyNativePhotoRecompression,
+  PhotoRecompressionRejectedError,
+  type PhotoRecompressionResult,
+} from './photo-recompression';
+import {
   PhotoDecodeBudget,
   PhotoDecodeDeadlineError,
   type PhotoDecodeCost,
@@ -65,6 +71,7 @@ export type PhotoFingerprint = {
   canonicalHash: string;
   pdqHash: string;
   pdqQuality: number;
+  recompressionHash?: string;
   decodeCost?: PhotoDecodeCost;
 };
 
@@ -253,6 +260,48 @@ export class PhotoFingerprintService implements OnModuleInit {
     }
   }
 
+  async verifyRecompression(
+    original: Uint8Array,
+    current: Uint8Array,
+    options: { deadlineAtMs: number },
+  ): Promise<PhotoRecompressionResult> {
+    const request = {
+      deadlineAtMs: options.deadlineAtMs,
+      maxInputBytes: this.maxInputBytes,
+      maxInputPixels: this.maxInputPixels,
+      remainingEncodedBytes: this.maxInputBytes,
+      remainingPixels: this.maxInputPixels,
+    };
+    try {
+      return await this.decodeGate.run(async () => {
+        if (!this.nativeDecoder) return verifyNativePhotoRecompression(original, current, request);
+        const result = await this.nativeDecoder
+          .verifyRecompression(original, current, request)
+          .catch((cause: unknown) => {
+            throw new PhotoNativeUnavailableError({ cause });
+          });
+        if (result.kind === 'rejected') {
+          if (result.reason === 'native_unavailable') throw new PhotoNativeUnavailableError();
+          throw new PhotoFingerprintRejectedError(result.reason);
+        }
+        if (
+          result.decodeCost.encodedBytes !== original.byteLength + current.byteLength ||
+          result.decodeCost.pixels > this.maxInputPixels
+        )
+          throw new PhotoNativeUnavailableError();
+        return result;
+      }, options.deadlineAtMs);
+    } catch (error) {
+      if (error instanceof PhotoRecompressionRejectedError)
+        throw new PhotoFingerprintRejectedError(error.reason, { cause: error });
+      if (error instanceof PhotoDecodeDeadlineError)
+        throw new PhotoFingerprintRejectedError('decode_deadline_exceeded', { cause: error });
+      if (error instanceof PhotoDecodePipelineCapacityError)
+        throw new PhotoFingerprintRejectedError('decode_capacity_exceeded', { cause: error });
+      throw error;
+    }
+  }
+
   private async fingerprintWithinSlot(
     encodedImage: Uint8Array,
     options: {
@@ -320,9 +369,10 @@ export class PhotoFingerprintService implements OnModuleInit {
     // FLAG: Thumbnail resizing/white flattening erase real differences. Exact authority needs
     // native dimensions and alpha; reject higher bit depths above instead of quantizing them.
     const canonicalHash = await hashExactPhotoImage(image.clone());
+    const recompressionHash = await recompressionCandidateHash(image);
 
-    // FLAG: Production exact-image comparison never initializes or computes perceptual hashes.
-    // Zero-quality placeholders preserve the retained cache envelope without granting similarity.
+    // FLAG: Production never initializes PDQ. The separate small candidate hash locates a
+    // pair for full native verification; it never changes canonical equality or grants actions.
     let pdqHash = '0'.repeat(64);
     let pdqQuality = 0;
     if (!this.canonicalOnly) {
@@ -345,6 +395,7 @@ export class PhotoFingerprintService implements OnModuleInit {
     return {
       algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
       canonicalHash,
+      recompressionHash,
       pdqHash,
       pdqQuality,
       decodeCost: { encodedBytes: encodedImage.byteLength, pixels: pixelCount },

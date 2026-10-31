@@ -8,6 +8,7 @@ import {
   type PhotoFingerprint,
 } from './photo-fingerprint';
 import { PhotoDownloadTimeoutError } from './secure-photo-downloader';
+import { PHOTO_RECOMPRESSION_VERSION } from './photo-recompression-version';
 
 const authorizationConfigDigest = 'f'.repeat(64);
 const actionConfigDigest = 'e'.repeat(64);
@@ -105,6 +106,66 @@ function createService(cache: Array<PhotoFingerprint | null>) {
 }
 
 describe('PhotoDuplicateAnalysisService', () => {
+  it('requires independent sources, both expected SHA values and a native pair match', async () => {
+    const s = createService([]);
+    const proof = {
+      version: PHOTO_RECOMPRESSION_VERSION,
+      originalHash: 'a'.repeat(64),
+      currentHash: 'b'.repeat(64),
+    };
+    const verifyRecompression = jest
+      .fn<
+        ReturnType<PhotoFingerprintService['verifyRecompression']>,
+        Parameters<PhotoFingerprintService['verifyRecompression']>
+      >()
+      .mockResolvedValue({
+        kind: 'recompression',
+        matched: true,
+        proof,
+        decodeCost: { encodedBytes: 2, pixels: 2 },
+      });
+    Object.assign(s.fingerprintService, { verifyRecompression });
+    const params = {
+      originalUrl: 'https://i.oneme.ru/original',
+      currentUrl: 'https://i.oneme.ru/current',
+      expectedOriginalHash: proof.originalHash,
+      expectedCurrentHash: proof.currentHash,
+      deadlineAtMs: Date.now() + 10_000,
+    };
+    await expect(s.service.verifyRecompression(params)).resolves.toEqual(proof);
+    expect(s.downloader.download.mock.calls.map(([url]) => url)).toEqual([
+      params.originalUrl,
+      params.currentUrl,
+    ]);
+    expect(verifyRecompression).toHaveBeenCalledWith(
+      Buffer.from(params.originalUrl),
+      Buffer.from(params.currentUrl),
+      { deadlineAtMs: params.deadlineAtMs },
+    );
+    await expect(
+      s.service.verifyRecompression({ ...params, expectedCurrentHash: 'c'.repeat(64) }),
+    ).resolves.toBeNull();
+    verifyRecompression.mockResolvedValue({
+      kind: 'recompression',
+      matched: false,
+      proof,
+      decodeCost: { encodedBytes: 2, pixels: 2 },
+    });
+    await expect(s.service.verifyRecompression(params)).resolves.toBeNull();
+  });
+
+  it('refreshes old cached exact evidence only when the caller requires candidate descriptors', async () => {
+    const cached = fingerprint('a');
+    const s = createService([cached]);
+    const source = album([
+      { source: 'direct', photoId: 'photo', downloadUrl: 'https://i.oneme.ru/a' },
+    ]);
+    await s.service.fingerprintAlbum(source, 60);
+    expect(s.downloader.download).not.toHaveBeenCalled();
+    await s.service.fingerprintAlbum(source, 60, Date.now() + 10_000, true);
+    expect(s.downloader.download).toHaveBeenCalledTimes(1);
+  });
+
   it('measures failed downloads without changing the original error or persisting partial proof', async () => {
     const s = createService([]);
     const original = new Error('download unavailable');

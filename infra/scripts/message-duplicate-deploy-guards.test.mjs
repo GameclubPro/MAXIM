@@ -30,6 +30,14 @@ const paths = {
     'apps/api/src/moderation/message-duplicate/message-duplicate-publication-time.ts',
   semanticKey: 'apps/api/src/webhook/webhook-semantic-event-key.ts',
   executionDeadline: 'apps/api/src/webhook/webhook-execution-deadline.ts',
+  media: 'apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts',
+  recompressionIndex:
+    'apps/api/src/moderation/message-duplicate/message-duplicate-recompression-index.ts',
+  photoAnalysis: 'apps/api/src/moderation/photo-duplicate/photo-duplicate-analysis.service.ts',
+  photoFingerprint: 'apps/api/src/moderation/photo-duplicate/photo-fingerprint.ts',
+  photoRecompression: 'apps/api/src/moderation/photo-duplicate/photo-recompression.ts',
+  recompressionVersion: 'apps/api/src/moderation/photo-duplicate/photo-recompression-version.ts',
+  counters: 'apps/api/src/moderation/redis-counter.service.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -76,6 +84,64 @@ test('requires the message-v3 reader, durable admission and last action permit o
 });
 
 const mutations = [
+  ['state', '.refine(hasValidImageComparisonEvidence)', '.refine(() => true)'],
+  ['state', 'image-recompression-fixed-window-v1', 'image-fixed-window-v2'],
+  ['state', 'original.length === 1', 'original.length > 0'],
+  ['state', 'value.mediaHashes.length === 1', 'value.mediaHashes.length > 0'],
+  ['state', 'proof.originalHash === original[0]', 'true'],
+  ['state', 'proof.currentHash === value.mediaHashes[0]', 'true'],
+  ['guard', '!hasValidImageComparisonEvidence(binding)', 'false'],
+  ['history', 'hasValidImageComparisonEvidence(binding)', 'true'],
+  ['history', '[recompression.originalHash]', '[recompression.currentHash]'],
+  ['history', 'recompression.currentHash !== mediaHashes[0]', 'false'],
+  ['history', 'imageOriginal?: MessageDuplicateOriginal;', 'imageOriginal?: unknown;'],
+  ['history', '!input.imageOriginal ||', 'false ||'],
+  ['history', 'input.imageOriginal.mediaHashes.length !== 1', 'false'],
+  ['history', 'input.imageOriginal.mediaHashes[0] !== recompression.originalHash', 'false'],
+  ['history', 'recompressionOriginal: input.imageOriginal', 'recompressionOriginal: undefined'],
+  ['window', "p.mode ~= 'IMAGE' or #p.fingerprints ~= 1", 'false'],
+  ['window', 'not valid(original) or original.member ~= expected.member', 'false'],
+  ['window', 'original.revision ~= expected.revision', 'false'],
+  ['window', 'original.originalId ~= expected.originalId', 'false'],
+  ['window', 'original.epoch ~= expected.epoch', 'false'],
+  ['window', 'original.contentDigest ~= expected.contentDigest', 'false'],
+  ['window', 'p.at < original.publishedAtMs', 'false'],
+  ['window', 'p.at >= original.expiresAtMs', 'false'],
+  ['window', 'p.periodStart and original.publishedAtMs < p.periodStart', 'false'],
+  ['media', 'parsed.data.recompressionAnchor ?? parsed.data', 'parsed.data'],
+  ['media', '!recompression.anchor', 'true'],
+  ['media', 'message.messageId !== candidate.messageId', 'false'],
+  ['media', 'candidate.expiresAtMs <= input.job.eventTimestampMs', 'false'],
+  ['media', 'accepted?.mediaHashes.length !== 1', 'false'],
+  ['media', 'accepted.mediaHashes[0] !== candidate.canonicalHash', 'false'],
+  [
+    'media',
+    'expectedOriginalHash: candidate.canonicalHash',
+    'expectedOriginalHash: input.verified.hashes[0]!',
+  ],
+  ['photoAnalysis', 'result.proof.originalHash !== params.expectedOriginalHash', 'false'],
+  ['photoAnalysis', 'result.proof.currentHash !== params.expectedCurrentHash', 'false'],
+  [
+    'photoFingerprint',
+    '.verifyRecompression(original, current, request)',
+    '.acceptUnverifiedSimilarity(original, current, request)',
+  ],
+  ['photoRecompression', 'a.info.width !== b.info.width', 'false'],
+  ['photoRecompression', 'a.info.height !== b.info.height', 'false'],
+  ['photoRecompression', 'Math.abs(difference) > limits.maximum', 'false'],
+  ['photoRecompression', 'square > count * limits.tileRms ** 2', 'false'],
+  ['recompressionVersion', 'native-recompression-v1', 'unsafe-similarity-v0'],
+  ['recompressionIndex', '#decoded>8', '#decoded>800'],
+  ['recompressionIndex', 'math.min(expires,r.expiresAtMs)', 'expires'],
+  ['recompressionIndex', 'r.expiresAtMs>p.atMs', 'true'],
+  ['recompressionIndex', "p.op~='read' or withinHamming(r.recompressionHash)", 'true'],
+  [
+    'recompressionIndex',
+    'if distance>6 then return false end',
+    'if distance>60 then return false end',
+  ],
+  ['recompressionIndex', 'for i=1,16,2 do', 'for i=1,#hash,2 do'],
+  ['counters', 'DUPLICATE_RECOMPRESSION_INDEX_SCRIPT,', 'UNVERIFIED_SIMILARITY_SCRIPT,'],
   ['window', 'at < prior.at or (at == prior.at', 'false or (at == prior.at'],
   ['window', 'prior.conflict or prior.source ~= source', 'false'],
   ['window', 'elseif prior.introducedKnown == false then', 'elseif false then'],
@@ -538,6 +604,27 @@ const mutations = [
   ['migration', 'OLD."duplicate_policy_revision" +', 'NEW."duplicate_policy_revision" +'],
   ['migration', 'BEFORE INSERT OR UPDATE ON "chat_settings"', 'BEFORE INSERT ON "chat_settings"'],
 ];
+test('rejects an original pin moved behind the observe mutation boundary', (t) => {
+  const source = readFileSync(resolve(root, paths.window), 'utf8');
+  const start = source.indexOf('if p.recompressionOriginal then');
+  const end = source.indexOf('local previous = read(stateKey(p.member))', start);
+  assert.ok(start >= 0 && end > start);
+  const pin = source.slice(start, end);
+  const mutation = "write('life:' .. p.member .. ':' .. p.mode,";
+  const mutationStart = source.indexOf(mutation, end);
+  assert.ok(mutationStart > end);
+  const insertion = source.indexOf('\n', mutationStart);
+  assert.ok(insertion > mutationStart);
+  const updated =
+    source.slice(0, start) + source.slice(end, insertion + 1) + pin + source.slice(insertion + 1);
+  const result = probe(t, { window: updated });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
+
 for (const [key, before, after] of mutations) {
   test(`rejects rollback after removing ${key} capability ${before}`, (t) => {
     const source = readFileSync(resolve(root, paths[key]), 'utf8');
@@ -573,6 +660,9 @@ test('rejects broad phone roots even with phone evidence v8 and the v14 settings
 });
 
 for (const [key, marker, fallback] of [
+  ['state', 'export function hasValidImageComparisonEvidence(', 'true'],
+  ['photoRecompression', 'function residualWithinBounds(', 'true'],
+  ['photoRecompression', 'export async function verifyNativePhotoRecompression(', 'null'],
   ['semantic', 'export function hasDuplicateQuantityUnitPrefix(', 'false'],
   ['semantic', 'function prefixQuantityUnitSpans(', '[]'],
   ['phones', 'function hasConventionalInternationalPhoneFormat(', 'true'],
@@ -580,10 +670,11 @@ for (const [key, marker, fallback] of [
   test('rejects missing ' + marker + ' body even when its markers remain outside', (t) => {
     const source = readFileSync(resolve(root, paths[key]), 'utf8');
     const start = source.indexOf(marker);
-    const end = source.indexOf('\n}', start + 1);
+    const closing = source.slice(start).search(/\n\}(?=\r?\n|$)/u);
+    const end = closing < 0 ? -1 : start + closing;
     assert.ok(start >= 0 && end > start);
     const body = source.slice(start, end + 2);
-    const opening = body.indexOf('{');
+    const opening = body.indexOf('{', body.lastIndexOf('):'));
     assert.ok(opening > 0);
     const stub = body.slice(0, opening + 1) + '\n  return ' + fallback + ';\n}';
     const updated = source.replace(body, stub) + '\n/* Removed capability:\n' + body + '\n*/\n';

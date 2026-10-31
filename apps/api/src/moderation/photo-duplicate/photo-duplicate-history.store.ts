@@ -1017,7 +1017,9 @@ function validateCachedPhotoFingerprint(fingerprint: PhotoFingerprint): PhotoFin
     !/^[0-9a-f]{64}$/.test(fingerprint.pdqHash) ||
     !Number.isSafeInteger(fingerprint.pdqQuality) ||
     fingerprint.pdqQuality < 0 ||
-    fingerprint.pdqQuality > 100
+    fingerprint.pdqQuality > 100 ||
+    (fingerprint.recompressionHash !== undefined &&
+      !/^[a-f0-9]{16}$/.test(fingerprint.recompressionHash))
   ) {
     throw new Error('Photo fingerprint cache value is invalid');
   }
@@ -1034,6 +1036,7 @@ function validateCachedPhotoFingerprint(fingerprint: PhotoFingerprint): PhotoFin
     ...(cost ? { decodeCost: { encodedBytes: cost.encodedBytes, pixels: cost.pixels } } : {}),
     algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
     canonicalHash: fingerprint.canonicalHash,
+    ...(fingerprint.recompressionHash ? { recompressionHash: fingerprint.recompressionHash } : {}),
     pdqHash: fingerprint.pdqHash,
     pdqQuality: fingerprint.pdqQuality,
   };

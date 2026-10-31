@@ -41,7 +41,9 @@ import type { RedisCounterService } from '../moderation/redis-counter.service';
 
 const REPLAY_CANDIDATE_BRANCH =
   'elseif original.member ~= p.member and publishedAt >= original.publishedAtMs and p.at < original.expiresAtMs then';
-const REVIEWED_WINDOW_SHA256 = 'f8fa9d4407ffb4681b6dae40192fa39183664dfa5424b85528940f27ce105425';
+// FLAG: The reviewed addition pins tolerant observations to a live original before writes;
+// exact observation, qualification and offline candidate instrumentation stay in place.
+const REVIEWED_WINDOW_SHA256 = '26babfb8fd835b1cfc2a3c3ea65c7e93c04a0e67b1fe1b3cec44089a4b7faa32';
 export function buildOfflineDuplicateScript(source = MESSAGE_DUPLICATE_WINDOW_SCRIPT): string {
   if (
     createHash('sha256').update(source).digest('hex') !== REVIEWED_WINDOW_SHA256 ||

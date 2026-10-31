@@ -96,6 +96,11 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     return replace(input);
   });
   const set = redis.setStringWithTtl.bind(redis);
+  const imageIndex = redis.duplicateRecompressionIndex.bind(redis);
+  jest.spyOn(redis, 'duplicateRecompressionIndex').mockImplementation((indexKeys, input) => {
+    indexKeys.forEach((key) => keys.add(key));
+    return imageIndex(indexKeys, input);
+  });
   jest.spyOn(redis, 'setStringWithTtl').mockImplementation((key, value, ttl) => {
     keys.add(key);
     return set(key, value, ttl);
@@ -402,6 +407,7 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       markup?: Record<string, unknown>[];
       buttons?: Record<string, unknown>[][];
       photo?: 'png' | 'webp' | 'different';
+      imageBytes?: Buffer;
       photoId?: string;
       photoCount?: number;
       reversePhotos?: boolean;
@@ -476,7 +482,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
     if (options.photo) {
       images.set(
         url,
-        options.photo === 'different' ? different : options.photo === 'webp' ? webp : png,
+        options.imageBytes ??
+          (options.photo === 'different' ? different : options.photo === 'webp' ? webp : png),
       );
       for (let index = 0; index < (options.photoCount ?? 1); index += 1) {
         const variant =
@@ -486,7 +493,8 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
           ]!;
         images.set(
           `${url}?item=${index}`,
-          variant[options.changedPhotoIndex === index ? 'different' : options.photo!],
+          options.imageBytes ??
+            variant[options.changedPhotoIndex === index ? 'different' : options.photo!],
         );
       }
     }
@@ -940,6 +948,198 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       await flow.processor.process(job);
       expect(flow.deleted).toEqual([second.id]);
       expect(flow.downloads).toHaveBeenCalledTimes(2);
+    });
+
+    const recompressionPoster = (phone = '8-902-009-99-49', price = 'Price 1000') =>
+      Buffer.from(`<svg width="512" height="512"><rect width="512" height="512" fill="#253b53"/>
+        <circle cx="180" cy="200" r="110" fill="#d0a040"/><circle cx="180" cy="200" r="60" fill="#253b53"/>
+        <path d="M0 330L512 290L512 380L0 420Z" fill="#e5e1d7"/>
+        <text x="30" y="60" font-family="DejaVu Sans" font-size="34" fill="white">TYRE SERVICE</text>
+        <text x="30" y="445" font-family="DejaVu Sans" font-size="28" fill="white">${phone}</text>
+        <text x="30" y="485" font-family="DejaVu Sans" font-size="28" fill="white">${price}</text></svg>`);
+
+    it('deletes a cross-author recompressed copy after unrelated photos, retaining both exact identities', async () => {
+      flow = await createFlow({ duplicatePhotoScope: 'CHAT' });
+      const original = flow.prepare({
+        photo: 'webp',
+        imageBytes: await sharp(recompressionPoster()).webp({ quality: 92 }).toBuffer(),
+      });
+      const filler = flow.prepare({ photo: 'different' });
+      const repeat = flow.prepare({
+        photo: 'webp',
+        userId: 456,
+        imageBytes: await sharp(recompressionPoster()).webp({ quality: 89 }).toBuffer(),
+      });
+      for (const item of [original, filler, repeat])
+        await flow.processor.process((await flow.ingest(item))!);
+      expect(flow.deleted).toEqual([repeat.id]);
+      const record = flow.records.get(`intent:${repeat.id}`)!;
+      const binding = parseMessageDuplicateBinding(record.input.event!.metadata)!;
+      expect(binding.original?.messageId).toBe(original.id);
+      expect(binding.imageRecompression).toEqual({
+        version: 'native-recompression-v1',
+        originalHash: binding.original!.mediaHashes[0],
+        currentHash: binding.mediaHashes[0],
+      });
+      expect(binding.mediaHashes[0]).not.toBe(binding.original!.mediaHashes[0]);
+      const downloads = flow.downloads.mock.calls.length;
+      await flow.processor.process((await flow.ingest(repeat))!);
+      expect(flow.deleted).toEqual([repeat.id]);
+      expect(flow.downloads).toHaveBeenCalledTimes(downloads);
+    });
+
+    it.each(['callback', 'link'] as const)(
+      'keeps changed %s buttons separate for recompressed photos while ignoring captions',
+      async (type) => {
+        flow = await createFlow({ duplicatePhotoScope: 'CHAT' });
+        const originalBytes = await sharp(recompressionPoster()).webp({ quality: 92 }).toBuffer();
+        const repeatedBytes = await sharp(recompressionPoster()).webp({ quality: 89 }).toBuffer();
+        const buttons = (value: string) => [
+          [
+            {
+              type,
+              text: 'Open',
+              ...(type === 'callback' ? { payload: value } : { url: value }),
+            },
+          ],
+        ];
+        const original = flow.prepare({
+          photo: 'webp',
+          imageBytes: originalBytes,
+          buttons: buttons('https://example.com/a'),
+          text: 'Original caption',
+        });
+        const changed = flow.prepare({
+          photo: 'webp',
+          imageBytes: originalBytes,
+          userId: 456,
+          buttons: buttons('https://example.com/b'),
+          text: 'Changed caption',
+        });
+        const repeat = flow.prepare({
+          photo: 'webp',
+          imageBytes: repeatedBytes,
+          userId: 789,
+          buttons: buttons('https://example.com/b'),
+          text: 'Another caption with https://example.org',
+        });
+        for (const item of [original, changed])
+          await flow.processor.process((await flow.ingest(item))!);
+        expect(flow.deleted).toEqual([]);
+        expect(flow.sanctions).toEqual([]);
+        await flow.processor.process((await flow.ingest(repeat))!);
+        expect(flow.deleted).toEqual([repeat.id]);
+        const binding = parseMessageDuplicateBinding(
+          flow.records.get(`intent:${repeat.id}`)!.input.event!.metadata,
+        )!;
+        expect(binding.original?.messageId).toBe(changed.id);
+        expect(binding.imageRecompression).toBeDefined();
+      },
+    );
+
+    it.each(['remove', 'reset'] as const)(
+      'uses a fresh exact original for recompressed copies after the previous source is fenced by %s',
+      async (change) => {
+        flow = await createFlow({ duplicatePhotoScope: 'CHAT' });
+        const originalBytes = await sharp(recompressionPoster()).webp({ quality: 92 }).toBuffer();
+        const repeatedBytes = await sharp(recompressionPoster()).webp({ quality: 89 }).toBuffer();
+        const original = flow.prepare({ photo: 'webp', imageBytes: originalBytes });
+        const filler = flow.prepare({ photo: 'different' });
+        for (const item of [original, filler])
+          await flow.processor.process((await flow.ingest(item))!);
+        if (change === 'remove') {
+          await flow.history.remove(flow.chatId, original.id);
+          flow.remote.delete(original.id);
+        } else await flow.redis.resetDuplicateWindow(flow.chatId, '123');
+        const freshTime = Date.now() + 100;
+        const freshOriginal = flow.prepare({
+          photo: 'webp',
+          imageBytes: originalBytes,
+          time: freshTime,
+        });
+        await flow.processor.process((await flow.ingest(freshOriginal))!);
+        expect(flow.deleted).toEqual([]);
+        const repeat = flow.prepare({
+          photo: 'webp',
+          imageBytes: repeatedBytes,
+          userId: 789,
+          time: freshTime + 100,
+        });
+        await flow.processor.process((await flow.ingest(repeat))!);
+        expect(flow.deleted).toEqual([repeat.id]);
+        const binding = parseMessageDuplicateBinding(
+          flow.records.get(`intent:${repeat.id}`)!.input.event!.metadata,
+        )!;
+        expect(binding.original?.messageId).toBe(freshOriginal.id);
+        expect(binding.imageRecompression).toBeDefined();
+      },
+    );
+
+    it.each([
+      ['phone', '8-902-009-99-48', 'Price 1000'],
+      ['price', '8-902-009-99-49', 'Price 1009'],
+    ])(
+      'preserves a changed %s while deleting its actual recompressed repeat',
+      async (_field, phone, price) => {
+        flow = await createFlow({ duplicatePhotoScope: 'CHAT' });
+        const original = flow.prepare({
+          photo: 'webp',
+          imageBytes: await sharp(recompressionPoster()).webp({ quality: 92 }).toBuffer(),
+        });
+        const changed = flow.prepare({
+          photo: 'webp',
+          userId: 456,
+          imageBytes: await sharp(recompressionPoster(phone, price))
+            .webp({ quality: 89 })
+            .toBuffer(),
+        });
+        const repeat = flow.prepare({
+          photo: 'webp',
+          userId: 789,
+          imageBytes: await sharp(recompressionPoster(phone, price))
+            .webp({ quality: 92 })
+            .toBuffer(),
+        });
+        for (const item of [original, changed, repeat])
+          await flow.processor.process((await flow.ingest(item))!);
+        expect(flow.deleted).toEqual([repeat.id]);
+        const binding = parseMessageDuplicateBinding(
+          flow.records.get(`intent:${repeat.id}`)!.input.event!.metadata,
+        )!;
+        expect(binding.original?.messageId).toBe(changed.id);
+      },
+    );
+
+    it('always verifies recompressed copies against the original instead of chaining small changes', async () => {
+      flow = await createFlow({ duplicatePhotoScope: 'CHAT' });
+      const image = (gray: number) =>
+        sharp({
+          create: {
+            width: 128,
+            height: 128,
+            channels: 3,
+            background: { r: gray, g: gray, b: gray },
+          },
+        })
+          .png()
+          .toBuffer();
+      const original = flow.prepare({ photo: 'png', imageBytes: await image(128) });
+      const firstCopy = flow.prepare({ photo: 'png', userId: 456, imageBytes: await image(129) });
+      const drifted = flow.prepare({ photo: 'png', userId: 789, imageBytes: await image(130) });
+      for (const item of [original, firstCopy, drifted])
+        await flow.processor.process((await flow.ingest(item))!);
+      expect(flow.deleted).toEqual([firstCopy.id]);
+      const actualRepeat = flow.prepare({
+        photo: 'png',
+        userId: 456,
+        imageBytes: await image(130),
+      });
+      await flow.processor.process((await flow.ingest(actualRepeat))!);
+      expect(flow.deleted).toEqual([firstCopy.id, actualRepeat.id]);
+      const binding = parseMessageDuplicateBinding(
+        flow.records.get(`intent:${actualRepeat.id}`)!.input.event!.metadata,
+      )!;
+      expect(binding.original?.messageId).toBe(drifted.id);
     });
 
     it('deletes the second identical short text without a media job', async () => {
