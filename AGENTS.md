@@ -4,6 +4,8 @@
 
 - Verify implementation against code, `package.json`, Compose and scripts; fix stale notes.
   Existing code/tests establish current behavior, not necessarily intended behavior.
+- Use configured `workspace`; preserve repo QA/release gates.
+  See [interfaces](docs/development/agent-machine-contract.md).
 - Before editing, run `node scripts/agent/context.mjs --path <file>`; include callers.
   Read its scoped notes and relevant references. For behavior changes, follow the
   [evidence procedure](docs/development/behavior-evidence.md).
@@ -59,8 +61,7 @@
    Docs/tests/tooling need no deploy or second main CI wait after green PR merge. Active
    runtime needs one identity/availability readback, no rebuild or unrequested watch.
 
-Contract changes affect API, mini app and admin. Keep exports, TypeScript paths and Jest mappers
-aligned. Unknown paths fail closed in the impact planner; renames include old and new scopes.
+Contract changes affect API, mini app and admin; align exports, TypeScript paths and Jest mappers. Unknown paths fail closed in the impact planner; renames include old and new scopes.
 Prisma changes follow the migration review in API notes. Nginx changes are manual site operations.
 See [release details](docs/development-reliability-plan.md).
 
@@ -89,9 +90,8 @@ See [release details](docs/development-reliability-plan.md).
 
 ## Evidence And Durable Knowledge
 
-- Track the current stage, checkout/SHA, next action, checks, log paths and unresolved gates in a
-  small private task record outside Git. Retire stale entries and revalidate live state on resume.
-  Replace superseded status fields; keep completed history in a separate dated record.
+- Keep a private task record: stage, checkout/SHA, next action, evidence and gates. Revalidate live
+  state on resume; replace stale status and move completed history to dated records.
 - Track long commands by identity, log, start/deadline and exit status. Collectors also need a
   heartbeat and last successful sample. Missing/stale samples are gaps; a launched process is not
   proof that work continues. See [execution discipline](docs/development-reliability-plan.md#long-running-agent-work).

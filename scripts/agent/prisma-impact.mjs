@@ -53,7 +53,9 @@ export function stripPrismaRuntimeOnlyBlocks(source) {
 }
 
 function previousSchemaSource(source) {
-  return source.mode === 'range' ? { kind: 'git', ref: source.base } : { kind: 'git', ref: 'HEAD' };
+  return ['range', 'since'].includes(source.mode)
+    ? { kind: 'git', ref: source.base }
+    : { kind: 'git', ref: 'HEAD' };
 }
 
 function currentSchemaSource(source) {

@@ -250,7 +250,7 @@ deploy_main main --auto
 test('statistics flag is caller-only across persisted VPS configuration', (t) => {
   const data = fixture(t);
   const envFile = resolve(data.directory, '.env.vps');
-  const start = connect.indexOf('readonly MESSAGE_RETENTION_MODE_FROM_CALLER=');
+  const start = connect.indexOf('PAIR_RELEASE_EXPECTED_STATE_FROM_CALLER=');
   const end = connect.indexOf('\nMAXIM_VPS_SSH_TARGET=', start);
   assert.ok(start >= 0 && end > start);
   const bootstrap = connect.slice(start, end);

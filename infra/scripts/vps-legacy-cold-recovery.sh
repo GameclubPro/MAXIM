@@ -10,6 +10,6 @@ fi
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 acquire_deploy_lock
-# FLAG: Exec preserves the protected lock descriptor through every journal/store
-# operation. This entrypoint never invokes the ordinary deploy or replays an event.
-exec node "$ROOT_DIR/infra/scripts/legacy-cold-host.mjs"
+# FLAG: Keep the original admission owner and inherited locks through controller
+# completion. This entrypoint never invokes the ordinary deploy or replays an event.
+supervise_deploy_lock_command node "$ROOT_DIR/infra/scripts/legacy-cold-host.mjs"

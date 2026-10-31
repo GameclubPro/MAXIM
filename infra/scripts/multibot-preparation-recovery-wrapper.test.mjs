@@ -78,6 +78,10 @@ for (const signal of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
         `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
+if (process.argv[2] === '-e' || process.argv[2] === process.env.MAXIM_WRAPPER_PAIR_REPORTER) {
+  const result = require('node:child_process').spawnSync(process.execPath, process.argv.slice(2), { stdio: 'inherit' });
+  process.exit(result.status ?? 1);
+}
 if (process.argv.includes('--validate-args')) process.exit(0);
 const directory = process.env.MAXIM_WRAPPER_FIXTURE_DIRECTORY;
 const mark = (name, value) => fs.writeFileSync(path.join(directory, name), JSON.stringify(value));
@@ -102,6 +106,7 @@ setInterval(() => {}, 1000);
       const env = deployLockEnvironment({
         PATH: `${binaries}:${process.env.PATH}`,
         MAXIM_WRAPPER_FIXTURE_DIRECTORY: fixture,
+        MAXIM_WRAPPER_PAIR_REPORTER: lockFixture.pair.reporter,
       });
       const observer = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
         stdio: 'ignore',

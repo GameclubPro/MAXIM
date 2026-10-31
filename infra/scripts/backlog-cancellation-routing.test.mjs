@@ -38,6 +38,19 @@ const functions = connector.slice(
   connector.indexOf('\nlegacy_cold_recovery() {'),
 );
 const shellSource = readFileSync(new URL('./vps-backlog-cancellation.sh', import.meta.url), 'utf8');
+const lockHelper = readFileSync(new URL('./lib/deploy-lock.sh', import.meta.url), 'utf8');
+const commandSupervisor = [
+  '_maxim_deploy_controller_start',
+  '_maxim_deploy_signal_controller',
+  'supervise_deploy_lock_command',
+]
+  .map((name) => {
+    const start = lockHelper.indexOf(`${name}() {`);
+    const end = lockHelper.indexOf('\n}\n', start);
+    assert.ok(start >= 0 && end > start, `Missing command supervisor function: ${name}`);
+    return lockHelper.slice(start, end + 2);
+  })
+  .join('\n');
 const entrypoints = [
   ['cancel_webhook_backlog', fixture.validApply],
   ['preview_webhook_backlog', fixture.validNomination],
@@ -289,13 +302,18 @@ function runHostShell(settings = {}) {
   mkdirSync(join(scripts, 'lib'), { recursive: true });
   mkdirSync(binary);
   const events = join(directory, 'events');
+  const forwarded = join(directory, 'forwarded');
+  const input = bytes(fixture.validNomination);
   writeFileSync(join(scripts, 'vps-backlog-cancellation.sh'), shellSource);
   writeFileSync(
     join(scripts, 'lib', 'deploy-lock.sh'),
     `acquire_deploy_lock() {
   printf '%s\n' lock >> "$TEST_EVENTS"
   touch "$TEST_ACQUIRED"
-}\n`,
+}
+require_deploy_lock() { [[ -f "$TEST_ACQUIRED" ]]; }
+release_deploy_lock() { :; }
+${commandSupervisor}\n`,
   );
   writeFileSync(
     join(binary, 'git'),
@@ -313,8 +331,10 @@ else exit 99; fi
   writeFileSync(
     join(binary, 'node'),
     `#!/usr/bin/env bash
+[[ $# == 2 && "$1" == "$TEST_ROOT/infra/scripts/backlog-cancellation-host.mjs" && "$2" == --preview ]] || exit 92
 printf '%s\n' node >> "$TEST_EVENTS"
 printf '%s\n' "$MAXIM_EXPECTED_DEPLOY_SHA" "\${MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA-unset}"
+cat > "$TEST_FORWARDED"
 `,
   );
   chmodSync(join(binary, 'git'), 0o700);
@@ -324,6 +344,8 @@ printf '%s\n' "$MAXIM_EXPECTED_DEPLOY_SHA" "\${MAXIM_EXPECTED_BACKLOG_RUNTIME_SH
       ...process.env,
       PATH: `${binary}:${process.env.PATH}`,
       TEST_EVENTS: events,
+      TEST_ROOT: directory,
+      TEST_FORWARDED: forwarded,
       TEST_ACQUIRED: join(directory, 'acquired'),
       TEST_DRIFT: settings.drift ?? '',
       TEST_CHANGED_SHA: 'f'.repeat(40),
@@ -335,11 +357,14 @@ printf '%s\n' "$MAXIM_EXPECTED_DEPLOY_SHA" "\${MAXIM_EXPECTED_BACKLOG_RUNTIME_SH
       env.MAXIM_EXPECTED_BACKLOG_RUNTIME_SHA = settings.runtimeSha;
     const result = spawnSync('bash', [join(scripts, 'vps-backlog-cancellation.sh'), '--preview'], {
       encoding: 'utf8',
+      input,
       timeout: 10_000,
       env,
     });
     return {
       ...result,
+      input,
+      forwarded: existsSync(forwarded) ? readFileSync(forwarded, 'utf8') : '',
       events: existsSync(events) ? readFileSync(events, 'utf8').trim().split('\n') : [],
     };
   } finally {
@@ -352,6 +377,7 @@ test('host shell preserves separate identities and old omitted-runtime entry whi
     const result = runHostShell(settings);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(result.events, ['lock', 'node']);
+    assert.equal(result.forwarded, result.input);
     assert.equal(result.stdout, `${'e'.repeat(40)}\n${settings.runtimeSha ?? 'unset'}\n`);
   }
   for (const settings of [{ dirty: true }, { runtimeSha: '' }, { runtimeSha: 'invalid' }]) {

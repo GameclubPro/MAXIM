@@ -250,6 +250,7 @@ function fixture(t, mode = 'success') {
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
+      'if [[ "$1" == -C && ( "$2" == "$FIXTURE_PAIR_MAJOR_ROOT" || "$2" == "$FIXTURE_PAIR_KARAVAN_ROOT" ) ]]; then exec "$REAL_GIT" "$@"; fi',
       'case "$*" in',
       '  *"rev-parse HEAD"*) printf "%s\\n" "$FIXTURE_SHA" ;;',
       '  *"status --porcelain"*) if [[ "$FIXTURE_MODE" == dirty-source ]]; then printf "?? local-change\\n"; fi ;;',
@@ -280,6 +281,8 @@ function fixture(t, mode = 'success') {
   writeFileSync(
     join(bin, 'node'),
     [
+      '#!/usr/bin/env bash',
+      'if [[ "$1" == -e || "$1" == "$FIXTURE_PAIR_REPORTER" ]]; then exec "$REAL_NODE" "$@"; fi',
       ...assertLocked,
       'if [[ "${2:-}" == swap && ! -e "$FIXTURE_DIRECTORY/verified" ]]; then',
       '  touch "$FIXTURE_DIRECTORY/verified"',
@@ -348,6 +351,10 @@ if (status >= 400 && args.some(arg => arg === '--fail' || arg === '-f' || /^-[^-
   const env = deployLockEnvironment({
     PATH: `${bin}:${process.env.PATH}`,
     REAL_NODE: process.execPath,
+    REAL_GIT: spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim(),
+    FIXTURE_PAIR_REPORTER: lock.pair.reporter,
+    FIXTURE_PAIR_MAJOR_ROOT: lock.pair.majorRoot,
+    FIXTURE_PAIR_KARAVAN_ROOT: lock.pair.karavanRoot,
     FIXTURE_REPO: repo,
     FIXTURE_DIRECTORY: directory,
     FIXTURE_EVENTS: events,

@@ -128,6 +128,12 @@ function fixture(
   const log = resolve(directory, 'events.log');
   mkdirSync(repo);
   const lock = deployLockFixture(directory, resolve(repo, 'infra/scripts/lib/deploy-lock.sh'));
+  for (const file of ['vps-runtime-rollback.sh', 'vps-connect.sh']) {
+    writeFileSync(
+      resolve(repo, 'infra/scripts', file),
+      readFileSync(new URL(`./${file}`, import.meta.url), 'utf8'),
+    );
+  }
   const env = deployLockEnvironment({
     GIT_AUTHOR_NAME: 'Fixture',
     GIT_AUTHOR_EMAIL: 'fixture@example.invalid',

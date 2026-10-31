@@ -556,6 +556,7 @@ echo "Services: ${SERVICES[*]}"
 ensure_rollback_migrations_compatible
 maxim_check_deploy_disk_capacity 1 0
 require_market_statistics_lock_dispatch "$TARGET_FULL_SHA" || exit 1
+require_pair_release_admission_dispatch "$TARGET_FULL_SHA" || exit 1
 git switch --detach "$TARGET_FULL_SHA"
 maxim_topology_refuse_dirty_api_build_inputs
 

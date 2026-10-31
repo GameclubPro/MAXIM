@@ -25,4 +25,4 @@ acquire_deploy_lock
 # FLAG: Recheck controller identity under the inherited shared lock. The envelope
 # separately binds the stopped runtime and cannot authorize a new recovery scope.
 require_corrective_controller_source
-exec node "$ROOT_DIR/infra/scripts/source-abandonment-corrective-host.mjs"
+supervise_deploy_lock_command node "$ROOT_DIR/infra/scripts/source-abandonment-corrective-host.mjs"
