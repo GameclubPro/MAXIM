@@ -17,6 +17,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AdvertisingPlacementSend } from '../prisma/prisma-client';
 import { MaxClientService, wasMaxMessageSendAttempted } from '../max/max-client.service';
+import { withMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 import { ManagedEntitiesService } from './managed-entities.service';
 import type { NetworkSettingsWriteOptions } from './network-settings-write';
 
@@ -238,25 +239,28 @@ export class AdvertisingPlacementService {
           sourceTag: 'advertising_placement',
           timeoutMs: 15_000,
           idempotencyKey: `advertising-placement:${input.requestId}`,
-          beforeImmediateSendMutation: async () => {
-            // FLAG: Check again after routing/rate waits. Disable fences every unattempted send.
-            await this.authorize(chatId, user);
-            const fresh = await this.lookup(chatId);
-            const settings = await this.prisma.advertisingPlacement.findUnique({
-              where: { chatId },
-            });
-            if (
-              !fresh ||
-              fresh.id !== listing.id ||
-              !settings?.enabled ||
-              settings.revision !== input.revision ||
-              settings.lastSendId !== input.requestId ||
-              settings.listingId !== listing.id ||
-              Date.now() - claimed.row.createdAt.getTime() >= UNCERTAIN_AFTER_MS
-            )
-              throw new ConflictException('Отправка отменена: настройки или доступ изменились');
-            dispatchGuardPassed = true;
-          },
+          beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(
+            async (beforeFinalAuthority) => {
+              // FLAG: Check again after routing/rate waits. Disable fences every unattempted send.
+              await this.authorize(chatId, user);
+              const fresh = await this.lookup(chatId);
+              await beforeFinalAuthority?.();
+              const settings = await this.prisma.advertisingPlacement.findUnique({
+                where: { chatId },
+              });
+              if (
+                !fresh ||
+                fresh.id !== listing.id ||
+                !settings?.enabled ||
+                settings.revision !== input.revision ||
+                settings.lastSendId !== input.requestId ||
+                settings.listingId !== listing.id ||
+                Date.now() - claimed.row.createdAt.getTime() >= UNCERTAIN_AFTER_MS
+              )
+                throw new ConflictException('Отправка отменена: настройки или доступ изменились');
+              dispatchGuardPassed = true;
+            },
+          ),
         },
       );
     } catch (error) {

@@ -7,10 +7,13 @@ import {
   MAX_API_SOURCE_TAGS,
   MaxApiInternalRateLimitError,
   MaxClientService,
+  consumeMaxChatMemberAccessHttp429,
+  consumeMaxExactMessageLookupHttp429,
 } from '../max/max-client.service';
 import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import { MaxModerationApiBudgetError } from '../max/max-moderation-api-budget';
 import {
   isMaxMutationOutcomeAmbiguous,
   wasMaxMessageSendAttempted,
@@ -67,6 +70,89 @@ export class RequiredSubscriptionInitialSourceUnavailableError extends Error {
     super('Required subscription initial source unavailable', { cause });
     this.name = 'RequiredSubscriptionInitialSourceUnavailableError';
   }
+}
+
+export type RequiredSubscriptionInitialSourceReadWaitBinding = {
+  chatId: string;
+  userId: string;
+  messageId: string;
+  sourceAtMs: number;
+  deadlineAtMs: number;
+  policySha256: string;
+  botId: string;
+};
+
+type RequiredSubscriptionInitialSourceReadWait = Readonly<
+  RequiredSubscriptionInitialSourceReadWaitBinding & { boundary: 'author' | 'source' }
+>;
+
+const initialSourceReadWaits = new WeakMap<
+  object,
+  {
+    cause: unknown;
+    kind: 'local_quota' | 'http_429';
+    proofs: readonly RequiredSubscriptionInitialSourceReadWait[];
+  }
+>();
+
+// FLAG: Only the exact initial GET invocation can mint this bounded read obligation.
+// Public errors, copied fields and unavailable/absent evidence grant no continuation.
+export function readRequiredSubscriptionInitialSourceReadWait(
+  error: unknown,
+  expected: RequiredSubscriptionInitialSourceReadWaitBinding,
+): RequiredSubscriptionInitialSourceReadWait | null {
+  if (!error || typeof error !== 'object') return null;
+  const wait = initialSourceReadWaits.get(error);
+  const evidence = error as { cause?: unknown; request?: unknown; response?: unknown };
+  if (
+    !wait ||
+    evidence.cause !== wait.cause ||
+    extractHttpStatusCode(error) !== null ||
+    evidence.request != null ||
+    evidence.response != null ||
+    !(wait.kind === 'local_quota'
+      ? isRequiredSubscriptionInitialLocalReadWait(wait.cause)
+      : isRequiredSubscriptionInitialHttpReadWait(wait.cause)) ||
+    wasMaxMessageSendAttempted(error) ||
+    wasMaxMemberMutationAttempted(error) ||
+    isMaxMutationOutcomeAmbiguous(error)
+  )
+    return null;
+  return (
+    wait.proofs.find(
+      (proof) =>
+        proof.chatId === expected.chatId &&
+        proof.userId === expected.userId &&
+        proof.messageId === expected.messageId &&
+        proof.sourceAtMs === expected.sourceAtMs &&
+        proof.deadlineAtMs === expected.deadlineAtMs &&
+        proof.policySha256 === expected.policySha256 &&
+        proof.botId === expected.botId &&
+        proof.sourceAtMs <= Date.now() &&
+        Date.now() < proof.deadlineAtMs,
+    ) ?? null
+  );
+}
+
+function withRequiredSubscriptionInitialSourceReadWait<T extends Error>(
+  error: T,
+  cause: unknown,
+  boundary: 'author' | 'source',
+  bindings: readonly RequiredSubscriptionInitialSourceReadWaitBinding[],
+  kind: 'local_quota' | 'http_429' = 'local_quota',
+): T {
+  if (
+    bindings.length &&
+    (kind === 'local_quota'
+      ? isRequiredSubscriptionInitialLocalReadWait(cause)
+      : isRequiredSubscriptionInitialHttpReadWait(cause))
+  )
+    initialSourceReadWaits.set(error, {
+      cause,
+      kind,
+      proofs: bindings.map((binding) => Object.freeze({ ...binding, boundary })),
+    });
+  return error;
 }
 
 @Injectable()
@@ -213,14 +299,14 @@ export class RequiredSubscriptionExecutionGuardService {
         ]
       : [];
     if (!targets.length || targets.length > REQUIRED_SUBSCRIPTION_MAX_CHANNELS) this.reject();
+    const policySha256 = fingerprintModerationSettings(settings, 'REQUIRED_SUBSCRIPTION');
     const eligible = reasons.filter((reason) => {
       const binding = this.metadata(reason.metadata);
       const sourceAt = Number(binding.requiredSubscriptionSourceAtMs);
       const deadline = Number(binding.requiredSubscriptionDeadlineAtMs);
       return (
         binding.requiredSubscriptionGuardVersion === 1 &&
-        binding.requiredSubscriptionPolicySha256 ===
-          fingerprintModerationSettings(settings, 'REQUIRED_SUBSCRIPTION') &&
+        binding.requiredSubscriptionPolicySha256 === policySha256 &&
         Number.isSafeInteger(sourceAt) &&
         sourceAt > 0 &&
         sourceAt <= Date.now() &&
@@ -229,6 +315,21 @@ export class RequiredSubscriptionExecutionGuardService {
       );
     });
     if (!eligible.length) this.reject();
+    const initialReadWaitBindings: RequiredSubscriptionInitialSourceReadWaitBinding[] =
+      params.initialQualification === true &&
+      [params.chatId, userId, params.messageId, params.botId].every(
+        (value) => typeof value === 'string' && value.length > 0 && value === value.trim(),
+      )
+        ? eligible.map((reason) => ({
+            chatId: params.chatId,
+            userId,
+            messageId: params.messageId,
+            sourceAtMs: Number(this.metadata(reason.metadata).requiredSubscriptionSourceAtMs),
+            deadlineAtMs: Number(this.metadata(reason.metadata).requiredSubscriptionDeadlineAtMs),
+            policySha256,
+            botId: params.botId!,
+          }))
+        : [];
     const options = {
       botId: params.botId,
       bypassCache: true,
@@ -243,13 +344,36 @@ export class RequiredSubscriptionExecutionGuardService {
     const access = await this.max
       .getChatMemberAccess(params.chatId, userId, options)
       .catch((error: unknown) => {
+        // FLAG: A fresh exact-author GET may transfer only its one-use transport proof.
+        // Generic status/config fields retain the existing no-effect classification.
+        if (
+          params.initialQualification === true &&
+          initialReadWaitBindings.length &&
+          consumeMaxChatMemberAccessHttp429(error, {
+            chatId: params.chatId,
+            userId,
+            botId: params.botId!,
+          })
+        )
+          throw withRequiredSubscriptionInitialSourceReadWait(
+            new RequiredSubscriptionAuthorAccessUnavailableError(error),
+            error,
+            'author',
+            initialReadWaitBindings,
+            'http_429',
+          );
         // FLAG: Only the initial no-effect qualification or committed DELETE handoff may
         // outlive this exact author GET limiter refusal. Final dispatch requires fresh access.
         if (
           (params.initialQualification === true || params.deleteHandoffQualification === true) &&
           isRequiredSubscriptionMemberReadRateLimited(error)
         )
-          throw new RequiredSubscriptionAuthorAccessUnavailableError(error);
+          throw withRequiredSubscriptionInitialSourceReadWait(
+            new RequiredSubscriptionAuthorAccessUnavailableError(error),
+            error,
+            'author',
+            initialReadWaitBindings,
+          );
         throw error;
       });
     if (!access || access.isAdmin === true || access.isOwner === true) this.reject();
@@ -259,6 +383,24 @@ export class RequiredSubscriptionExecutionGuardService {
     try {
       row = await this.max.getExactMessageRow(params.chatId, params.messageId, options);
     } catch (error) {
+      // FLAG: The transport consumes its exact invocation's nominal GET/429 proof.
+      // Status fields alone cannot create this source-bound, no-effect continuation.
+      if (
+        params.initialQualification === true &&
+        initialReadWaitBindings.length &&
+        consumeMaxExactMessageLookupHttp429(error, {
+          chatId: params.chatId,
+          messageId: params.messageId,
+          botId: params.botId!,
+        })
+      )
+        throw withRequiredSubscriptionInitialSourceReadWait(
+          new RequiredSubscriptionInitialSourceUnavailableError(error),
+          error,
+          'source',
+          initialReadWaitBindings,
+          'http_429',
+        );
       // FLAG: Only explicitly scoped qualification GETs classify unavailable source
       // evidence. Final dispatch and attempted mutations retain their failure fences.
       if (
@@ -273,7 +415,12 @@ export class RequiredSubscriptionExecutionGuardService {
         throw new RequiredSubscriptionDeleteSourceUnavailableError(error);
       }
       if (params.initialQualification === true && isRequiredSubscriptionSourceReadDeferred(error))
-        throw new RequiredSubscriptionInitialSourceUnavailableError(error);
+        throw withRequiredSubscriptionInitialSourceReadWait(
+          new RequiredSubscriptionInitialSourceUnavailableError(error),
+          error,
+          'source',
+          initialReadWaitBindings,
+        );
       if (
         params.deleteHandoffQualification === true &&
         isRequiredSubscriptionSourceReadDeferred(error)
@@ -385,6 +532,37 @@ function isRequiredSubscriptionLocalReadRateLimited(error: unknown): boolean {
     error.preDispatch === true &&
     extractHttpStatusCode(error) === null &&
     (method === undefined || method === 'get')
+  );
+}
+
+// FLAG: The muted-user attempt budget cannot escape into an independent candidate.
+// Request/response evidence also contradicts this strictly pre-HTTP local refusal.
+function isRequiredSubscriptionInitialLocalReadWait(error: unknown): boolean {
+  const evidence = error as { request?: unknown; response?: unknown } | null;
+  return (
+    isRequiredSubscriptionLocalReadRateLimited(error) &&
+    !(error instanceof MaxModerationApiBudgetError) &&
+    evidence?.request == null &&
+    evidence?.response == null &&
+    !wasMaxMessageSendAttempted(error) &&
+    !wasMaxMemberMutationAttempted(error) &&
+    !isMaxMutationOutcomeAmbiguous(error)
+  );
+}
+
+// FLAG: This only rechecks an already consumed nominal transport proof in the WeakMap.
+// It is not an HTTP-status admission predicate and cannot mint a read obligation itself.
+function isRequiredSubscriptionInitialHttpReadWait(error: unknown): boolean {
+  const evidence = error as {
+    response?: { status?: unknown };
+    config?: { method?: unknown };
+  } | null;
+  return (
+    evidence?.response?.status === 429 &&
+    (evidence.config?.method === undefined || evidence.config.method === 'get') &&
+    !wasMaxMessageSendAttempted(error) &&
+    !wasMaxMemberMutationAttempted(error) &&
+    !isMaxMutationOutcomeAmbiguous(error)
   );
 }
 

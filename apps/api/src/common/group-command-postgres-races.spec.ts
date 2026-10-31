@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { ClosedChatDeleteGuardService } from '../moderation/closed-chat-delete-guard.service';
 import { formatMinutesAsTime } from '../moderation/night-mode-transition-time.util';
 import { WebhookOutboxService } from '../webhook/webhook-outbox.service';
+import type { MaxClientService } from '../max/max-client.service';
 import {
   ChatEntityType,
   createPrismaClient,
@@ -22,7 +23,10 @@ import {
   type GroupCommandPermit,
 } from './group-command-authority.service';
 import { expireUnclaimedGroupStarts } from './group-command-start-expiry';
-import { groupCommandNoticeLedgerKey } from './group-command-notice-delivery';
+import {
+  deliverGroupCommandNotice,
+  groupCommandNoticeLedgerKey,
+} from './group-command-notice-delivery';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
 const describePostgresRace = databaseUrl ? describe : describe.skip;
@@ -634,6 +638,71 @@ describePostgresRace('PostgreSQL durable GROUP command races', () => {
       }
     }
   });
+
+  it.each(['unchanged', 'command lease lost', 'recovery source changed'] as const)(
+    'rechecks GROUP notice authority after transport admission: %s',
+    async (change) => {
+      const sourceAt = new Date(Date.now() - 60_000);
+      const data = await fixture(1, sourceAt);
+      await prisma.webhookEvent.update({
+        where: { id: receiptIds[receiptIds.length - 1]! },
+        data: { executionDeadlineAt: new Date(sourceAt.getTime() + 300_000) },
+      });
+      const permit = await claim(data.updates[0]!);
+      const authority = new GroupCommandAuthorityService(prisma as never);
+      const transport = jest.fn();
+      const beforeMutation = jest.fn(async () => {
+        const source = await prisma.webhookEvent.findUniqueOrThrow({
+          where: { id: permit.webhookEventId },
+        });
+        if (source.status !== 'QUEUED' || source.errorMessage !== null)
+          throw new Error('Command recovery source changed');
+      });
+      const checkpoint = jest.fn(async () => {
+        if (change === 'command lease lost')
+          await peerPrisma.webhookExecutionClaim.update({
+            where: { id: permit.claimId },
+            data: { leaseToken: null, leaseExpiresAt: null },
+          });
+        if (change === 'recovery source changed')
+          await peerPrisma.webhookEvent.update({
+            where: { id: permit.webhookEventId },
+            data: { errorMessage: 'fixture: recovery source changed during admission' },
+          });
+      });
+      const sendMessage = jest.fn<
+        ReturnType<MaxClientService['sendMessage']>,
+        Parameters<MaxClientService['sendMessage']>
+      >(async (_chatId, _text, _options, dispatchOptions) => {
+        await dispatchOptions?.beforeImmediateSendMutation?.(checkpoint);
+        transport();
+      });
+      const delivery = deliverGroupCommandNotice({
+        max: { sendMessage } as unknown as MaxClientService,
+        authority,
+        permit,
+        settings: { deleteBotMessagesEnabled: false, deleteBotMessagesDelayMinutes: 1 },
+        text: 'Команда выполнена',
+        beforeMutation,
+      });
+      if (change === 'unchanged') {
+        await expect(delivery).resolves.toBeUndefined();
+        expect(transport).toHaveBeenCalledTimes(1);
+        expect(beforeMutation).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(delivery).rejects.toMatchObject({
+          cause: expect.objectContaining({
+            message:
+              change === 'command lease lost'
+                ? 'Group command lease lost'
+                : 'Command recovery source changed',
+          }),
+        });
+        expect(transport).not.toHaveBeenCalled();
+      }
+      expect(checkpoint).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([1, 3, 4, 6, 9, 12])(
     'applies one SILENCE and notice result across %i mirrored bot receipts',

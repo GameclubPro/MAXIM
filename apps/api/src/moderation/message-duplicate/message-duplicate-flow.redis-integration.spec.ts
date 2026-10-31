@@ -882,6 +882,50 @@ async function createFlow(overrides: Partial<ChatSettings> = {}) {
       expect(flow.deleted).toEqual([]);
     });
 
+    it('rejects a real history reset during the final transport checkpoint', async () => {
+      flow = await createFlow({ duplicateCompareMode: 'TEXT', duplicatePhotoEnabled: false });
+      const text = 'Repeated native participant source keeps its durable deletion authority';
+      const first = flow.prepare({ text });
+      const repeat = flow.prepare({ text });
+      const observe = (item: typeof first) =>
+        flow.history.observe({
+          chatId: flow.chatId,
+          userId: '123',
+          messageId: item.id,
+          eventTimestampMs: item.time,
+          controlRevision: flow.policyValue.revision,
+          settings: flow.settings,
+          content: extractDuplicateMessageContent(item.update.raw),
+        });
+      expect(await observe(first)).toBeNull();
+      const match = await observe(repeat);
+      expect(match).not.toBeNull();
+      const binding = match!.binding;
+      binding.authorization = {
+        eventTimestampMs: repeat.time,
+        deadlineAtMs: repeat.time + 600_000,
+      };
+      const request = {
+        chatId: flow.chatId,
+        messageId: repeat.id,
+        subjectUserId: '123',
+        botId: 'bot',
+        binding,
+      };
+      await expect(flow.guard.assertMessageStillActionable(request)).resolves.toBe('allowed');
+      const beforeFinalAuthority = jest.fn(async () => {
+        await flow.redis.resetDuplicateWindow(flow.chatId, '123');
+        expect(await flow.history.stillMatches(flow.chatId, binding)).toBe(false);
+        expect(await flow.authorization.isAllowed(flow.chatId, binding)).toBe(true);
+      });
+      await expect(
+        flow.guard.assertMessageStillActionable({ ...request, beforeFinalAuthority }),
+      ).rejects.toMatchObject({ code: 'message_duplicate_history_changed' });
+      expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
+      expect(flow.deleted).toEqual([]);
+      expect(flow.sanctions).toEqual([]);
+    });
+
     it('deletes the second photo-only message, even with a new ID and lossless encoding', async () => {
       flow = await createFlow();
       const first = flow.prepare({ photo: 'png' });

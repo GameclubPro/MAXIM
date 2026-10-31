@@ -600,7 +600,7 @@ describe('ordinary moderation notice queued transport', () => {
   );
 
   it.each([false, true])(
-    'serializes the proof and checks authority after quota with optional profile preparation: %s',
+    'serializes the proof and prepares remote authority before quota with optional profile preparation: %s',
     async (withProfile) => {
       const s = clientFixture();
       const options: MaxSendMessageOptions | undefined = withProfile
@@ -613,8 +613,8 @@ describe('ordinary moderation notice queued transport', () => {
         await s.client.executeActionJob(job);
         expect(s.order).toEqual(
           withProfile
-            ? ['quota', 'prepare', 'member', 'prepare', 'http']
-            : ['quota', 'member', 'http'],
+            ? ['prepare', 'member', 'quota', 'prepare', 'http']
+            : ['member', 'quota', 'http'],
         );
         expect(s.prepare).toHaveBeenCalledTimes(withProfile ? 2 : 0);
         if (withProfile) expect(s.prepare).toHaveBeenCalledWith(s.proof.chatId, options, 'peer-2');
@@ -690,11 +690,11 @@ describe('ordinary moderation notice queued transport', () => {
       const error = await s.client.executeActionJob(job).catch((caught: unknown) => caught);
       expect(error).toMatchObject({
         code: 'max_action_executor_proof_rejected',
-        message: 'MAX action executor proof changed during feature qualification',
+        message: 'MAX action executor proof changed during quota wait',
       });
       expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
       expect(wasMaxMessageSendAttempted(error)).toBe(false);
-      expect(verify).toHaveBeenCalledTimes(2);
+      expect(verify).toHaveBeenCalledTimes(1);
       expect(s.quota).toHaveBeenCalledTimes(1);
       expect(s.http.request).not.toHaveBeenCalled();
       expect(s.ledger.releaseSendDispatch).toHaveBeenCalledTimes(1);
@@ -831,8 +831,8 @@ describe('ephemeral commercial notice final transport authority', () => {
         expect(s.http.request).toHaveBeenCalledTimes(1);
         expect(s.order).toEqual(
           withProfile
-            ? ['quota', 'prepare', 'member', 'prepare', 'http']
-            : ['quota', 'member', 'http'],
+            ? ['prepare', 'member', 'quota', 'prepare', 'http']
+            : ['member', 'quota', 'http'],
         );
         expect(s.prepare).toHaveBeenCalledTimes(withProfile ? 2 : 0);
         if (withProfile) expect(s.prepare).toHaveBeenCalledWith(s.proof.chatId, options, 'peer-2');
@@ -938,7 +938,7 @@ describe('ephemeral commercial notice final transport authority', () => {
       expect(firstJob.idempotencyKey).toBe(retryJob.idempotencyKey);
       expect(s.ledger.completeSendDispatch).toHaveBeenCalledTimes(1);
       expect(s.permit.expiresAtMs).toBe(originalExpiry);
-      expect(verify).toHaveBeenCalledTimes(4);
+      expect(verify.mock.calls.map(([input]) => input.botId)).toEqual(['peer-2', 'peer-3']);
     } finally {
       await s.client.onModuleDestroy();
     }
@@ -1017,8 +1017,7 @@ describe('ephemeral commercial notice final transport authority', () => {
       const s = commercialFixture();
       let currentEpoch = true;
       const verify = jest.fn(async () => {
-        if (verify.mock.calls.length > 1 && change === 'policy')
-          s.settings.commercialAdsFilterEnabled = false;
+        if (change === 'policy') s.settings.commercialAdsFilterEnabled = false;
         return currentEpoch;
       });
       Object.defineProperty(s.client, 'maxBotLinkService', {
@@ -1038,7 +1037,7 @@ describe('ephemeral commercial notice final transport authority', () => {
         const error = await s.send().catch((caught: unknown) => caught);
         expect(wasMaxPreDispatchGuardRejected(error)).toBe(true);
         expect(wasMaxMessageSendAttempted(error)).toBe(false);
-        expect(verify).toHaveBeenCalledTimes(2);
+        expect(verify).toHaveBeenCalledTimes(1);
         expect(s.quota).toHaveBeenCalledTimes(1);
         expect(s.http.request).not.toHaveBeenCalled();
         expect(s.ledger.releaseSendDispatch).toHaveBeenCalledTimes(1);

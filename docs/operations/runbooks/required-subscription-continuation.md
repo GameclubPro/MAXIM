@@ -1,11 +1,19 @@
 # Initial subscription check continuation
 
-An initial membership GET refused by the local MAX quota limiter may retain an exact
+An initial membership, author or exact-source GET refused by the local MAX quota limiter may retain an exact
 `required_subscription_candidates` SQL owner. Registration does not establish a violation,
 authorize a sanction, deliver a notice or delete a message. It does not replay a started webhook.
 The in-process lookup result must carry the invocation's nominal provenance; shared diagnostics,
 copied error codes, JSON copies, unrelated users/bots and late superseded probes cannot nominate it.
 Muted-user protection refusals cannot nominate a continuation or bypass their separate budget.
+
+An initial author/source HTTP 429 requires consuming the one-use MaxClient proof of the actual
+GET failure, bound to its selected bot and exact chat/user or chat/message lookup. The guard then
+binds that invocation to the original source, policy and deadline. A shared diagnostic association,
+an error constructor or status/method fields alone cannot authorize registration. Copies, unrelated
+lookups, expired proofs, 404s, timeouts and attempted or ambiguous mutations do not qualify.
+The initial leader awaits registration and rechecks its lease before completing without effects;
+store or lease failure must not become a successful handoff.
 
 The source envelope retains the original event time and absolute five-minute deadline, policy
 fingerprint, bot observation, message/author and media scope. It contains a bounded masked excerpt,

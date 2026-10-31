@@ -16,7 +16,10 @@ import {
 import type { MaxBotLinkService } from './max-bot-link.service';
 import { maxApiMinuteCounterAddress } from './max-api-counter-storage';
 import { WebhookLegacyHoldRejectedError } from '../webhook/webhook-legacy-hold.service';
-import { isMaxMutationOutcomeAmbiguous } from './max-mutation-outcome.util';
+import {
+  isMaxMutationOutcomeAmbiguous,
+  markMaxMessageSendAttempted,
+} from './max-mutation-outcome.util';
 import { isMaxExactMessageLookupMissingIdError } from './max-exact-message-lookup.error';
 import {
   MAX_API_SOURCE_TAGS,
@@ -24,8 +27,11 @@ import {
   MAX_SEND_AUTO_DELETE_MARKER_VERSION,
   MAX_SEND_AUTO_DELETE_VERIFICATION_UNKNOWN_ERROR_CODE,
   MaxApiCircuitOpenError,
+  MaxApiInternalRateLimitError,
   MaxApiRequestRejectedError,
   MaxClientService,
+  consumeMaxChatMemberAccessHttp429,
+  consumeMaxExactMessageLookupHttp429,
   markMaxMemberMutationAttempted,
   normalizeMaxActionIdempotencyKeyPart,
   type MaxActionJob,
@@ -61,6 +67,7 @@ import {
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
   wasMaxPreDispatchGuardRejected,
+  withMaxFinalAuthorityCheckpoint,
 } from './max-action-pre-dispatch-guard';
 import {
   MAX_MEDIA_UPLOAD_VALIDATION_ERROR_CODES,
@@ -3741,6 +3748,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await service.onModuleDestroy();
   });
+
+  it.each(['missing', 'repeated', 'swallowed-quota-error'] as const)(
+    'refuses a malformed final authority checkpoint without HTTP: %s',
+    async (failure) => {
+      const httpService = { request: jest.fn() };
+      const service = createService(httpService);
+      const quotaError = new MaxApiInternalRateLimitError('Fixture local quota', 250);
+      const reserve = jest.spyOn(service as any, 'reserveRateLimitSlot');
+      reserve.mockImplementation(async () => {
+        if (failure === 'swallowed-quota-error') throw quotaError;
+        return undefined;
+      });
+      const guard = withMaxFinalAuthorityCheckpoint(async (checkpoint) => {
+        if (failure === 'missing') return;
+        if (failure === 'swallowed-quota-error') {
+          await checkpoint!().catch(() => undefined);
+          return;
+        }
+        await checkpoint!();
+        await checkpoint!().catch(() => undefined);
+      });
+      try {
+        const sending = service.sendMessage('chat-1', 'Guarded fixture', undefined, {
+          immediate: true,
+          beforeImmediateSendMutation: guard,
+        });
+        if (failure === 'swallowed-quota-error') await expect(sending).rejects.toBe(quotaError);
+        else await expect(sending).rejects.toThrow('MAX final authority checkpoint');
+        expect(reserve).toHaveBeenCalledTimes(failure === 'missing' ? 0 : 1);
+        expect(httpService.request).not.toHaveBeenCalled();
+      } finally {
+        await service.onModuleDestroy();
+      }
+    },
+  );
 
   it('checks the immediate send guard after limiter and dispatch claim before MAX HTTP', async () => {
     const guardError = new Error('night transition changed while waiting for limiter');
@@ -13164,6 +13206,218 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await service.onModuleDestroy();
+  });
+
+  describe('bound initial-read HTTP 429 evidence', () => {
+    const exactBinding = { chatId: 'chat-1', messageId: 'mid-429', botId: '777000_bot' };
+    const memberBinding = { chatId: 'chat-1', userId: 'user-1', botId: '777000_bot' };
+
+    it.each(['list', 'direct-after-404', 'direct-after-empty-list'] as const)(
+      'retains the original %s error/cooldown and grants one exact-read consumption',
+      async (route) => {
+        const error = Object.freeze({ response: { status: 429 } });
+        const request = jest.fn().mockReturnValue(throwError(() => error));
+        if (route === 'direct-after-404')
+          request.mockReturnValueOnce(throwError(() => ({ response: { status: 404 } })));
+        if (route === 'direct-after-empty-list')
+          request.mockReturnValueOnce(of({ status: 200, data: { messages: [] } }));
+        const service = createService({ request });
+        const diagnostics = observeActionFailureDiagnostics(service);
+        try {
+          await expect(
+            service.getExactMessageRow(' chat-1 ', ' mid-429 ', { botId: '777000_bot' }),
+          ).rejects.toBe(error);
+          expect(request).toHaveBeenCalledTimes(route === 'list' ? 1 : 2);
+          expect(request.mock.calls.every(([config]) => config.method === 'get')).toBe(true);
+          expect(request.mock.calls.at(-1)?.[0]).toEqual(
+            expect.objectContaining({
+              url:
+                route === 'list'
+                  ? 'https://platform-api2.max.ru/messages'
+                  : 'https://platform-api2.max.ru/messages/mid-429',
+              headers: expect.objectContaining({ Authorization: 'test-token' }),
+            }),
+          );
+          expect(
+            diagnostics.quota.mock.calls.some(([script]) =>
+              String(script).includes('MAX_API_EXTERNAL_COOLDOWN'),
+            ),
+          ).toBe(true);
+          expect(consumeMaxExactMessageLookupHttp429({ ...error }, exactBinding)).toBe(false);
+          expect(
+            consumeMaxExactMessageLookupHttp429(JSON.parse(JSON.stringify(error)), exactBinding),
+          ).toBe(false);
+          expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(true);
+          expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(false);
+          expect(Object.getOwnPropertySymbols(error)).toEqual([]);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each(['chatId', 'messageId', 'botId'] as const)(
+      'consumes and rejects exact-read evidence bound to a different %s',
+      async (field) => {
+        const error = Object.freeze({ response: { status: 429 } });
+        const service = createService({
+          request: jest.fn().mockReturnValue(throwError(() => error)),
+        });
+        try {
+          await expect(service.getExactMessageRow('chat-1', 'mid-429')).rejects.toBe(error);
+          expect(
+            consumeMaxExactMessageLookupHttp429(error, { ...exactBinding, [field]: 'other' }),
+          ).toBe(false);
+          expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(false);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
+
+    it.each([
+      { name: 'generic status', make: () => ({ status: 429 }) },
+      { name: 'generic getter', make: () => ({ getStatus: () => 429 }) },
+      { name: 'non429 response', make: () => ({ response: { status: 403 } }) },
+      {
+        name: 'conflicting method',
+        make: () => ({ response: { status: 429 }, config: { method: 'delete' } }),
+      },
+      {
+        name: 'conflicting response method',
+        make: () => ({ response: { status: 429, config: { method: 'post' } } }),
+      },
+      {
+        name: 'send attempt',
+        make: () => markMaxMessageSendAttempted({ response: { status: 429 } }),
+      },
+      {
+        name: 'member attempt',
+        make: () => markMaxMemberMutationAttempted({ response: { status: 429 } }),
+      },
+      {
+        name: 'ambiguous effect',
+        make: () => Object.assign(new Error('Ambiguous MAX effect'), { response: { status: 429 } }),
+      },
+    ])('rejects $name despite an adapter read failure', async ({ make }) => {
+      const error = make();
+      const request = jest.fn().mockReturnValue(throwError(() => error));
+      const service = createService({ request });
+      try {
+        await expect(service.getExactMessageRow('chat-1', 'mid-429')).rejects.toBe(error);
+        expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(false);
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('rejects unlinked and pre-admission errors without minting HTTP evidence', async () => {
+      for (const boundary of ['unlinked', 'admission'] as const) {
+        const error = Object.freeze({ response: { status: 429 } });
+        const request = jest.fn();
+        const service = createService({ request });
+        const runtime = service as unknown as {
+          getMessageById(): Promise<never>;
+          reserveRateLimitSlot(): Promise<never>;
+        };
+        jest
+          .spyOn(runtime, boundary === 'unlinked' ? 'getMessageById' : 'reserveRateLimitSlot')
+          .mockRejectedValue(error);
+        try {
+          await expect(service.getExactMessageRow('chat-1', 'mid-429')).rejects.toBe(error);
+          expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(false);
+          expect(request).not.toHaveBeenCalled();
+        } finally {
+          await service.onModuleDestroy();
+        }
+      }
+    });
+
+    it('does not lend an ignored genuine proof to a later unlinked invocation reusing its error', async () => {
+      const error = Object.freeze({ response: { status: 429 } });
+      const request = jest.fn().mockReturnValue(throwError(() => error));
+      const service = createService({ request });
+      try {
+        await expect(service.getExactMessageRow('chat-1', 'mid-429')).rejects.toBe(error);
+        const runtime = service as unknown as { getMessageById(): Promise<never> };
+        jest.spyOn(runtime, 'getMessageById').mockRejectedValue(error);
+        await expect(service.getExactMessageRow('chat-1', 'mid-429')).rejects.toBe(error);
+        expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(false);
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('binds a fresh targeted author read once without changing its single request', async () => {
+      const error = Object.freeze({ response: { status: 429 } });
+      const request = jest.fn().mockReturnValue(throwError(() => error));
+      const service = createService({ request });
+      try {
+        await expect(
+          service.getChatMemberAccess(' chat-1 ', ' user-1 ', {
+            bypassCache: true,
+            botId: '777000_bot',
+          }),
+        ).rejects.toBe(error);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(request).toHaveBeenCalledWith(
+          expect.objectContaining({
+            method: 'get',
+            url: 'https://platform-api2.max.ru/chats/chat-1/members?user_ids=user-1',
+          }),
+        );
+        expect(consumeMaxChatMemberAccessHttp429({ ...error }, memberBinding)).toBe(false);
+        expect(consumeMaxChatMemberAccessHttp429(error, memberBinding)).toBe(true);
+        expect(consumeMaxChatMemberAccessHttp429(error, memberBinding)).toBe(false);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it('rejects a different author and consumes its genuine one-use evidence', async () => {
+      const error = Object.freeze({ response: { status: 429 } });
+      const service = createService({
+        request: jest.fn().mockReturnValue(throwError(() => error)),
+      });
+      try {
+        await expect(
+          service.getChatMemberAccess('chat-1', 'user-1', { bypassCache: true }),
+        ).rejects.toBe(error);
+        expect(
+          consumeMaxChatMemberAccessHttp429(error, { ...memberBinding, userId: 'other' }),
+        ).toBe(false);
+        expect(consumeMaxChatMemberAccessHttp429(error, memberBinding)).toBe(false);
+      } finally {
+        await service.onModuleDestroy();
+      }
+    });
+
+    it.each(['snapshot', 'presence', 'multi-member', 'cached-member'] as const)(
+      'keeps other %s read failures outside initial-read evidence',
+      async (path) => {
+        const error = Object.freeze({ response: { status: 429 } });
+        const request = jest.fn().mockReturnValue(throwError(() => error));
+        const service = createService({ request });
+        try {
+          const reading =
+            path === 'snapshot'
+              ? service.getMessageSnapshot('chat-1', 'mid-429')
+              : path === 'presence'
+                ? service.getExactMessagePresence('chat-1', 'mid-429')
+                : path === 'multi-member'
+                  ? service.getChatMembersAccess('chat-1', ['user-1'], { bypassCache: true })
+                  : service.getChatMemberAccess('chat-1', 'user-1');
+          await expect(reading).rejects.toBe(error);
+          expect(consumeMaxExactMessageLookupHttp429(error, exactBinding)).toBe(false);
+          expect(consumeMaxChatMemberAccessHttp429(error, memberBinding)).toBe(false);
+          expect(request).toHaveBeenCalledTimes(1);
+        } finally {
+          await service.onModuleDestroy();
+        }
+      },
+    );
   });
 
   it.each([

@@ -15,6 +15,7 @@ import { ChannelAutoPostScanManager } from '../moderation/channel-auto-post-runt
 import { ChannelPostDemandRuntime } from '../moderation/channel-post-demand-runtime';
 import { createRecoveryGovernorFixture } from '../system/background-runtime-governor.spec-support';
 import { RequiredSubscriptionExecutionRejectedError } from '../moderation/required-subscription-execution-guard.service';
+import { RequiredSubscriptionCandidateStore } from '../moderation/required-subscription-candidate.store';
 import type { EnsureModerationDeleteIntentInput } from '../moderation/moderation-delete-intent.service';
 import { ChannelPostSignatureService } from '../admin/channel-post-signature.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
@@ -4042,6 +4043,12 @@ describeStores('native current-rule authorization across mirrored bot delivery',
     'completes one canonical handler and its mirrors for initial subscription %s',
     async (reason) => {
       const s = await fixture();
+      Object.assign(s.moderation, {
+        requiredSubscriptionCandidateStore: new RequiredSubscriptionCandidateStore(
+          s.prisma,
+          s.legacyHolds,
+        ),
+      });
       const [chatId, targetId] = await s.seedCatalog(2, { maxMessageLengthEnabled: false });
       await s.prisma.chatSettings.update({
         where: { chatId: chatId! },
@@ -4128,6 +4135,20 @@ describeStores('native current-rule authorization across mirrored bot delivery',
         }),
       ).toBe(0);
       expect(await s.prisma.moderationDeleteIntent.count({ where: { chatId, messageId } })).toBe(0);
+      const candidates = await s.prisma.requiredSubscriptionCandidate.findMany({
+        where: { chatId, messageId },
+      });
+      expect(candidates).toHaveLength(
+        reason === 'source-local-limit' || reason === 'author-local-limit' ? 1 : 0,
+      );
+      if (candidates[0])
+        expect(candidates[0]).toMatchObject({
+          status: 'WAITING_CHECK',
+          sourceAt: new Date(at),
+          deadlineAt: new Date(at + 300_000),
+          claimId: null,
+          frozenPlan: null,
+        });
       const receipts = await s.prisma.webhookEvent.findMany({ where: { id: { in: ids } } });
       expect(receipts.map((row) => row.status).sort()).toEqual([
         'DUPLICATE',

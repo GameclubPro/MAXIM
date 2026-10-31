@@ -600,6 +600,10 @@ export class MessageDuplicateDeleteGuardService {
     await params.beforeFinalAuthority?.();
     await this.loadSettings(params.chatId, binding, notice);
     await this.assertPolicy(params.chatId, binding, Boolean(params.sanctionIntentId));
+    // FLAG: A reset or lifecycle invalidation during quota waiting revokes the history
+    // independently of the ordering grant. Recheck it before the final authorization read.
+    if (!(await this.history.stillMatches(params.chatId, binding, Boolean(receiptIntentId))))
+      throw new MessageDuplicateGuardRejectedError('message_duplicate_history_changed');
     await this.assertAuthorization(params.chatId, binding);
     if (notice && Date.now() >= notice.deadlineAtMs)
       throw new MessageDuplicateGuardRejectedError('message_duplicate_notice_expired');

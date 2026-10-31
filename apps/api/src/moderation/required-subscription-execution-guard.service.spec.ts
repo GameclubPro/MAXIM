@@ -1,9 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
-import axios, { AxiosHeaders, type AxiosAdapter } from 'axios';
+import axios, { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { MaxApiInternalRateLimitError, MaxClientService } from '../max/max-client.service';
 import { MaxBotContextService } from '../max/max-bot-context.service';
+import { MaxModerationApiBudgetError } from '../max/max-moderation-api-budget';
 import type { ActionHealthService } from '../system/action-health.service';
 import { isMaxExactMessageLookupMissingIdError } from '../max/max-exact-message-lookup.error';
 import { fingerprintModerationSettings } from './message-limits-delete-guard.service';
@@ -13,6 +14,8 @@ import {
   RequiredSubscriptionInitialSourceUnavailableError,
   RequiredSubscriptionDeleteSourceUnavailableError,
   RequiredSubscriptionAuthorAccessUnavailableError,
+  readRequiredSubscriptionInitialSourceReadWait,
+  type RequiredSubscriptionInitialSourceReadWaitBinding,
 } from './required-subscription-execution-guard.service';
 import {
   markMaxMemberMutationAttempted,
@@ -20,17 +23,37 @@ import {
 } from '../max/max-member-error.util';
 import { markMaxMessageSendAttempted } from '../max/max-mutation-outcome.util';
 
-async function exactLookupFailure(data: Record<string, unknown>): Promise<unknown> {
+async function exactLookupFailure(
+  data: Record<string, unknown>,
+  http429?: 'list' | 'direct' | 'author',
+  botId = 'fixture-bot',
+): Promise<unknown> {
   const responses = [{ messages: [] }, data];
-  const request = jest.fn<ReturnType<AxiosAdapter>, Parameters<AxiosAdapter>>(async (config) => ({
-    status: 200,
-    statusText: 'OK',
-    headers: new AxiosHeaders(),
-    config,
-    data: responses.shift(),
-  }));
+  const request = jest.fn<ReturnType<AxiosAdapter>, Parameters<AxiosAdapter>>(async (config) => {
+    const path = new URL(config.url!).pathname;
+    const rateLimited =
+      (http429 === 'list' && path === '/messages') ||
+      (http429 === 'direct' && path === '/messages/m1') ||
+      (http429 === 'author' && path === '/chats/-123/members');
+    const response = {
+      status: rateLimited ? 429 : 200,
+      statusText: rateLimited ? 'Too Many Requests' : 'OK',
+      headers: new AxiosHeaders(),
+      config,
+      data: rateLimited ? { code: 'rate.limit' } : responses.shift(),
+    };
+    if (rateLimited)
+      throw new AxiosError(
+        'actual adapter HTTP 429',
+        AxiosError.ERR_BAD_REQUEST,
+        config,
+        {},
+        response,
+      );
+    return response;
+  });
   const bot: ReturnType<MaxClientService['resolveBot']> = {
-    id: 'fixture-bot',
+    id: botId,
     label: 'Fixture',
     characterName: 'Fixture',
     speechPersona: 'neutral',
@@ -56,8 +79,21 @@ async function exactLookupFailure(data: Record<string, unknown>): Promise<unknow
     new AsyncLocalStorage();
   const priorityHttpSource: MaxClientService['priorityHttpSource'] = new AsyncLocalStorage();
   const recordPriorityHttpAttempt: MaxClientService['recordPriorityHttpAttempt'] = () => undefined;
-  const actionHealthService: Pick<ActionHealthService, 'recordSuccessForLane'> = {
+  const actionHealthService: Pick<
+    ActionHealthService,
+    'recordSuccessForLane' | 'recordFailureForLane'
+  > = {
     recordSuccessForLane: jest.fn(),
+    recordFailureForLane: jest.fn(),
+  };
+  const logUserFacingActionFailure: MaxClientService['logUserFacingActionFailure'] = () =>
+    undefined;
+  const registerCriticalFailure: MaxClientService['registerCriticalFailure'] = async () =>
+    undefined;
+  const recordRateLimitOutcome: MaxClientService['recordRateLimitOutcome'] = async () => undefined;
+  const chatMembersAccessInFlight: MaxClientService['chatMembersAccessInFlight'] = new Map();
+  const limiterRedis: Pick<MaxClientService['limiterRedis'], 'eval'> = {
+    eval: jest.fn(async () => 0),
   };
   const muteApiBudget: Pick<
     MaxClientService['muteApiBudget'],
@@ -80,16 +116,29 @@ async function exactLookupFailure(data: Record<string, unknown>): Promise<unknow
     resolveBot,
     acquireCircuitPermit,
     reserveRateLimitSlot,
+    logUserFacingActionFailure,
+    registerCriticalFailure,
+    recordRateLimitOutcome,
+    chatMembersAccessInFlight,
+    limiterRedis,
   });
   try {
-    await client.getExactMessageRow('-123', 'm1');
+    if (http429 === 'author')
+      await client.getChatMemberAccess('-123', 'user-1', { botId, bypassCache: true });
+    else await client.getExactMessageRow('-123', 'm1', { botId });
   } catch (error) {
     expect(
       request.mock.calls.map(([config]) => [config.method, new URL(config.url!).pathname]),
-    ).toEqual([
-      ['get', '/messages'],
-      ['get', '/messages/m1'],
-    ]);
+    ).toEqual(
+      http429 === 'author'
+        ? [['get', '/chats/-123/members']]
+        : http429 === 'list'
+          ? [['get', '/messages']]
+          : [
+              ['get', '/messages'],
+              ['get', '/messages/m1'],
+            ],
+    );
     return error;
   }
   throw new Error('Expected the exact MAX lookup to reject the supplied response');
@@ -158,6 +207,233 @@ function fixture() {
   );
   return { service, input, settings, max, membership, immunity, prisma, bots };
 }
+
+function initialReadBinding(s: ReturnType<typeof fixture>) {
+  const metadata = s.input.reasons[0]!.metadata;
+  return {
+    chatId: s.input.chatId,
+    userId: s.input.subjectUserId,
+    messageId: s.input.messageId,
+    sourceAtMs: metadata.requiredSubscriptionSourceAtMs,
+    deadlineAtMs: metadata.requiredSubscriptionDeadlineAtMs,
+    policySha256: metadata.requiredSubscriptionPolicySha256,
+    botId: s.input.botId,
+  } satisfies RequiredSubscriptionInitialSourceReadWaitBinding;
+}
+
+describe('required subscription nominal initial read continuation', () => {
+  it.each(['author', 'list', 'direct'] as const)(
+    'binds one actual %s GET/429 transport outcome to the exact initial read',
+    async (route) => {
+      const s = fixture();
+      const boundary = route === 'author' ? 'author' : 'source';
+      const cause = await exactLookupFailure({}, route, s.input.botId);
+      const read = boundary === 'author' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+      read.mockRejectedValue(cause);
+      const error: unknown = await s.service
+        .authorize({ ...s.input, initialQualification: true })
+        .catch((caught: unknown) => caught);
+      expect(readRequiredSubscriptionInitialSourceReadWait(error, initialReadBinding(s))).toEqual({
+        ...initialReadBinding(s),
+        boundary,
+      });
+      const reused: unknown = await s.service
+        .authorize({ ...s.input, initialQualification: true })
+        .catch((caught: unknown) => caught);
+      expect(
+        readRequiredSubscriptionInitialSourceReadWait(reused, initialReadBinding(s)),
+      ).toBeNull();
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['author', 'list', 'direct'] as const)(
+    'refuses an actual %s GET/429 issued by a different bot without reusing its proof',
+    async (route) => {
+      const s = fixture();
+      const cause = await exactLookupFailure({}, route, 'another-bot');
+      const read = route === 'author' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+      read.mockRejectedValue(cause);
+      const error: unknown = await s.service
+        .authorize({ ...s.input, initialQualification: true })
+        .catch((caught: unknown) => caught);
+      expect(
+        readRequiredSubscriptionInitialSourceReadWait(error, initialReadBinding(s)),
+      ).toBeNull();
+      s.input.botId = 'another-bot';
+      const reused: unknown = await s.service
+        .authorize({ ...s.input, initialQualification: true })
+        .catch((caught: unknown) => caught);
+      expect(
+        readRequiredSubscriptionInitialSourceReadWait(reused, initialReadBinding(s)),
+      ).toBeNull();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['author', 'source'] as const)(
+    'binds a genuine local %s refusal to the exact live source before any effects',
+    async (boundary) => {
+      const s = fixture();
+      const cause = new MaxApiInternalRateLimitError('token rate limit', 250);
+      const read = boundary === 'author' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+      read.mockRejectedValue(cause);
+      const beforeFinalAuthority = jest.fn();
+      const error: unknown = await s.service
+        .authorize({ ...s.input, initialQualification: true, beforeFinalAuthority })
+        .catch((caught: unknown) => caught);
+      const expected = initialReadBinding(s);
+      const proof = readRequiredSubscriptionInitialSourceReadWait(error, expected);
+      expect(proof).toEqual({ ...expected, boundary });
+      expect(Object.isFrozen(proof)).toBe(true);
+      expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+      expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      expect(beforeFinalAuthority).not.toHaveBeenCalled();
+      if (boundary === 'author') expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+
+      const changed: RequiredSubscriptionInitialSourceReadWaitBinding[] = [
+        { ...expected, chatId: '-456' },
+        { ...expected, userId: 'user-2' },
+        { ...expected, messageId: 'm2' },
+        { ...expected, sourceAtMs: expected.sourceAtMs + 1 },
+        { ...expected, deadlineAtMs: expected.deadlineAtMs + 1 },
+        { ...expected, policySha256: 'another-policy' },
+        { ...expected, botId: 'another-bot' },
+      ];
+      for (const binding of changed)
+        expect(readRequiredSubscriptionInitialSourceReadWait(error, binding)).toBeNull();
+      expect(readRequiredSubscriptionInitialSourceReadWait(error, expected)).toBe(proof);
+    },
+  );
+
+  it('does not grant continuation to public wrappers, copies, JSON or causes', async () => {
+    const s = fixture();
+    const cause = new MaxApiInternalRateLimitError('token rate limit', 250);
+    s.max.getExactMessageRow.mockRejectedValue(cause);
+    const genuine: unknown = await s.service
+      .authorize({ ...s.input, initialQualification: true })
+      .catch((caught: unknown) => caught);
+    const errors = [
+      new RequiredSubscriptionInitialSourceUnavailableError(cause),
+      new RequiredSubscriptionAuthorAccessUnavailableError(cause),
+      Object.assign(new Error('copied'), genuine),
+      Object.assign(Object.create(Object.getPrototypeOf(genuine)), genuine),
+      JSON.parse(JSON.stringify(genuine)),
+      new Error('wrapped', { cause: genuine }),
+      cause,
+    ];
+    for (const error of errors)
+      expect(
+        readRequiredSubscriptionInitialSourceReadWait(error, initialReadBinding(s)),
+      ).toBeNull();
+    expect(
+      readRequiredSubscriptionInitialSourceReadWait(genuine, initialReadBinding(s)),
+    ).not.toBeNull();
+  });
+
+  it.each(['author', 'source'] as const)(
+    'does not mint a %s continuation from HTTP, protected-budget or unsafe local failures',
+    async (boundary) => {
+      const errors: unknown[] = [
+        Object.assign(new Error('HTTP quota'), {
+          response: { status: 429 },
+          config: { method: 'get' },
+        }),
+        Object.assign(new Error('HTTP missing'), { response: { status: 404 } }),
+        Object.assign(new Error('read timeout'), { code: 'ETIMEDOUT' }),
+        new MaxModerationApiBudgetError('attempt_budget', 1_000),
+        Object.assign(new Error('copied quota'), new MaxApiInternalRateLimitError('quota', 250)),
+        Object.assign(new MaxApiInternalRateLimitError('quota', 250), { request: {} }),
+        Object.assign(new MaxApiInternalRateLimitError('quota', 250), { response: {} }),
+        Object.assign(new MaxApiInternalRateLimitError('quota', 250), {
+          config: { method: 'post' },
+        }),
+        Object.assign(new MaxApiInternalRateLimitError('quota', 250), { preDispatch: false }),
+        markMaxMessageSendAttempted(new MaxApiInternalRateLimitError('quota', 250)),
+        markMaxMemberMutationAttempted(new MaxApiInternalRateLimitError('quota', 250)),
+        markMaxMemberMutationConfirmed(new MaxApiInternalRateLimitError('quota', 250)),
+        new MaxApiInternalRateLimitError('ambiguous MAX mutation', 250),
+      ];
+      for (const cause of errors) {
+        const s = fixture();
+        const read = boundary === 'author' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+        read.mockRejectedValue(cause);
+        const error: unknown = await s.service
+          .authorize({ ...s.input, initialQualification: true })
+          .catch((caught: unknown) => caught);
+        expect(
+          readRequiredSubscriptionInitialSourceReadWait(error, initialReadBinding(s)),
+        ).toBeNull();
+        expect(s.membership.getMembershipResolution).not.toHaveBeenCalled();
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(['author', 'source'] as const)(
+    'does not mint a %s continuation at final dispatch or DELETE handoff',
+    async (boundary) => {
+      for (const scope of [
+        {},
+        { initialQualification: false },
+        { deleteHandoffQualification: true as const },
+      ]) {
+        const s = fixture();
+        const cause = new MaxApiInternalRateLimitError('token rate limit', 250);
+        const read = boundary === 'author' ? s.max.getChatMemberAccess : s.max.getExactMessageRow;
+        read.mockRejectedValue(cause);
+        const error: unknown = await s.service
+          .authorize({ ...s.input, ...scope })
+          .catch((caught: unknown) => caught);
+        expect(
+          readRequiredSubscriptionInitialSourceReadWait(error, initialReadBinding(s)),
+        ).toBeNull();
+      }
+    },
+  );
+
+  it.each([undefined, '', ' selected-peer', 'selected-peer '])(
+    'requires the exact selected bot ID (%s)',
+    async (botId) => {
+      const s = fixture();
+      s.max.getExactMessageRow.mockRejectedValue(new MaxApiInternalRateLimitError('quota', 250));
+      const error: unknown = await s.service
+        .authorize({ ...s.input, botId, initialQualification: true })
+        .catch((caught: unknown) => caught);
+      expect(
+        readRequiredSubscriptionInitialSourceReadWait(error, initialReadBinding(s)),
+      ).toBeNull();
+    },
+  );
+
+  it.each(['expiry', 'cause-mutated', 'wrapper-mutated', 'effect-marked'] as const)(
+    'revokes a previously minted proof on %s without renewing its deadline',
+    async (change) => {
+      const s = fixture();
+      const cause = new MaxApiInternalRateLimitError('quota', 250);
+      s.max.getExactMessageRow.mockRejectedValue(cause);
+      const error: unknown = await s.service
+        .authorize({ ...s.input, initialQualification: true })
+        .catch((caught: unknown) => caught);
+      const expected = initialReadBinding(s);
+      expect(readRequiredSubscriptionInitialSourceReadWait(error, expected)).not.toBeNull();
+      let clock: jest.SpyInstance | undefined;
+      try {
+        if (change === 'expiry')
+          clock = jest.spyOn(Date, 'now').mockReturnValue(expected.deadlineAtMs);
+        if (change === 'cause-mutated') Object.assign(cause, { request: {} });
+        if (change === 'wrapper-mutated')
+          Object.assign(error as object, { cause: new Error('replacement') });
+        if (change === 'effect-marked') markMaxMessageSendAttempted(error);
+        expect(readRequiredSubscriptionInitialSourceReadWait(error, expected)).toBeNull();
+        expect(s.immunity.consumeForMessage).not.toHaveBeenCalled();
+      } finally {
+        clock?.mockRestore();
+      }
+    },
+  );
+});
 
 describe('required subscription execution authorization', () => {
   it.each(['initialQualification', 'deleteHandoffQualification'] as const)(

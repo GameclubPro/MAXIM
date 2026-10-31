@@ -295,6 +295,25 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       },
     );
 
+    it('rejects a SQL policy revision changed during the final transport checkpoint', async () => {
+      const s = await fixture();
+      const beforeFinalAuthority = jest.fn(async () => {
+        const changed = await prisma.chatSettings.update({
+          where: { chatId: s.request.chatId },
+          data: { antiDuplicateEnabled: false },
+        });
+        expect(changed.duplicatePolicyRevision).toBeGreaterThan(s.binding.policyRevision!);
+      });
+      await expect(
+        s.service.assertMessageStillActionable({ ...s.request, beforeFinalAuthority }),
+      ).rejects.toMatchObject({ code: 'message_duplicate_settings_changed' });
+      expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
+      expect(s.currentLookup).toHaveBeenCalledTimes(1);
+      expect(s.originalLookup).toHaveBeenCalledTimes(1);
+      expect(s.authorization.isAllowed).toHaveBeenCalledTimes(1);
+      expectNoEffects(s);
+    });
+
     it.each([
       'missing success',
       'unfinished receipt',

@@ -38,6 +38,7 @@ import {
   type ManagedEntityExplicitActivation,
 } from './managed-entity-activation.util';
 import { readWebhookEventTimestamp } from '../webhook/webhook-semantic-event-key';
+import { withMaxFinalAuthorityCheckpoint } from './max-action-pre-dispatch-guard';
 
 export const MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD =
   'managed_entity_handshake:start_hint';
@@ -965,12 +966,18 @@ export class ManagedEntityHandshakeService {
           botId: context.botId,
           candidateBotIds: [permit.executionBotId],
           routing: { purpose: 'send_message', requiredBotId: permit.executionBotId },
-          beforeImmediateSendMutation: async () => {
-            await this.groupCommandAuthority!.assertFreshHeldCommandAccess(permit, this.maxClient);
-            await this.groupCommandAuthority!.assertOwned(permit);
-            if (permit.executionDeadlineAt && permit.executionDeadlineAt.getTime() <= Date.now())
-              throw new Error('Start command expired before transport');
-          },
+          beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(
+            async (beforeFinalAuthority) => {
+              await this.groupCommandAuthority!.assertFreshHeldCommandAccess(
+                permit,
+                this.maxClient,
+              );
+              await beforeFinalAuthority?.();
+              await this.groupCommandAuthority!.assertOwned(permit);
+              if (permit.executionDeadlineAt && permit.executionDeadlineAt.getTime() <= Date.now())
+                throw new Error('Start command expired before transport');
+            },
+          ),
           idempotencyKey: `managed-handshake-start:${permit.semanticKey}`,
           autoDeleteDelayMs: MANAGED_HANDSHAKE_CONFIRMATION_AUTO_DELETE_DELAY_MS,
           trafficClass: 'interactive',

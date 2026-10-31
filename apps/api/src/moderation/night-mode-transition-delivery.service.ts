@@ -16,7 +16,10 @@ import {
 } from '../max/max-client.service';
 import { buildNightModeNoticeIdempotencyKey } from '../max/max-action-idempotency.util';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
-import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import {
+  wasMaxPreDispatchGuardRejected,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 import {
   ManagedEntityAccessLossService,
   classifyMaxTerminalChatActionError,
@@ -596,11 +599,11 @@ export class NightModeTransitionDeliveryService {
         ...this.buildRequestOptions(botId),
         immediate: true,
         idempotencyKey: params.logicalIdempotencyKey,
-        beforeImmediateSendMutation: async (revalidateRoute) => {
+        beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(async (revalidateRoute) => {
           await revalidateRoute?.();
           await this.assertCurrentTransitionState(params.chatId, params.validateBeforeDispatch);
           await assertNoAlias();
-        },
+        }),
       },
     );
     if (!sent?.messageId) {

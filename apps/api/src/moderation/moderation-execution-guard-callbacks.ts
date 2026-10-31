@@ -1,6 +1,10 @@
 import { normalizeDeleteBotMessagesDelayMinutes } from '@maxim/contracts';
 import { UnrecoverableError } from 'bullmq';
 import type { MaxActionDispatchOptions, MaxActionLedgerContext } from '../max/max-client.service';
+import {
+  usesMaxFinalAuthorityCheckpoint,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import {
   isMaxMutationOutcomeAmbiguous,
@@ -97,11 +101,12 @@ export function createRuleSanctionGuards(
   // FLAG: Preparation uses the proven DELETE executor. Only final mutation/send callbacks
   // read the newly selected executor, lazily; ambient ingress ownership is not preparation proof.
   const assertBeforeFollowUp = () => assertAllowed({ ...proof, botId: readProvenBotId() });
-  const assertBeforeMutation: Guard = (beforeFinalAuthority) =>
+  const assertBeforeMutation: Guard = withMaxFinalAuthorityCheckpoint((beforeFinalAuthority) =>
     assertAllowed(
       { ...proof, botId: readSelectedBotId() },
       beforeFinalAuthority ? { beforeFinalAuthority } : undefined,
-    );
+    ),
+  );
   const noticeLedgerContext: MaxActionLedgerContext = {
     moderationRuleNotice: { version: 1, ...proof },
   };
@@ -150,10 +155,10 @@ export function createCommercialNoticeDispatchOptions(
   if (!authorizeFinal) return undefined;
   return {
     immediate: true,
-    beforeImmediateSendMutation: async (beforeFinalAuthority) => {
+    beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
       if (!(await authorizeFinal(beforeFinalAuthority)))
         throw new CommercialModerationFollowUpRejectedError();
-    },
+    }),
   };
 }
 
@@ -162,22 +167,25 @@ export function createDuplicateSanctionNoticeDispatchOptions(
 ): ModerationNoticeImmediateOptions {
   return {
     immediate: true,
-    beforeImmediateSendMutation: async (beforeFinalAuthority) => {
+    beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
       // FLAG: A durable SEND cannot serialize this duplicate stage's source/lease closure.
       // Keep the genuine binding in immediate dispatch, and deny unbound legacy notices.
       if (!assertOriginalAuthority)
         throw new MessageDuplicateGuardRejectedError('message_duplicate_sanction_notice_unbound');
       await assertOriginalAuthority(beforeFinalAuthority);
-    },
+    }),
   };
 }
 
 export function sequenceModerationGuards(...guards: (Guard | undefined)[]): Guard {
   const active = guards.filter((guard): guard is Guard => guard !== undefined);
-  return async (beforeFinalAuthority) => {
+  const sequence: Guard = async (beforeFinalAuthority) => {
     for (let index = 0; index < active.length; index += 1)
       await active[index]!(index === active.length - 1 ? beforeFinalAuthority : undefined);
   };
+  return usesMaxFinalAuthorityCheckpoint(active.at(-1))
+    ? withMaxFinalAuthorityCheckpoint(sequence)
+    : sequence;
 }
 
 export function createModerationNoticeGuard(
@@ -202,6 +210,8 @@ export function createModerationSanctionCallbacks(
     authorizeCommercialFinal ?? authorizeCommercial,
     undefined,
   );
+  if (commercialMutation && authorizeCommercialFinal)
+    withMaxFinalAuthorityCheckpoint(commercialMutation);
   const ruleMutation =
     action === SanctionAction.BAN ? rule?.assertBeforeMutation : rule?.assertBeforeFollowUp;
   return {
@@ -228,7 +238,7 @@ export function createBotAccountKickOptions(
 ): Omit<MaxActionDispatchOptions, 'immediate'> | undefined {
   if (!guard) return undefined;
   return {
-    beforeImmediateMemberMutation: async (beforeFinalAuthority) => {
+    beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
       const result = await guard.authorize({
         chatId: params.chatId,
         messageId: params.messageId,
@@ -247,7 +257,7 @@ export function createBotAccountKickOptions(
       });
       if (result === 'absent' || result === 'not_applicable')
         throw new Error('Bot-account kick requires current exact source');
-    },
+    }),
   };
 }
 
@@ -258,12 +268,13 @@ export function createSpammerKickOptions(
 ): Omit<MaxActionDispatchOptions, 'immediate'> | undefined {
   if (!guard) return undefined;
   return {
-    beforeImmediateMemberMutation: (beforeFinalAuthority) =>
+    beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint((beforeFinalAuthority) =>
       guard.assertSpammerMemberAllowed({
         ...params,
         botId: readSelectedBotId(),
         beforeFinalAuthority,
       }),
+    ),
   };
 }
 
@@ -418,7 +429,7 @@ export function createRequiredSubscriptionAssertion(
   params: Identity & { reasonKey: string; metadata: unknown },
   options: { initialQualification?: true; deleteHandoffQualification?: true } = {},
 ): Guard {
-  return async (beforeFinalAuthority) => {
+  return withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
     if (!guard) throw new Error('Required subscription execution guard unavailable');
     const permit = await guard.authorize({
       chatId: params.chatId,
@@ -438,21 +449,20 @@ export function createRequiredSubscriptionAssertion(
     });
     if (typeof permit !== 'object')
       throw new Error('Required subscription source no longer actionable');
-  };
+  });
 }
 
 export function createRequiredSubscriptionSanctionCallbacks(lease: Guard, source: Guard) {
   const assertCurrent = sequenceModerationGuards(lease, source);
-  const observe =
-    (boundary: ModerationGuardFailureBoundary): Guard =>
-    async (beforeFinalAuthority) => {
+  const observe = (boundary: ModerationGuardFailureBoundary): Guard =>
+    withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
       try {
         await assertCurrent(beforeFinalAuthority);
       } catch (error) {
         recordModerationGuardFailure(error, boundary);
         throw error;
       }
-    };
+    });
   const authorize = observe('required_subscription_sanction_authorize');
   return {
     noticeBeforeSend: observe('required_subscription_sanction_notice'),

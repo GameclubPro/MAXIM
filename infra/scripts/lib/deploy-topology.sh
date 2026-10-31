@@ -515,6 +515,12 @@ maxim_topology_require_bot_publisher_reliability() {
     const recoverableMembers = readNamedSet(watchdog, "RECOVERABLE_MEMBER_ACTION_TYPES");
     const hasUnbanAttempt = (set) =>
       set !== null && /(?:\u0027TRY_UNBAN_MEMBER\u0027|\u0022TRY_UNBAN_MEMBER\u0022)/u.test(set);
+    const squash = (source) => source.replace(/^\s*\/\/[^\r\n]*/gmu, "").replace(/\s+/gu, " ").trim();
+    // FLAG: Legacy callbacks finish routing last. Marked callbacks reserve earlier and must
+    // recheck the sanction and lease after that wait, without further awaited work.
+    const finalUnbanGuard =
+      /beforeImmediateMemberMutation:\s*async \(revalidateRoute\) => \{[\s\S]*?if \(await readTargetAccess\(\)\) throw new ModerationSanctionStateChangedError\(\);\s*await leaseGuard\.assertOwned\(\);\s*(?:\/\/[^\n]*\n\s*)*await revalidateRoute\?\.\(\);\s*(?:\/\/[^\n]*\n\s*)*\},/u.test(manualUnban) ||
+      squash(manualUnban).includes("beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => { await leaseGuard.assertOwned(); if (await readTargetAccess()) throw new ModerationSanctionStateChangedError(); await beforeFinalAuthority?.(); await assertSanctionState({ chatId, targetUserId, releaseAction: \u0027UNBAN\u0027, expectedSanctionEventId, }); await leaseGuard.assertOwned(); }),");
     const valid = voiceSource.includes("persistVoiceSource(") &&
       voiceSource.includes("input.kind === \u0027invalidate\u0027") &&
       voiceSource.includes("VOICE_SOURCE_LIFETIME_MS = 5 * 60_000") &&
@@ -529,7 +535,7 @@ maxim_topology_require_bot_publisher_reliability() {
       hasUnbanAttempt(ambiguousCapable) && recoverableMembers !== null &&
       !hasUnbanAttempt(recoverableMembers) &&
       /if \(mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES\.has\(row\.actionType\)\) \{\s*await this\.applyOutcome\(row, MaxActionLedgerStatus\.AMBIGUOUS, summary, \{\s*ambiguous: true,\s*errorCode:[^\n]*\n\s*error:[^\n]*\n\s*outcome:\s*\u0027quarantined\u0027,\s*\}\);\s*return;\s*\}/u.test(watchdog) &&
-      /beforeImmediateMemberMutation:\s*async \(revalidateRoute\) => \{[\s\S]*?if \(await readTargetAccess\(\)\) throw new ModerationSanctionStateChangedError\(\);\s*await leaseGuard\.assertOwned\(\);\s*(?:\/\/[^\n]*\n\s*)*await revalidateRoute\?\.\(\);\s*(?:\/\/[^\n]*\n\s*)*\},/u.test(manualUnban) &&
+      finalUnbanGuard &&
       intents.includes("closedChatDeleteGuard!.authorize") &&
       intents.includes("requiredSubscriptionExecutionGuard!.authorize") &&
       intents.includes("moderationDeleteVerified") &&
@@ -625,7 +631,7 @@ maxim_topology_require_bot_publisher_reliability() {
       manualAuthority.includes("notice.lockToken !== input.lockToken") &&
       manualAuthority.includes("bypassCache: true") &&
       manualAuthority.includes("moderationEventId: { not: null }") &&
-      /beforeImmediateSendMutation:\s*async \(revalidateRoute\) => \{\s*await revalidateRoute\?\.\(\);\s*await this\.assertCurrentTransitionState\(/u.test(nightDelivery) &&
+      /beforeImmediateSendMutation:\s*(?:withMaxFinalAuthorityCheckpoint\(\s*)?async \(revalidateRoute\) => \{\s*await revalidateRoute\?\.\(\);\s*await this\.assertCurrentTransitionState\(/u.test(nightDelivery) &&
       /\[\s*(?:\/\/[^\n]*\n\s*)*\u0027nightModeEnabled\u0027,\s*\u0027nightModeStartTimeMinutes\u0027,\s*\u0027nightModeEndTimeMinutes\u0027,\s*\u0027nightModeTimezone\u0027,[\s\S]*?advanceChatMutationOrder\(tx, params.chatId, \u0027CHAT_CONTROL\u0027\)/u.test(settings);
     process.exit(valid ? 0 : 1);
   ' >/dev/null 2>&1; then
@@ -733,11 +739,14 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const authorityStart = guard.indexOf("if (params.authorityOnly)");
     const authorityEnd = guard.indexOf("return this.assertMessageStillActionable", authorityStart);
     const authority = guard.slice(authorityStart, authorityEnd);
-    const mutationStart = executor.indexOf("const beforeImmediateDeleteMutation = async () => {");
+    const mutationStart = executor.search(/const beforeImmediateDeleteMutation = async \(\s*(?:beforeFinalAuthority\?: \(\) => Promise<void>,?\s*)?\) => \{/u);
     const mutationEnd = executor.indexOf("\n          };", mutationStart);
     const mutation = executor.slice(mutationStart, mutationEnd);
     const suggestionProof = mutation.lastIndexOf("await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof)");
     const finalPermit = mutation.lastIndexOf("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(");
+    const markedMutation = /const beforeImmediateDeleteMutation = async \(\s*beforeFinalAuthority\?:/u.test(mutation);
+    const transportCheckpoint = mutation.indexOf("await beforeFinalAuthority?.()");
+    const finalDeadlineFence = mutation.indexOf("let verifiedReasonAuthorityAtMs = await this.assertVerifiedReasonDeadlineFence(");
     const phoneContext = phones.match(/const PHONE_CONTEXT\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1];
     const phoneNumberContext = phones.match(/const PHONE_NUMBER_CONTEXT\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1];
     const quantitySuffix = phones.match(/const QUANTITY_SUFFIX\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1] ?? "";
@@ -992,6 +1001,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
       /await this\.assertAuthorization\(params\.chatId, binding\);\s*return .allowed./u.test(authority) &&
       mutationStart >= 0 && mutationEnd > mutationStart &&
       suggestionProof >= 0 && finalPermit > suggestionProof &&
+      (!markedMutation || (count(mutation, "await beforeFinalAuthority?.()") === 1 &&
+        transportCheckpoint > suggestionProof && finalDeadlineFence > transportCheckpoint && finalPermit > finalDeadlineFence)) &&
       (mutation.slice(suggestionProof, finalPermit).includes("intent.messageDuplicateOwned") ||
         (guardedReasons && mutation.slice(suggestionProof, finalPermit).includes("textProof.messageDuplicateVerified"))) &&
       /assertIntentStillActionable\(\{[^}]*authorityOnly:\s*true,[^}]*\}\)/u.test(mutation.slice(finalPermit)) &&

@@ -4,6 +4,7 @@ import { UnrecoverableError } from 'bullmq';
 import {
   MESSAGE_DUPLICATE_NOTICE_AUTHORITY,
   MessageDuplicateGuardRejectedError,
+  type MessageDuplicateNoticeAuthority,
 } from '../moderation/message-duplicate/message-duplicate-guard.contract';
 import {
   buildMessageDuplicateNoticeContext,
@@ -105,7 +106,14 @@ function fixture() {
     createdAt: new Date().toISOString(),
     attempt: 1,
   } as MaxActionJob;
-  const authority = { assertMessageStillActionable: jest.fn(async (_input: unknown) => 'allowed') };
+  const authority: jest.Mocked<MessageDuplicateNoticeAuthority> = {
+    assertMessageStillActionable: jest
+      .fn<
+        ReturnType<MessageDuplicateNoticeAuthority['assertMessageStillActionable']>,
+        Parameters<MessageDuplicateNoticeAuthority['assertMessageStillActionable']>
+      >()
+      .mockResolvedValue('allowed'),
+  };
   const modules = { get: jest.fn(() => authority) };
   const guard = new MaxDuplicateNoticeGuardService(modules as never);
   return { proof, binding, action, authority, modules, guard, settings };
@@ -166,9 +174,9 @@ describe('durable duplicate explanation envelope', () => {
     expect(s.authority.assertMessageStillActionable).toHaveBeenCalledWith(
       expect.objectContaining({ botId: 'last-peer', notice: s.proof, beforeFinalAuthority: route }),
     );
-    expect(
-      (s.authority.assertMessageStillActionable.mock.calls[0]![0] as any).sanctionIntentId,
-    ).toBeUndefined();
+    expect(s.authority.assertMessageStillActionable.mock.calls[0]![0]).not.toHaveProperty(
+      'sanctionIntentId',
+    );
   });
 
   it('converts proven revocation and propagates unknown authority failures', async () => {
@@ -258,19 +266,33 @@ function transportFixture() {
       order.push('prepare');
       return options;
     });
-  s.authority.assertMessageStillActionable.mockImplementation(async (input: any) => {
+  let historyRevoked = false;
+  s.authority.assertMessageStillActionable.mockImplementation(async (input) => {
     order.push('authority');
     expect(context.getActiveBotId()).toBe('peer-2');
     await input.beforeFinalAuthority?.();
+    if (historyRevoked) throw new MessageDuplicateGuardRejectedError('history-reset');
     order.push('final-permit');
     return 'allowed';
   });
-  return { ...s, order, http, ledger, client, route, quota, prepare };
+  return {
+    ...s,
+    order,
+    http,
+    ledger,
+    client,
+    route,
+    quota,
+    prepare,
+    revokeHistory: () => {
+      historyRevoked = true;
+    },
+  };
 }
 
 describe('duplicate queued SEND transport boundary', () => {
   it.each([false, true])(
-    'keeps claim/quota before authority and the final permit after optional profile preparation: %s',
+    'keeps remote preparation before quota and the final permit after optional profile preparation: %s',
     async (withProfile) => {
       const s = transportFixture();
       const action: MaxActionJob = {
@@ -283,9 +305,9 @@ describe('duplicate queued SEND transport boundary', () => {
         await s.client.executeActionJob(action);
         expect(s.order).toEqual([
           'claim',
-          'quota',
           ...(withProfile ? ['prepare'] : []),
           'authority',
+          'quota',
           ...(withProfile ? ['prepare'] : []),
           'final-permit',
           'http',
@@ -304,9 +326,7 @@ describe('duplicate queued SEND transport boundary', () => {
     const s = transportFixture();
     try {
       s.quota.mockImplementation(async () => {
-        s.authority.assertMessageStillActionable.mockRejectedValue(
-          new MessageDuplicateGuardRejectedError('history-reset'),
-        );
+        s.revokeHistory();
       });
       await expect(s.client.executeActionJob(s.action)).rejects.toMatchObject({
         code: 'message_duplicate_notice_no_longer_authorized',

@@ -6,6 +6,7 @@ import { MaxModerationApiBudgetError } from '../max/max-moderation-api-budget';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  usesMaxFinalAuthorityCheckpoint,
 } from '../max/max-action-pre-dispatch-guard';
 
 import { MAX_SEND_FENCE_STALE_MS } from '../max/max-send-ambiguity.util';
@@ -354,7 +355,7 @@ function createService(
       async (
         chatId: string,
         messageId: string,
-        options?: { beforeImmediateDeleteMutation?: () => Promise<void> },
+        options?: Parameters<MaxClientService['deleteMessage']>[2],
       ) => {
         await options?.beforeImmediateDeleteMutation?.();
         if (typeof deleteMessageOverride === 'function') {
@@ -1538,6 +1539,117 @@ describe('ModerationDeleteIntentService', () => {
       expect(result).not.toHaveProperty('commercialVerified');
     },
   );
+
+  it('reserves DELETE admission after remote guards and before the final deadline and duplicate permits', async () => {
+    const f = initialDuplicateSourceFixture();
+    const events: string[] = [];
+    const leased = { ...f.leased, suggestionSubscriptionId: 'suggestion' };
+    const completed = {
+      kind: 'confirmed',
+      status: 'SUCCEEDED',
+      confirmed: true,
+      intentId: leased.id,
+    };
+    f.mark.mockImplementation(async () => {
+      events.push('dispatch-marker');
+      return true;
+    });
+    f.maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+      const guard = options?.beforeImmediateDeleteMutation;
+      expect(usesMaxFinalAuthorityCheckpoint(guard)).toBe(true);
+      await guard?.(async () => {
+        events.push('admission');
+      });
+      events.push('delete');
+    });
+    const guards = jest.fn(async (...args: unknown[]) => {
+      events.push(args[3] ? 'final-remote-guards' : 'initial-remote-guards');
+      return {
+        profanityVerified: false,
+        commercialVerifiedReasonKeys: [],
+        messageDuplicateVerified: true,
+      };
+    });
+    const finalDuplicate = jest.fn(async () => {
+      events.push('duplicate-authority');
+    });
+    Object.assign(f.service, {
+      loadIntent: jest.fn().mockResolvedValue(leased),
+      runDeletePreDispatchGuards: guards,
+      suggestionSubscriptions: {
+        prepareDeletion: async () => ({ chatId: leased.chatId, messageId: leased.messageId }),
+        assertDeletionAllowed: async () => {
+          events.push('suggestion-authority');
+        },
+      },
+      assertVerifiedReasonDeadlineFence: jest.fn(async () => {
+        events.push('deadline-fence');
+        return 0;
+      }),
+      messageDuplicateDeleteGuard: { assertIntentStillActionable: finalDuplicate },
+      recordRemoteSuccessAndFinalize: jest.fn().mockResolvedValue(completed),
+    });
+
+    await expect(f.service.executeLeasedIntent(leased.id, 'lease-1')).resolves.toEqual(completed);
+    expect(events).toEqual([
+      'suggestion-authority',
+      'initial-remote-guards',
+      'dispatch-marker',
+      'final-remote-guards',
+      'suggestion-authority',
+      'admission',
+      'deadline-fence',
+      'duplicate-authority',
+      'delete',
+    ]);
+    expect(guards).toHaveBeenCalledTimes(2);
+    expect(finalDuplicate).toHaveBeenCalledTimes(1);
+    expect(finalDuplicate).toHaveBeenCalledWith(expect.objectContaining({ authorityOnly: true }));
+  });
+
+  it('clears its new dispatch marker and retains the original deadline when late DELETE admission is refused', async () => {
+    const f = initialDuplicateSourceFixture();
+    const originalDeadline = f.leased.retryUntilAt;
+    const quota = new MaxApiInternalRateLimitError('Late DELETE admission unavailable', 250);
+    const remoteDelete = jest.fn();
+    const finalAuthority = jest.fn();
+    const retry = jest.fn().mockResolvedValue({
+      kind: 'pending',
+      status: 'RETRYABLE',
+      confirmed: false,
+      intentId: f.leased.id,
+    });
+    Object.assign(f.service, {
+      runDeletePreDispatchGuards: jest.fn().mockResolvedValue({
+        profanityVerified: false,
+        commercialVerifiedReasonKeys: [],
+        messageDuplicateVerified: true,
+      }),
+      assertVerifiedReasonDeadlineFence: finalAuthority,
+      finishRetryableAttempt: retry,
+    });
+    f.maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+      expect(usesMaxFinalAuthorityCheckpoint(options?.beforeImmediateDeleteMutation)).toBe(true);
+      await options?.beforeImmediateDeleteMutation?.(async () => {
+        expect(f.mark).toHaveBeenCalledTimes(1);
+        throw quota;
+      });
+      remoteDelete();
+    });
+
+    await expect(f.service.executeLeasedIntent(f.leased.id, 'lease-1')).resolves.toMatchObject({
+      confirmed: false,
+      status: 'RETRYABLE',
+    });
+    expect(f.clear).toHaveBeenCalledTimes(1);
+    expect(f.clear).toHaveBeenCalledWith(f.leased.id, 'lease-1', 'bot-1');
+    expect(f.leased.deleteDispatchStartedAt).toBeNull();
+    expect(f.leased.deleteDispatchStartedBotId).toBeNull();
+    expect(f.leased.retryUntilAt).toBe(originalDeadline);
+    expect(finalAuthority).not.toHaveBeenCalled();
+    expect(remoteDelete).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
 
   it.each([true, false])(
     'keeps DELETE and receipt order when metrics fail (duplicate owner: %s)',

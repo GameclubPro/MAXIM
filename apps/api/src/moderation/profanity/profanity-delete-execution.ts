@@ -18,7 +18,7 @@ export type ModerationDeleteExecutionResult = {
 
 export type ProfanityDeleteMutationHooks = {
   beforeAttempt(): void;
-  beforeDeleteMutation(botId?: string): Promise<void>;
+  beforeDeleteMutation(botId?: string, beforeFinalAuthority?: () => Promise<void>): Promise<void>;
 };
 
 class ProfanityDeleteAlreadyAbsentError extends Error {}
@@ -47,7 +47,7 @@ export async function executeProfanityGuardedLegacyDelete(params: {
         beforeAttempt: () => {
           profanityVerified = false;
         },
-        beforeDeleteMutation: async (botId) => {
+        beforeDeleteMutation: async (botId, beforeFinalAuthority) => {
           profanityVerified = false;
           const result = await params.guard!.assertMessageStillActionable({
             chatId: params.input.chatId,
@@ -55,6 +55,7 @@ export async function executeProfanityGuardedLegacyDelete(params: {
             subjectUserId: params.input.subjectUserId ?? null,
             botId,
             minimumScore: params.input.event?.score,
+            ...(beforeFinalAuthority ? { beforeFinalAuthority } : {}),
           });
           if (result === 'absent') {
             throw new ProfanityDeleteAlreadyAbsentError();

@@ -1,4 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
+import { withMaxFinalAuthorityCheckpoint } from '../../max/max-action-pre-dispatch-guard';
 import type { MaxUpdate } from '@maxim/contracts';
 import type { DuplicateObservationOutcome } from '@maxim/contracts/settings';
 import type { ChatSettings } from '../../prisma/prisma-client';
@@ -318,12 +319,14 @@ export class MessageDuplicateEnforcementService {
               ...common,
               outcome: { kind: 'decision', decision: { ...decision, metadata } },
               authorizeSanction: () => check(true),
-              beforeSanctionMutation: async (beforeFinalAuthority) => {
-                if (!(await check(true, beforeFinalAuthority, true)))
-                  throw new MessageDuplicateGuardRejectedError(
-                    'message_duplicate_sanction_revoked',
-                  );
-              },
+              beforeSanctionMutation: withMaxFinalAuthorityCheckpoint(
+                async (beforeFinalAuthority) => {
+                  if (!(await check(true, beforeFinalAuthority, true)))
+                    throw new MessageDuplicateGuardRejectedError(
+                      'message_duplicate_sanction_revoked',
+                    );
+                },
+              ),
             }
           : {
               ...common,

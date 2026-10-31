@@ -5,6 +5,7 @@ import type { ManagedEntitiesService } from './managed-entities.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { AdvertisingPlacement, AdvertisingPlacementSend } from '../prisma/prisma-client';
 import type { MaxClientService, MaxActionDispatchOptions } from '../max/max-client.service';
+import { usesMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 
 const pilot: AuthUser = { userId: '323459159', username: null, displayName: null };
 const listingId = '10000000-0000-4000-8000-000000000001';
@@ -273,6 +274,25 @@ it.each(['disable', 'revoke', 'listing'] as const)(
     expect(f.max.sendMessage).toHaveBeenCalledTimes(1);
   },
 );
+
+it('rejects a settings change during transport admission after remote preparation', async () => {
+  const f = fixture();
+  const mutation = jest.fn();
+  const checkpoint = jest.fn(async () => {
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+    f.setSettings({ ...f.settings(), enabled: false, revision: 2 });
+  });
+  f.max.sendMessage.mockImplementation(async (_chat, _text, _options, options) => {
+    expect(usesMaxFinalAuthorityCheckpoint(options.beforeImmediateSendMutation)).toBe(true);
+    await options.beforeImmediateSendMutation?.(checkpoint);
+    mutation();
+    return { messageId: 'must-not-send' };
+  });
+
+  expect((await f.service.send(chatId, pilot, f.input)).status).toBe('FAILED');
+  expect(checkpoint).toHaveBeenCalledTimes(1);
+  expect(mutation).not.toHaveBeenCalled();
+});
 
 it('never retries after dispatch uncertainty, including loss of the database receipt write', async () => {
   const f = fixture();

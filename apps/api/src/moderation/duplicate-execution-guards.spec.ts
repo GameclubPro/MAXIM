@@ -2,6 +2,10 @@ import {
   createDuplicateDeleteAuthorizationGuard,
   createDuplicateMemberMutationGuard,
 } from './duplicate-execution-guards';
+import {
+  usesMaxFinalAuthorityCheckpoint,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 
 describe('duplicate delete authorization', () => {
   it('runs the final lease and route within member authority before its final permit', async () => {
@@ -11,16 +15,59 @@ describe('duplicate delete authorization', () => {
         order.push('lease');
       },
     };
-    const guard = createDuplicateMemberMutationGuard(lease, async (beforeFinalAuthority) => {
-      order.push('external-author');
-      await beforeFinalAuthority?.();
-      order.push('final-permit');
-    })!;
+    const guard = createDuplicateMemberMutationGuard(
+      lease,
+      withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
+        order.push('external-author');
+        await beforeFinalAuthority?.();
+        order.push('final-permit');
+      }),
+    )!;
     await guard(async () => {
       order.push('route');
     });
-    expect(order).toEqual(['lease', 'external-author', 'lease', 'route', 'final-permit']);
+    expect(usesMaxFinalAuthorityCheckpoint(guard)).toBe(true);
+    expect(order).toEqual(['lease', 'external-author', 'route', 'lease', 'final-permit']);
   });
+
+  it.each(['lease-only', 'marked-authority'] as const)(
+    'refuses mutation when %s loses its lease during quota admission',
+    async (branch) => {
+      let leaseOwned = true;
+      const lostLease = new Error('Lease expired during quota admission');
+      const lease = {
+        assertOwned: jest.fn(async () => {
+          if (!leaseOwned) throw lostLease;
+        }),
+      };
+      const finalPermit = jest.fn();
+      const mutation = jest.fn();
+      const authority = withMaxFinalAuthorityCheckpoint(
+        async (checkpoint?: () => Promise<void>) => {
+          await checkpoint?.();
+          finalPermit();
+        },
+      );
+      const guard = createDuplicateMemberMutationGuard(
+        lease,
+        branch === 'marked-authority' ? authority : undefined,
+      )!;
+      const checkpoint = jest.fn(async () => {
+        leaseOwned = false;
+      });
+      expect(usesMaxFinalAuthorityCheckpoint(guard)).toBe(true);
+      await expect(
+        (async () => {
+          await guard(checkpoint);
+          mutation();
+        })(),
+      ).rejects.toBe(lostLease);
+      expect(checkpoint).toHaveBeenCalledTimes(1);
+      expect(lease.assertOwned).toHaveBeenCalledTimes(2);
+      expect(finalPermit).not.toHaveBeenCalled();
+      expect(mutation).not.toHaveBeenCalled();
+    },
+  );
   it('distinguishes a transient verification failure from a confirmed rejection', async () => {
     const failure = new Error('temporary MAX failure');
     const authorizeDelete = jest.fn().mockRejectedValueOnce(failure).mockResolvedValue(true);

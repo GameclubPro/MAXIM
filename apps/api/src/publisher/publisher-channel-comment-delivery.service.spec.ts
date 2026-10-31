@@ -11,6 +11,7 @@ import { PublisherDialogLinkService } from './publisher-dialog-link.service';
 import { AdminDialogLinkHelper } from '../admin/admin-dialog-link-helper';
 import { prepareStoredChannelCommentsKeyboard } from '../admin/admin-channel-comment-keyboard';
 import { refreshExistingInlineKeyboardText } from '../max/max-inline-keyboard-text-refresh';
+import { usesMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 
 const chatId = '-100';
 const config = { get: () => 'publik-bot' };
@@ -683,6 +684,41 @@ describe('Publisher channel keyboard webhook and delivery', () => {
     expect(h.maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(h.prisma.auditLog.upsert).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    'fences the prepared signature across transport admission (changed: %s)',
+    async (changed) => {
+      const h = fixture();
+      const cta = { type: 'link', text: 'Reviews', url: 'https://example.com/reviews' };
+      h.postSignature.buildPostButton.mockResolvedValue(cta);
+      const checkpoint = jest.fn(async () => {
+        expect(h.maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+        expect(h.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+        expect(h.postSignature.buildPostButton).toHaveBeenCalledTimes(2);
+        if (changed)
+          h.entity.channelSettings.updatedAt = new Date(
+            h.entity.channelSettings.updatedAt.getTime() + 1,
+          );
+      });
+      h.maxClient.editMessageInlineKeyboard.mockImplementation(
+        async (_chat, _id, _text, options) => {
+          const buttons = await options.prepareInlineKeyboard(h.message);
+          const guard = options.beforeEditMutation;
+          expect(usesMaxFinalAuthorityCheckpoint(guard)).toBe(true);
+          await guard(checkpoint);
+          h.mutate(buttons);
+        },
+      );
+
+      const result = h.service.process(h.job);
+      if (changed)
+        await expect(result).rejects.toThrow('Channel post button changed before keyboard edit');
+      else await expect(result).resolves.toBeUndefined();
+      expect(checkpoint).toHaveBeenCalledTimes(1);
+      expect(h.prisma.chat.findUnique).toHaveBeenCalledTimes(2);
+      expect(h.mutate).toHaveBeenCalledTimes(changed ? 0 : 1);
+    },
+  );
 
   it('does not edit when the CTA changes after preparing the keyboard', async () => {
     const h = fixture();
