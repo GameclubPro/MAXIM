@@ -39,5 +39,9 @@ else
   echo "actionlint not installed; workflow lint is enforced in CI" >&2
 fi
 
+if [[ -n "${MAXIM_TEST_POSTGRES_URL:-}" ]]; then
+  npm run prisma:generate --workspace @maxim/api
+fi
+
 # FLAG: Each test file may create nested native/CLI processes; bound file workers too.
 node --test --test-concurrency=2 infra/scripts/*.test.mjs

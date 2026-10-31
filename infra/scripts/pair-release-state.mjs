@@ -105,8 +105,8 @@ async function snapshot() {
       checkout(paths.majorRoot),
       checkout(paths.karavanRoot),
     ]);
-  let major = null;
-  let karavan = null;
+  let major;
+  let karavan;
   try {
     major = majorFile ? JSON.parse(majorFile.bytes.toString('utf8')) : null;
     karavan = karavanFile ? JSON.parse(karavanFile.bytes.toString('utf8')) : null;
@@ -194,7 +194,7 @@ async function holderIsAlive(owner) {
     return fields[0] !== 'Z' && fields[19] === owner.start && boot.trim() === owner.boot;
   } catch (error) {
     if (['ENOENT', 'ESRCH'].includes(error.code)) return false;
-    throw new Error('Admission holder identity cannot be inspected');
+    throw new Error('Admission holder identity cannot be inspected', { cause: error });
   }
 }
 
@@ -204,7 +204,7 @@ async function holderIdentityMatches(owner) {
     return digest(await readlink(`/proc/${owner.pid}/cwd`)) === owner.cwd;
   } catch (error) {
     if (['ENOENT', 'ESRCH'].includes(error.code)) return false;
-    throw new Error('Admission holder working directory cannot be inspected');
+    throw new Error('Admission holder working directory cannot be inspected', { cause: error });
   }
 }
 
@@ -269,7 +269,7 @@ async function assertNoReleaseActors() {
     output = (await execute('pgrep', ['-f', pattern], { timeout: 2_000, maxBuffer: 8_192 })).stdout;
   } catch (error) {
     if (error.code === 1) return;
-    throw new Error('Release actor observation is unavailable');
+    throw new Error('Release actor observation is unavailable', { cause: error });
   }
   const pids = output.trim().split('\n');
   if (pids.length > 256) throw new Error('Release actor observation exceeds its bound');
