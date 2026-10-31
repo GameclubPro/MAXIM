@@ -567,12 +567,21 @@ export class RequiredSubscriptionCandidateStore {
       Array.isArray(receipt)
     )
       throw new Error('Invalid required-subscription candidate receipt');
+    // FLAG: DELETE status is a downstream snapshot, not transfer identity. Preserve
+    // the first receipt; only an otherwise exact, allowed snapshot can acknowledge it.
+    const sameReceipt =
+      key === 'delete'
+        ? Prisma.sql`(("effects"->'delete') - 'status') = (${serialized}::jsonb - 'status')
+            AND "effects"->'delete'->>'status' IN
+              ('PENDING', 'IN_PROGRESS', 'RETRYABLE', 'WAITING_CAPABILITY', 'SUCCEEDED', 'ALREADY_ABSENT')`
+        : Prisma.sql`"effects"->${key}::text = ${serialized}::jsonb`;
     const count = await this.prisma.$executeRaw(Prisma.sql`
-      UPDATE "required_subscription_candidates" SET "effects" = "effects" || jsonb_build_object(${key}::text, ${serialized}::jsonb),
+      UPDATE "required_subscription_candidates" SET "effects" = "effects" ||
+          jsonb_build_object(${key}::text, COALESCE("effects"->${key}::text, ${serialized}::jsonb)),
         "updated_at" = (clock_timestamp() AT TIME ZONE 'UTC')
       WHERE "id" = ${id} AND "status" = 'RUNNING' AND "lease_token" = ${token}
         AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
-        AND ("effects"->${key}::text IS NULL OR "effects"->${key}::text = ${serialized}::jsonb)
+        AND ("effects"->${key}::text IS NULL OR (${sameReceipt}))
     `);
     if (!count) throw new Error('Required-subscription candidate receipt conflict or lease lost');
   }

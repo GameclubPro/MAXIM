@@ -54,6 +54,7 @@ import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-acces
 import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
 import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
 import { readMaxRetryAfterMs } from '../max/max-retry-after';
+import { MaxModerationApiBudgetError } from '../max/max-moderation-api-budget';
 import {
   isMaxApiCircuitOpenError,
   MAX_API_SOURCE_TAGS,
@@ -365,6 +366,7 @@ type IntentRow = {
   channelAutoPostCleanupOnly?: boolean;
   botMessageAutoDeleteReason?: boolean;
   botMessageAutoDeleteOnly?: boolean;
+  activeMuteDeleteReason?: boolean;
   requiredSubscriptionDeleteReason?: boolean;
   commercialOcrDeleteReason?: boolean;
   standardCommercialOcrDeleteReason?: boolean;
@@ -2569,31 +2571,7 @@ export class ModerationDeleteIntentService {
       Object.assign(intent, retryLimitOutcome.intent);
     }
     const heartbeat = this.startLeaseHeartbeat(intent.id, leaseToken);
-    try {
-      if (
-        intent.remoteDeleteSucceededAt &&
-        intent.remoteDeleteSucceededBotId &&
-        !this.isBotMessageAutoDeleteOnlyReason(intent)
-      ) {
-        return this.finalizeRecordedRemoteSuccess(
-          intent,
-          leaseToken,
-          intent.remoteDeleteSucceededBotId,
-        );
-      }
-
-      // FLAG: Exact positive receipts settle above. Held legacy sources never spend
-      // access/presence quota or acquire fresh DELETE authority; unknown markers stay intact.
-      if (await this.isLegacyIntentHeld(intent)) {
-        return this.finishRetryableAttempt(intent, leaseToken, {
-          status: 'FAILED_TERMINAL',
-          statusCode: null,
-          errorCode: 'webhook_legacy_effect_held',
-          message: 'Permanent legacy source or participant hold denies a new delete effect',
-          retryDelayMs: 60_000,
-        });
-      }
-
+    const execute = async (): Promise<ModerationDeleteAttemptResult> => {
       if (!this.hasDeleteMutationEvidence(intent)) {
         await this.assertLeaseForExternalCall(heartbeat);
         const protectedIntent = await this.finishProtectedManagedBotMessageAutoDelete(
@@ -2609,6 +2587,7 @@ export class ModerationDeleteIntentService {
       try {
         route = await this.resolveDeleteRouteWithRefresh(intent, heartbeat);
       } catch (error: unknown) {
+        if (error instanceof MaxModerationApiBudgetError) throw error;
         if (error instanceof ModerationDeleteIntentLeaseLostError) {
           throw error;
         }
@@ -2694,6 +2673,7 @@ export class ModerationDeleteIntentService {
             }
             unresolvedDeleteDispatch = false;
           } catch (error: unknown) {
+            if (error instanceof MaxModerationApiBudgetError) throw error;
             if (error instanceof ModerationDeleteIntentLeaseLostError) {
               throw error;
             }
@@ -2854,14 +2834,14 @@ export class ModerationDeleteIntentService {
               !verifiedReasonAuthorityAtMs
             ) {
               const changed = await this.prisma.$executeRaw(Prisma.sql`
-                UPDATE "moderation_delete_intents" SET "updated_at" = CURRENT_TIMESTAMP
-                WHERE "id" = ${intent.id}
-                  AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
-                  AND "lease_token" = ${leaseToken}
-                  AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
-                  AND "delete_dispatch_started_bot_id" = ${botId}
-                  AND ${new Date(textProof.independentAuthorityDeadlineAtMs)} > (clock_timestamp() AT TIME ZONE 'UTC')
-              `);
+                  UPDATE "moderation_delete_intents" SET "updated_at" = CURRENT_TIMESTAMP
+                  WHERE "id" = ${intent.id}
+                    AND "status" = CAST('IN_PROGRESS' AS "ModerationDeleteIntentStatus")
+                    AND "lease_token" = ${leaseToken}
+                    AND "lease_expires_at" > (clock_timestamp() AT TIME ZONE 'UTC')
+                    AND "delete_dispatch_started_bot_id" = ${botId}
+                    AND ${new Date(textProof.independentAuthorityDeadlineAtMs)} > (clock_timestamp() AT TIME ZONE 'UTC')
+                `);
               if (changed !== 1)
                 throw new ModerationDeletePreDispatchGuardError(
                   new ModerationDeleteReasonsRejectedError(textProof.guardedReasonFingerprint!),
@@ -2930,6 +2910,19 @@ export class ModerationDeleteIntentService {
               }),
           );
         } catch (error: unknown) {
+          if (error instanceof MaxModerationApiBudgetError) {
+            // FLAG: Only this attempt's proven pre-HTTP rejection clears its new dispatch marker.
+            // Retained unknown outcomes and unmarked errors keep their reconciliation fence.
+            if (dispatchMarkerPersisted && wasMaxPreDispatchGuardRejected(error)) {
+              if (!(await this.clearDeleteDispatchStarted(intent.id, leaseToken, botId))) {
+                throw new ModerationDeleteIntentLeaseLostError();
+              }
+              intent.deleteDispatchStartedAt = null;
+              intent.deleteDispatchStartedBotId = null;
+              unresolvedDeleteDispatch = false;
+            }
+            throw error;
+          }
           if (error instanceof ModerationDeleteProtectedMessageError) {
             return this.toAttemptResult(error.protectedIntent);
           }
@@ -2959,6 +2952,7 @@ export class ModerationDeleteIntentService {
               intent.deleteDispatchStartedBotId = null;
               unresolvedDeleteDispatch = false;
             }
+            if (error.guardError instanceof MaxModerationApiBudgetError) throw error.guardError;
             const details = this.describeError(
               error.guardError,
               'delete_pre_dispatch_guard_rejected',
@@ -3269,7 +3263,59 @@ export class ModerationDeleteIntentService {
           retryDelayMs: this.capabilityRetryDelayMs(intent.attemptCount),
         },
       );
+    };
+    try {
+      if (
+        intent.remoteDeleteSucceededAt &&
+        intent.remoteDeleteSucceededBotId &&
+        !this.isBotMessageAutoDeleteOnlyReason(intent)
+      ) {
+        return this.finalizeRecordedRemoteSuccess(
+          intent,
+          leaseToken,
+          intent.remoteDeleteSucceededBotId,
+        );
+      }
+
+      // FLAG: Exact positive receipts settle above. Held legacy sources never spend
+      // access/presence quota or acquire fresh DELETE authority; unknown markers stay intact.
+      if (await this.isLegacyIntentHeld(intent)) {
+        return this.finishRetryableAttempt(intent, leaseToken, {
+          status: 'FAILED_TERMINAL',
+          statusCode: null,
+          errorCode: 'webhook_legacy_effect_held',
+          message: 'Permanent legacy source or participant hold denies a new delete effect',
+          retryDelayMs: 60_000,
+        });
+      }
+
+      if (intent.entityType === 'CHAT' && intent.subjectUserId && intent.activeMuteDeleteReason) {
+        return await this.maxClient.runWithMuteApiBudget(
+          {
+            chatId: intent.chatId,
+            subjectUserId: intent.subjectUserId,
+            intentId: intent.id,
+            attemptCount: intent.attemptCount,
+            // FLAG: Expired sources gain no new effect authority. Retained unknown outcomes
+            // still need bounded exact-presence reconciliation under the original final guards.
+            deadlineAtMs: this.hasDeleteMutationEvidence(intent)
+              ? Math.max(intent.retryUntilAt.getTime(), Date.now() + 60_000)
+              : intent.retryUntilAt.getTime(),
+          },
+          execute,
+        );
+      }
+      return await execute();
     } catch (error: unknown) {
+      if (error instanceof MaxModerationApiBudgetError) {
+        return this.finishRetryableAttempt(intent, leaseToken, {
+          status: this.hasDeleteMutationEvidence(intent) ? 'AMBIGUOUS' : 'RETRYABLE',
+          statusCode: null,
+          errorCode: `mute_api_budget_${error.reason}`,
+          message: error.message,
+          retryDelayMs: error.retryAfterMs,
+        });
+      }
       if (error instanceof ModerationDeletePreDispatchGuardError) {
         throw error.guardError;
       }
@@ -7852,6 +7898,7 @@ export class ModerationDeleteIntentService {
       });
       return persisted ? 'refreshed' : 'unknown';
     } catch (error: unknown) {
+      if (error instanceof MaxModerationApiBudgetError) throw error;
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
         throw error;
       }
@@ -7900,6 +7947,7 @@ export class ModerationDeleteIntentService {
       const presence = await this.getExactMessagePresence(intent, botId, heartbeat, canRead);
       return presence === 'present' ? 'message_present' : 'verified_absent';
     } catch (error: unknown) {
+      if (error instanceof MaxModerationApiBudgetError) throw error;
       if (error instanceof ModerationDeleteIntentLeaseLostError) {
         throw error;
       }
@@ -9370,6 +9418,12 @@ export class ModerationDeleteIntentService {
           AND required_subscription_reason."rule_code" =
             ${REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE}
       ) AS "requiredSubscriptionDeleteReason",
+      EXISTS (
+        SELECT 1
+        FROM "moderation_delete_intent_reasons" mute_reason
+        WHERE mute_reason."intent_id" = ${intentIdColumn}
+          AND mute_reason."rule_code" = 'MUTE_ACTIVE_DELETE'
+      ) AS "activeMuteDeleteReason",
       ${this.botMessageAutoDeleteOnlySql(intentIdColumn)} AS "botMessageAutoDeleteOnly",
       EXISTS (
         SELECT 1

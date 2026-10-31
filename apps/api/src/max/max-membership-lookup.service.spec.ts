@@ -156,6 +156,7 @@ import {
   MaxMembershipLookupService,
 } from './max-membership-lookup.service';
 import { MaxApiInternalRateLimitError, type MaxClientService } from './max-client.service';
+import { MaxModerationApiBudgetError } from './max-moderation-api-budget';
 import type { MaxBotLinkService } from './max-bot-link.service';
 import {
   markMaxMemberMutationAttempted,
@@ -1698,6 +1699,52 @@ describe('MaxMembershipLookupService', () => {
       expect(result).toEqual({ membership: null, fresh: false });
       expect(isLocalQuotaResolution(result)).toBe(false);
     });
+
+    it.each(['single', 'coalesced', 'batch'] as const)(
+      'does not promote the muted-user protection budget through lookup or repeated reads: %s',
+      async (mode) => {
+        const f = fixture();
+        const error = new MaxModerationApiBudgetError('attempt_budget', 1_000);
+        expect(error).toBeInstanceOf(MaxApiInternalRateLimitError);
+        expect(error.preDispatch).toBe(true);
+        f.maxClient.getChatMembersAccess.mockRejectedValue(error);
+        const resolutions =
+          mode === 'batch'
+            ? [
+                ...(
+                  await f.service.getMembershipResolutions(
+                    'channel-1',
+                    ['user-1', 'user-2'],
+                    'moderation_required_subscription',
+                    { forceRefresh: true, botId: 'bot-1' },
+                  )
+                ).values(),
+              ]
+            : await Promise.all(
+                (mode === 'single' ? ['user-1'] : ['user-1', 'user-2']).map((userId) =>
+                  f.service.getMembershipResolution(
+                    'channel-1',
+                    userId,
+                    'moderation_required_subscription',
+                    { forceRefresh: true, botId: 'bot-1' },
+                  ),
+                ),
+              );
+        for (const result of resolutions) {
+          expect(result).toEqual({ membership: null, fresh: false });
+          expect(isLocalQuotaResolution(result)).toBe(false);
+        }
+        const repeated = await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        );
+        expect(repeated).toEqual({ membership: null, fresh: false });
+        expect(isLocalQuotaResolution(repeated)).toBe(false);
+        expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+      },
+    );
 
     it('does not lend a refusal to another bot or policy when legacy cache keys are shared', async () => {
       const f = fixture({ MAX_MEMBERSHIP_LOOKUP_BOT_SCOPED_CACHE_ENABLED: false });

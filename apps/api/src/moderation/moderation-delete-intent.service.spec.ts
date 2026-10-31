@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { performance } from 'node:perf_hooks';
 import type { DeleteIntentLeaseCheck } from './moderation-delete-intent-lease';
 import { MaxApiInternalRateLimitError, type MaxClientService } from '../max/max-client.service';
+import { MaxModerationApiBudgetError } from '../max/max-moderation-api-budget';
 import {
   markMaxPreDispatchGuardRejected,
   MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
@@ -339,7 +340,12 @@ function createService(
     },
   };
   const deleteMessageOverride = maxClientOverrides.deleteMessage;
+  const muteApiBudget = {
+    runWithMuteApiBudget: (_scope, callback) => callback(),
+  } satisfies Pick<MaxClientService, 'runWithMuteApiBudget'>;
+  const runWithMuteApiBudget = jest.spyOn(muteApiBudget, 'runWithMuteApiBudget');
   const maxClient = {
+    ...muteApiBudget,
     getCurrentChatMemberAccess: jest.fn(),
     getMessageSnapshot: jest.fn(),
     getExactMessagePresence: jest.fn(),
@@ -416,6 +422,7 @@ function createService(
     prisma,
     queue,
     maxClient,
+    runWithMuteApiBudget,
     maxBotLink,
     linkHistoryDeleteGuard,
     photoDuplicateRuntimePolicy,
@@ -436,6 +443,7 @@ const baseIntent = {
   messageAuthorKind: 'user',
   originBotId: 'bot-1',
   routingPolicy: 'delete_capable',
+  activeMuteDeleteReason: false,
   commercialOcrGuardRequired: false,
   status: 'IN_PROGRESS',
   executeAt: new Date(Date.now() - 1_000),
@@ -900,6 +908,178 @@ describe('ModerationDeleteIntentService', () => {
     });
     return { ...fixture, leased, deferred, remoteDelete, mark, clear };
   }
+
+  it.each([false, true])(
+    'defers a muted-user attempt before MAX work and preserves prior uncertainty: %s',
+    async (unknownOutcome) => {
+      const now = Date.now();
+      const leased = {
+        ...baseIntent,
+        activeMuteDeleteReason: true,
+        retryUntilAt: new Date(now + (unknownOutcome ? -1_000 : 600_000)),
+        deleteDispatchStartedAt: unknownOutcome ? new Date(now - 2_000) : null,
+        deleteDispatchStartedBotId: unknownOutcome ? 'bot-2' : null,
+      };
+      const deferred = {
+        ...leased,
+        status: unknownOutcome ? 'AMBIGUOUS' : 'RETRYABLE',
+        nextAttemptAt: new Date(now + 300_000),
+        lastErrorCode: 'mute_api_budget_actor_cooldown',
+        leaseToken: null,
+        leaseExpiresAt: null,
+      };
+      const queryRaw = jest.fn().mockResolvedValueOnce([leased]).mockResolvedValueOnce([deferred]);
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const fixture = createService({}, { $queryRaw: queryRaw, $executeRaw: executeRaw });
+      fixture.runWithMuteApiBudget.mockRejectedValue(
+        new MaxModerationApiBudgetError('actor_cooldown', 300_000),
+      );
+
+      await expect(
+        fixture.service.executeLeasedIntent(leased.id, 'lease-1'),
+      ).resolves.toMatchObject({
+        kind: unknownOutcome ? 'ambiguous' : 'pending',
+        intentId: leased.id,
+        status: deferred.status,
+      });
+
+      expect(fixture.runWithMuteApiBudget).toHaveBeenCalledTimes(1);
+      expect(fixture.runWithMuteApiBudget).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: leased.chatId,
+          subjectUserId: leased.subjectUserId,
+          intentId: leased.id,
+          attemptCount: leased.attemptCount,
+          ...(!unknownOutcome ? { deadlineAtMs: leased.retryUntilAt.getTime() } : {}),
+        }),
+        expect.any(Function),
+      );
+      expect(fixture.maxBotLink.resolveDeleteMessageBotRoute).not.toHaveBeenCalled();
+      expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+      expect(fixture.maxClient.getMessageSnapshot).not.toHaveBeenCalled();
+      expect(fixture.maxClient.getExactMessagePresence).not.toHaveBeenCalled();
+      expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(fixture.queue.add).not.toHaveBeenCalled();
+      expect(leased.retryUntilAt).toEqual(deferred.retryUntilAt);
+      expect(leased.deleteDispatchStartedAt).toEqual(deferred.deleteDispatchStartedAt);
+      expect(leased.deleteDispatchStartedBotId).toBe(deferred.deleteDispatchStartedBotId);
+      expect(executeRaw).toHaveBeenCalledTimes(1);
+      const retrySql = (executeRaw.mock.calls[0]![0] as Prisma.Sql).strings.join('?');
+      expect(retrySql).toContain('"lease_token" = NULL');
+      expect(retrySql).not.toContain('"retry_until_at" =');
+      expect(retrySql).not.toContain('"delete_dispatch_started_at" =');
+      expect(retrySql).not.toContain('"delete_dispatch_started_bot_id" =');
+      expect((executeRaw.mock.calls[0]![0] as Prisma.Sql).values).toEqual(
+        expect.arrayContaining([deferred.status, 'mute_api_budget_actor_cooldown']),
+      );
+    },
+  );
+
+  it('clears only the new dispatch marker after a direct marked mute-budget rejection', async () => {
+    const fixture = initialDuplicateSourceFixture();
+    const leased = {
+      ...fixture.leased,
+      activeMuteDeleteReason: true,
+      messageDuplicateOwned: false,
+    };
+    const deferred = {
+      ...leased,
+      status: 'RETRYABLE',
+      lastErrorCode: 'mute_api_budget_expired',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    Object.assign(fixture.service, {
+      loadIntent: jest.fn().mockResolvedValue(leased),
+      loadRequiredIntent: jest.fn().mockResolvedValue(deferred),
+      filterAndOrderRouteCandidates: () => ['bot-1', 'bot-2'],
+      runDeletePreDispatchGuards: jest.fn().mockResolvedValue({
+        profanityVerified: false,
+        commercialVerifiedReasonKeys: [],
+        messageDuplicateVerified: false,
+        verifiedReasonKeys: [],
+        verifiedReasonDeadlines: [],
+        independentAuthorityDeadlineAtMs: null,
+        guardedReasonFingerprint: 'a'.repeat(64),
+      }),
+      assertVerifiedReasonDeadlineFence: jest.fn().mockResolvedValue(null),
+    });
+    fixture.maxClient.deleteMessage.mockImplementation(async (_chatId, _messageId, options) => {
+      await options?.beforeImmediateDeleteMutation?.();
+      expect(fixture.mark).toHaveBeenCalledWith(leased.id, 'lease-1', 'bot-1');
+      expect(leased.deleteDispatchStartedAt).not.toBeNull();
+      expect(leased.deleteDispatchStartedBotId).toBe('bot-1');
+      throw markMaxPreDispatchGuardRejected(
+        new MaxModerationApiBudgetError('expired', 1_000),
+        MAX_DELETE_PRE_DISPATCH_GUARD_REJECTED_CODE,
+      );
+    });
+
+    await expect(fixture.service.executeLeasedIntent(leased.id, 'lease-1')).resolves.toMatchObject({
+      kind: 'pending',
+      status: 'RETRYABLE',
+    });
+
+    expect(fixture.runWithMuteApiBudget).toHaveBeenCalledTimes(1);
+    expect(fixture.clear).toHaveBeenCalledTimes(1);
+    expect(fixture.clear).toHaveBeenCalledWith(leased.id, 'lease-1', 'bot-1');
+    expect(leased).toMatchObject({
+      deleteDispatchStartedAt: null,
+      deleteDispatchStartedBotId: null,
+      retryUntilAt: deferred.retryUntilAt,
+    });
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.remoteDelete).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getExactMessagePresence).not.toHaveBeenCalled();
+    expect(fixture.maxBotLink.recordBotAccessProbe).not.toHaveBeenCalled();
+    expect(fixture.prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect((fixture.prisma.$executeRaw.mock.calls[0]![0] as Prisma.Sql).values).toEqual(
+      expect.arrayContaining(['RETRYABLE', 'mute_api_budget_expired']),
+    );
+  });
+
+  it('settles recorded muted-user remote success without reserving MAX API capacity', async () => {
+    const now = Date.now();
+    const leased = {
+      ...baseIntent,
+      activeMuteDeleteReason: true,
+      retryUntilAt: new Date(now - 1_000),
+      remoteDeleteSucceededAt: new Date(now - 2_000),
+      remoteDeleteSucceededBotId: 'bot-1',
+    };
+    const succeeded = {
+      ...leased,
+      status: 'SUCCEEDED',
+      succeededBotId: 'bot-1',
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    const fixture = createService(
+      {},
+      {
+        $queryRaw: jest.fn().mockResolvedValueOnce([leased]).mockResolvedValueOnce([succeeded]),
+      },
+    );
+    fixture.runWithMuteApiBudget.mockRejectedValue(
+      new MaxModerationApiBudgetError('actor_cooldown', 300_000),
+    );
+
+    await expect(fixture.service.executeLeasedIntent(leased.id, 'lease-1')).resolves.toMatchObject({
+      kind: 'confirmed',
+      status: 'SUCCEEDED',
+      botId: 'bot-1',
+    });
+
+    expect(fixture.prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(fixture.runWithMuteApiBudget).not.toHaveBeenCalled();
+    expect(fixture.maxBotLink.resolveDeleteMessageBotRoute).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getMessageSnapshot).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getExactMessagePresence).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(succeeded.retryUntilAt).toEqual(leased.retryUntilAt);
+  });
 
   it.each(['off', 'shadow', 'canary', 'on'] as const)(
     'keeps current user-delete guards executable in %s without enabling historical work',
@@ -1527,7 +1707,11 @@ describe('ModerationDeleteIntentService', () => {
       const now = Date.now();
       const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
       try {
-        const leased = { ...baseIntent, leaseExpiresAt: new Date(now + 60_000) };
+        const leased = {
+          ...baseIntent,
+          activeMuteDeleteReason: authority !== 'unbounded-content',
+          leaseExpiresAt: new Date(now + 60_000),
+        };
         const events: string[] = [];
         const staleKey = authority === 'unbounded-content' ? 'burst' : 'mute';
         const validKey = authority === 'unbounded-content' ? 'length' : 'global';

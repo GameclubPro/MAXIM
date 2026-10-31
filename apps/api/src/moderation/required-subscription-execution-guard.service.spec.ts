@@ -59,6 +59,13 @@ async function exactLookupFailure(data: Record<string, unknown>): Promise<unknow
   const actionHealthService: Pick<ActionHealthService, 'recordSuccessForLane'> = {
     recordSuccessForLane: jest.fn(),
   };
+  const muteApiBudget: Pick<
+    MaxClientService['muteApiBudget'],
+    'consumeRequest' | 'assertRequestAllowed'
+  > = {
+    consumeRequest: () => undefined,
+    assertRequestAllowed: () => undefined,
+  };
   // FLAG: Keep descriptor ownership, HTTP outcomes and exact lookup validation real.
   // Only synthetic Axios responses and unrelated bot/quota/circuit dependencies vary.
   const client: MaxClientService = Object.assign(Object.create(MaxClientService.prototype), {
@@ -68,6 +75,7 @@ async function exactLookupFailure(data: Record<string, unknown>): Promise<unknow
     actionHealthService,
     mutationExecutionScope,
     priorityHttpSource,
+    muteApiBudget,
     recordPriorityHttpAttempt,
     resolveBot,
     acquireCircuitPermit,

@@ -16,6 +16,7 @@ import {
   type MaxBotRouteRequest,
 } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { MaxModerationApiBudgetError } from './max-moderation-api-budget';
 import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
 import { wasMaxMemberMutationAttempted } from './max-member-error.util';
 import {
@@ -114,6 +115,9 @@ function isMembershipGetLocalQuotaRefusal(error: unknown): error is MaxApiIntern
   };
   return (
     error instanceof MaxApiInternalRateLimitError &&
+    // FLAG: This nominal subtype belongs to its bounded muted-user DELETE attempt.
+    // It cannot mint an independent candidate that would escape that protection budget.
+    !(error instanceof MaxModerationApiBudgetError) &&
     error.preDispatch === true &&
     extractHttpStatusCode(error) === null &&
     evidence.response == null &&

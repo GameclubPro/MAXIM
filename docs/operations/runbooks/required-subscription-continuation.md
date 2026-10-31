@@ -5,6 +5,7 @@ An initial membership GET refused by the local MAX quota limiter may retain an e
 authorize a sanction, deliver a notice or delete a message. It does not replay a started webhook.
 The in-process lookup result must carry the invocation's nominal provenance; shared diagnostics,
 copied error codes, JSON copies, unrelated users/bots and late superseded probes cannot nominate it.
+Muted-user protection refusals cannot nominate a continuation or bypass their separate budget.
 
 The source envelope retains the original event time and absolute five-minute deadline, policy
 fingerprint, bot observation, message/author and media scope. It contains a bounded masked excerpt,
@@ -32,8 +33,9 @@ settle exact receipts but cannot authorize new effects or renew the source deadl
 
 A successful notice handoff or exact media coverage must precede executable DELETE intent
 persistence. Each handoff needs its own matching receipt; a generic boolean, a pre-send refusal
-or a revoked delete guard is insufficient. The normal SEND and DELETE workers retain their final
-source, policy, membership, bot capability and uncertainty guards. Candidate completion means
+or a revoked delete guard is insufficient. The first DELETE transfer receipt remains immutable
+when the same intent's downstream status changes. The normal SEND and DELETE workers retain their
+final source, policy, membership, bot capability and uncertainty guards. Candidate completion means
 the DELETE obligation transferred; it does not mean remote deletion succeeded.
 
 The migration creates an empty additive owner table. Ordinary rollout uses the shared API image

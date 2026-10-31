@@ -14,6 +14,7 @@ import {
 } from './required-subscription-candidate.store';
 import type {
   FrozenRequiredSubscriptionCandidatePlan,
+  RequiredSubscriptionCandidateDeleteReceipt,
   RequiredSubscriptionCandidateSource,
 } from './required-subscription-candidate-workflow';
 
@@ -321,6 +322,59 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
       store.recordReceipt(s.row.id, s.row.leaseToken!, 'notice', { ...receipt, userId: 'other' }),
     ).rejects.toThrow('binding mismatch');
     expect((await store.readEffects(s.row.id, s.row.leaseToken!)).notice).toEqual(receipt);
+  });
+
+  it('preserves the first exact DELETE transfer across allowed downstream status snapshots', async () => {
+    const s = await fixture();
+    const receipt: RequiredSubscriptionCandidateDeleteReceipt = {
+      candidateId: s.row.id,
+      chatId: s.source.chatId,
+      userId: s.source.userId,
+      messageId: s.source.messageId,
+      sourceAtMs: s.source.sourceAtMs,
+      deadlineAtMs: s.source.deadlineAtMs,
+      policySha256: s.source.policySha256,
+      intentId: 'exact-delete-intent',
+      reasonKey: 'REQUIRED_SUBSCRIPTION:message-delete',
+      rollout: 'execute',
+      status: 'PENDING',
+    };
+    await store.recordReceipt(s.row.id, s.row.leaseToken!, 'delete', receipt);
+    const statuses: RequiredSubscriptionCandidateDeleteReceipt['status'][] = [
+      'IN_PROGRESS',
+      'RETRYABLE',
+      'WAITING_CAPABILITY',
+      'SUCCEEDED',
+      'ALREADY_ABSENT',
+    ];
+    await Promise.all(
+      statuses.map((status) =>
+        store.recordReceipt(s.row.id, s.row.leaseToken!, 'delete', { ...receipt, status }),
+      ),
+    );
+    expect((await store.readEffects(s.row.id, s.row.leaseToken!)).delete).toEqual(receipt);
+    await expect(
+      store.recordReceipt(s.row.id, s.row.leaseToken!, 'delete', {
+        ...receipt,
+        intentId: 'foreign-intent',
+        status: 'SUCCEEDED',
+      }),
+    ).rejects.toThrow('receipt conflict');
+    await expect(
+      store.recordReceipt(s.row.id, s.row.leaseToken!, 'delete', {
+        ...receipt,
+        userId: 'foreign-user',
+        status: 'SUCCEEDED',
+      }),
+    ).rejects.toThrow('binding mismatch');
+    await prisma.$executeRaw(Prisma.sql`
+      UPDATE "required_subscription_candidates"
+      SET "effects" = jsonb_set("effects", '{delete,status}', '"AMBIGUOUS"'::jsonb)
+      WHERE "id" = ${s.row.id}
+    `);
+    await expect(
+      store.recordReceipt(s.row.id, s.row.leaseToken!, 'delete', receipt),
+    ).rejects.toThrow('receipt conflict');
   });
 
   it('keeps expired candidates visible but gives an unstarted source no new decision', async () => {

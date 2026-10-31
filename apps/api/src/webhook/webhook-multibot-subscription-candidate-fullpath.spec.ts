@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { MaxApiInternalRateLimitError } from '../max/max-client.service';
 import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
+import { maxMuteApiBudgetKeys } from '../max/max-moderation-api-budget';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { Prisma, type RequiredSubscriptionCandidate } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -470,6 +471,120 @@ describeStores(
       expect(f.s.effects).toEqual(effectsBefore);
       expect(await f.s.prisma.violation.count({ where: { chatId: f.chatId } })).toBe(1);
     });
+
+    it.each(['RETRYABLE', 'SUCCEEDED'] as const)(
+      'settles the saved DELETE transfer after a crash before completion when downstream status advances to %s',
+      async (downstreamStatus) => {
+        const f = await fixture();
+        const source = await nominate(
+          f,
+          downstreamStatus === 'SUCCEEDED' ? { at: Date.now() - 294_000 } : {},
+        );
+        const { worker, store } = await f.restart();
+        await f.s.deleteQueue.pause();
+        const finish = store.finish.bind(store);
+        let crashed = false;
+        const checkpoint = jest.spyOn(store, 'finish').mockImplementation(async (...args) => {
+          if (args[2] === 'DONE' && !crashed) {
+            crashed = true;
+            throw new Error('Disposable crash after persisted DELETE receipt before completion');
+          }
+          return finish(...args);
+        });
+        expect(await worker.attempt(source.row.id)).toBe(true);
+        expect(crashed).toBe(true);
+        const interrupted = await read(f.s, source.row);
+        expect(interrupted).toMatchObject({
+          status: 'WAITING_CHECK',
+          effects: { delete: { status: 'PENDING' } },
+        });
+        const savedReceipt = (interrupted.effects as Prisma.JsonObject).delete;
+        const intent = await f.s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+          where: { chatId_messageId: { chatId: f.chatId, messageId: source.messageId } },
+        });
+        checkpoint.mockRestore();
+        if (downstreamStatus === 'RETRYABLE') {
+          const mute = await f.s.prisma.moderationEvent.create({
+            data: {
+              chatId: f.chatId,
+              userId: 'fixture-user',
+              eventType: 'MEMBER_ACTION',
+              ruleCode: 'MANUAL_MUTE',
+              action: 'MUTE',
+              operator: 'ADMIN',
+              score: 1,
+              metadata: { mutePermanent: true },
+            },
+          });
+          await f.s.intents.ensureIntent(
+            {
+              chatId: f.chatId,
+              messageId: source.messageId,
+              subjectUserId: 'fixture-user',
+              sourceMessageAt: new Date(source.at),
+              retryUntilAt: source.row.deadlineAt,
+              originBotId: f.s.bots[0]!.id,
+              routingPolicy: 'delete_capable',
+              entityType: 'CHAT',
+              messageAuthorKind: 'user',
+              reasonKey: 'MUTE_ACTIVE_DELETE',
+              ruleCode: 'MUTE_ACTIVE_DELETE',
+              event: {
+                userId: 'fixture-user',
+                eventType: 'MESSAGE',
+                metadata: { muteEventId: mute.id },
+              },
+            },
+            { enqueue: false },
+          );
+          // FLAG: Only this disposable chat's shared admission is exhausted. The real
+          // merged intent worker must persist RETRYABLE before any MAX HTTP request.
+          const budget = maxMuteApiBudgetKeys(f.chatId, 'fixture-user');
+          await f.s.redis.hset(budget.chat, {
+            tokens: '0',
+            lastRefillAtMs: String(Date.now()),
+          });
+          const requestsBeforeBudget = f.s.requests.length;
+          expect(await f.s.intents.attemptIntent(intent.id)).toMatchObject({
+            confirmed: false,
+            status: 'RETRYABLE',
+          });
+          expect(f.s.requests).toHaveLength(requestsBeforeBudget);
+        } else {
+          expect(await f.s.intents.attemptIntent(intent.id)).toMatchObject({
+            confirmed: true,
+            status: 'SUCCEEDED',
+          });
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(1, source.row.deadlineAt.getTime() - Date.now() + 20)),
+          );
+        }
+        expect(
+          await f.s.prisma.moderationDeleteIntent.findUniqueOrThrow({ where: { id: intent.id } }),
+        ).toMatchObject({ status: downstreamStatus });
+        const resumed = await f.restart();
+        await due(f.s, source.row.id);
+        const requestsBefore = f.s.requests.length;
+        const effectsBefore = [...f.s.effects];
+        const send = jest.spyOn(f.s.max, 'sendMessage');
+        expect(await resumed.worker.attempt(source.row.id)).toBe(true);
+        const completed = await read(f.s, source.row);
+        expect(completed.status).toBe('DONE');
+        expect((completed.effects as Prisma.JsonObject).delete).toEqual(savedReceipt);
+        expect(completed.deadlineAt).toEqual(source.row.deadlineAt);
+        expect(completed.frozenPlan).toEqual(interrupted.frozenPlan);
+        expect(f.s.requests).toHaveLength(requestsBefore);
+        expect(f.s.effects).toEqual(effectsBefore);
+        expect(send).not.toHaveBeenCalled();
+        expect(await f.s.prisma.violation.count({ where: { chatId: f.chatId } })).toBe(1);
+        expect(
+          await f.s.prisma.moderationViolationMessageClaim.count({ where: { chatId: f.chatId } }),
+        ).toBe(1);
+        expect(await f.s.prisma.moderationDeleteIntent.count({ where: { chatId: f.chatId } })).toBe(
+          1,
+        );
+      },
+    );
 
     it.each(['dispatched', 'enqueue'] as const)(
       'keeps an ambiguous exact %s SEND unknown across restart without repeating the handoff or creating DELETE',
