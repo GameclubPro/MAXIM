@@ -108,6 +108,7 @@ test('runs local tooling once and includes infrastructure only when selected', (
 test('parses full and dry-run modes without weakening range validation', () => {
   assert.equal(parseVerifyArgs(['--full', '--dry-run']).full, true);
   assert.throws(() => parseVerifyArgs(['--full', '--staged']), /cannot be combined/u);
+  assert.throws(() => parseVerifyArgs(['--full', '--since', 'HEAD']), /cannot be combined/u);
   assert.equal(parseVerifyArgs(['--base', 'main', '--head', 'HEAD']).mode, 'range');
 });
 

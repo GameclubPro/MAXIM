@@ -19,6 +19,7 @@ export async function runImpactPlanCli(argv = process.argv.slice(2), io = defaul
     mode: options.mode,
     base: options.base,
     head: options.head,
+    since: options.since,
   });
   const plan = createImpactPlan({
     config,
@@ -37,6 +38,7 @@ export function parseImpactPlanArgs(argv) {
     modeWasExplicit: false,
     base: null,
     head: null,
+    since: null,
     format: 'human',
     repo: process.cwd(),
     configPath: DEFAULT_CONFIG_PATH,
@@ -55,6 +57,10 @@ export function parseImpactPlanArgs(argv) {
     }
     if (argument === '--base') {
       options.base = requireValue(argv, ++index, argument);
+      continue;
+    }
+    if (argument === '--since') {
+      options.since = requireValue(argv, ++index, argument);
       continue;
     }
     if (argument === '--head') {
@@ -93,6 +99,12 @@ export function parseImpactPlanArgs(argv) {
     options.mode = 'range';
     options.head ??= 'HEAD';
   }
+  if (options.since) {
+    if (options.modeWasExplicit || options.base || options.head) {
+      throw new Error('--since cannot be combined with --base/--head, --worktree or --staged.');
+    }
+    options.mode = 'since';
+  }
 
   delete options.modeWasExplicit;
   return options;
@@ -103,12 +115,14 @@ export function usage() {
   node scripts/agent/plan.mjs [--worktree] [--format human|json]
   node scripts/agent/plan.mjs --staged [--format human|json]
   node scripts/agent/plan.mjs --base <git-ref> [--head <git-ref>] [--format human|json]
+  node scripts/agent/plan.mjs --since <git-ref> [--format human|json]
 
 Options:
   --worktree       Include staged, unstaged, deleted, renamed, and untracked files (default).
   --staged         Compare HEAD with the Git index only.
   --base <ref>     Compare two committed refs; --head defaults to HEAD.
   --head <ref>     Head ref for --base mode.
+  --since <ref>    Include committed changes since ref and all current worktree changes.
   --format <kind>  Render human-readable output or deterministic JSON.
   --json           Alias for --format json.
   --repo <path>    Run against another Git worktree.

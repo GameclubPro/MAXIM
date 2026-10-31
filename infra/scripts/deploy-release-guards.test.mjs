@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -74,6 +83,84 @@ function validateApiReadyTimeout(value) {
   );
 }
 
+function infraCheckFixture(t, { postgres = true, generatorStatus = 0, lintStatus = 0 } = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'maxim-infra-check-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const path of ['infra/scripts', 'scripts/agent', 'bin']) {
+    mkdirSync(join(directory, path), { recursive: true });
+  }
+  copyFileSync(
+    resolve(root, 'infra/scripts/check-infra.sh'),
+    join(directory, 'infra/scripts/check-infra.sh'),
+  );
+  const calls = join(directory, 'calls');
+  writeFileSync(calls, '');
+  writeFileSync(
+    join(directory, 'scripts/agent/generate-deploy-impact-bash.mjs'),
+    `
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.CHECK_INFRA_FIXTURE_CALLS, 'impact\\n');
+`,
+  );
+  writeFileSync(
+    join(directory, 'infra/scripts/fixture.test.mjs'),
+    `
+import assert from 'node:assert/strict';
+import { appendFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+appendFileSync(process.env.CHECK_INFRA_FIXTURE_CALLS, 'tests\\n');
+if (process.env.MAXIM_TEST_POSTGRES_URL) {
+  assert.equal(createRequire(import.meta.url)('../../apps/api/generated/prisma/client.js').generated, true);
+}
+`,
+  );
+  for (const command of ['docker', 'shellcheck', 'actionlint']) {
+    writeFileSync(
+      join(directory, 'bin', command),
+      [
+        '#!/usr/bin/env bash',
+        'printf "%s\\n" "${0##*/}:$*" >> "$CHECK_INFRA_FIXTURE_CALLS"',
+        command === 'actionlint' ? 'exit "$CHECK_INFRA_FIXTURE_LINT_STATUS"' : 'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+  }
+  writeFileSync(
+    join(directory, 'bin/npm'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'printf "npm:%s\\n" "$*" >> "$CHECK_INFRA_FIXTURE_CALLS"',
+      '[[ "$*" == "run prisma:generate --workspace @maxim/api" ]] || exit 92',
+      'if [[ "$CHECK_INFRA_FIXTURE_GENERATOR_STATUS" != 0 ]]; then exit "$CHECK_INFRA_FIXTURE_GENERATOR_STATUS"; fi',
+      'mkdir -p apps/api/generated/prisma',
+      'printf "%s\\n" "module.exports = { generated: true };" > apps/api/generated/prisma/client.js',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    CHECK_INFRA_FIXTURE_CALLS: calls,
+    CHECK_INFRA_FIXTURE_GENERATOR_STATUS: String(generatorStatus),
+    CHECK_INFRA_FIXTURE_LINT_STATUS: String(lintStatus),
+    PATH: `${join(directory, 'bin')}:${process.env.PATH ?? ''}`,
+  };
+  delete env.NODE_TEST_CONTEXT;
+  if (postgres) env.MAXIM_TEST_POSTGRES_URL = 'postgresql://fixture.invalid/race_test';
+  else delete env.MAXIM_TEST_POSTGRES_URL;
+  const client = join(directory, 'apps/api/generated/prisma/client.js');
+  assert.equal(existsSync(client), false, 'fixture must start without generated Prisma client');
+  const result = spawnSync('bash', ['infra/scripts/check-infra.sh'], {
+    cwd: directory,
+    env,
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  return { result, client, calls: readFileSync(calls, 'utf8').trim().split('\n') };
+}
+
 test('keeps shared API topology centralized and complete', () => {
   const topology = read('infra/scripts/lib/deploy-topology.sh');
   const monitor = read('infra/scripts/vps-monitor-readonly.sh');
@@ -113,6 +200,48 @@ test('runs ShellCheck locally through a pinned fail-closed fallback', () => {
   assert.match(infraCheck, /--package=shellcheck@4\.1\.0/u);
   assert.match(infraCheck, /shellcheck is required for infrastructure validation/u);
   assert.doesNotMatch(infraCheck, /syntax and Compose checks completed/u);
+});
+
+test('prepares a missing Prisma client through its public generator before native infrastructure tests', (t) => {
+  const fixture = infraCheckFixture(t);
+  assert.equal(fixture.result.status, 0, fixture.result.stderr + fixture.result.stdout);
+  assert.equal(existsSync(fixture.client), true);
+  assert.equal(fixture.calls[0], 'impact');
+  assert.deepEqual(fixture.calls.slice(-3), [
+    'actionlint:',
+    'npm:run prisma:generate --workspace @maxim/api',
+    'tests',
+  ]);
+});
+
+test('stops native infrastructure tests when public Prisma generation fails', (t) => {
+  const fixture = infraCheckFixture(t, { generatorStatus: 19 });
+  assert.equal(fixture.result.status, 19, fixture.result.stderr);
+  assert.equal(existsSync(fixture.client), false);
+  assert.equal(fixture.calls.at(-1), 'npm:run prisma:generate --workspace @maxim/api');
+  assert.equal(fixture.calls.includes('tests'), false);
+});
+
+test('keeps non-native infrastructure validation independent of API generation', (t) => {
+  const fixture = infraCheckFixture(t, { postgres: false, generatorStatus: 19 });
+  assert.equal(fixture.result.status, 0, fixture.result.stderr + fixture.result.stdout);
+  assert.equal(existsSync(fixture.client), false);
+  assert.equal(
+    fixture.calls.some((call) => call.startsWith('npm:')),
+    false,
+  );
+  assert.equal(fixture.calls.at(-1), 'tests');
+});
+
+test('rejects infrastructure lint before generating an API client or running tests', (t) => {
+  const fixture = infraCheckFixture(t, { lintStatus: 17 });
+  assert.equal(fixture.result.status, 17, fixture.result.stderr);
+  assert.equal(existsSync(fixture.client), false);
+  assert.equal(fixture.calls.at(-1), 'actionlint:');
+  assert.equal(
+    fixture.calls.some((call) => call.startsWith('npm:') || call === 'tests'),
+    false,
+  );
 });
 
 test('caps json-file logs for stateful services in both Compose topologies', () => {

@@ -19,12 +19,20 @@ test('parses worktree, staged, and base-head modes', () => {
     { mode: 'range', base: 'origin/main', head: 'HEAD', format: 'json' },
   );
   assert.equal(parseImpactPlanArgs(['--base', 'HEAD~1']).head, 'HEAD');
+  assert.equal(parseImpactPlanArgs(['--since', 'HEAD~1', '--json']).mode, 'since');
 });
 
 test('rejects ambiguous or incomplete mode arguments', () => {
   assert.throws(() => parseImpactPlanArgs(['--staged', '--worktree']), /mutually exclusive/u);
   assert.throws(() => parseImpactPlanArgs(['--head', 'HEAD']), /requires --base/u);
   assert.throws(() => parseImpactPlanArgs(['--staged', '--base', 'HEAD~1']), /cannot be combined/u);
+  for (const arguments_ of [
+    ['--since', 'HEAD', '--worktree'],
+    ['--since', 'HEAD', '--staged'],
+    ['--since', 'HEAD', '--base', 'HEAD'],
+  ]) {
+    assert.throws(() => parseImpactPlanArgs(arguments_), /cannot be combined/u);
+  }
 });
 
 test('CLI emits machine-readable deterministic JSON for a separate worktree', async (t) => {

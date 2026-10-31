@@ -198,8 +198,9 @@ remote_exec() { printf '%s' "$1"; }
 
 test('activation is caller-only and only deploy forwards it after exact CI', (t) => {
   const { path } = fixture(t);
-  const start = connect.indexOf('readonly MESSAGE_RETENTION_MODE_FROM_CALLER=');
+  const start = connect.indexOf('PAIR_RELEASE_EXPECTED_STATE_FROM_CALLER=');
   const end = connect.indexOf('\nMAXIM_VPS_SSH_TARGET=', start);
+  assert.ok(start >= 0 && end > start);
   const bootstrap = connect.slice(start, end);
   for (const caller of ['', epoch, 'not-a-uuid']) {
     writeFileSync(path, `MAXIM_STATISTICS_CENTRAL_EPOCH=${other}\n`, { mode: 0o600 });

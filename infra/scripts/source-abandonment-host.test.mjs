@@ -79,7 +79,8 @@ test('a shared maintenance journal never crosses recovery domains', () => {
 });
 test('modern entrypoint retains inherited deployment lock and twenty GiB admission reserve', () => {
   const wrapper = readFileSync(new URL('./vps-source-abandonment.sh', import.meta.url), 'utf8');
-  assert.ok(wrapper.indexOf('acquire_deploy_lock') < wrapper.indexOf('exec node'));
+  const invocation = wrapper.indexOf('supervise_deploy_lock_command node');
+  assert.ok(invocation >= 0 && wrapper.indexOf('acquire_deploy_lock') < invocation);
   assert.ok(wrapper.includes('MAXIM_EXPECTED_DEPLOY_SHA'));
   const host = readFileSync(new URL('./legacy-cold-host.mjs', import.meta.url), 'utf8');
   assert.ok(host.includes("protocol === 'source-abandonment-v1' ? 20n : 10n"));

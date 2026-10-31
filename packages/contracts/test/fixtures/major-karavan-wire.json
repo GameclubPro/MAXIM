@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-01-01T00:00:30.000Z",
+  "authorityRequest": {
+    "actorMaxUserId": "9007199254740993",
+    "chatId": "-9007199254740993",
+    "commandId": "11111111-1111-4111-8111-111111111111",
+    "action": "manage_shop",
+    "marketplaceId": "22222222-2222-4222-8222-222222222222",
+    "expectedBindingGeneration": 7,
+    "payloadHash": "a4e59791314f6faf34f3afe2e73713848e7309eda424cda1095281f9cafe1802",
+    "proofId": "ppppppppppppppppppppppppppppppppppppppppppp"
+  },
+  "authorityEvidence": {
+    "actorMaxUserId": "9007199254740993",
+    "chatId": "-9007199254740993",
+    "commandId": "11111111-1111-4111-8111-111111111111",
+    "action": "manage_shop",
+    "marketplaceId": "22222222-2222-4222-8222-222222222222",
+    "expectedBindingGeneration": 7,
+    "payloadHash": "a4e59791314f6faf34f3afe2e73713848e7309eda424cda1095281f9cafe1802",
+    "provider": "maxim",
+    "entityType": "chat",
+    "botId": "fixture-major-bot",
+    "checkedAt": "2026-01-01T00:00:30.000Z",
+    "expiresAt": "2026-01-01T00:01:00.000Z",
+    "authorityEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expiredAuthorityEvidence": {
+    "actorMaxUserId": "9007199254740993",
+    "chatId": "-9007199254740993",
+    "commandId": "11111111-1111-4111-8111-111111111111",
+    "action": "manage_shop",
+    "marketplaceId": "22222222-2222-4222-8222-222222222222",
+    "expectedBindingGeneration": 7,
+    "payloadHash": "a4e59791314f6faf34f3afe2e73713848e7309eda424cda1095281f9cafe1802",
+    "provider": "maxim",
+    "entityType": "chat",
+    "botId": "fixture-major-bot",
+    "checkedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:29.999Z",
+    "authorityEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "accessDenied": {
+    "actorMaxUserId": "9007199254740993",
+    "chatId": "-9007199254740993",
+    "botId": "fixture-major-bot",
+    "authorityEpoch": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "verifiedAt": "2026-01-01T00:00:00.000Z",
+    "bindingGeneration": 7,
+    "allowed": false,
+    "reason": "not_admin",
+    "checkedAt": "2026-01-01T00:00:30.000Z",
+    "expiresAt": "2026-01-01T00:00:45.000Z"
+  },
+  "management": {
+    "commandId": "11111111-1111-4111-8111-111111111111",
+    "chatId": "-9007199254740993",
+    "marketplaceId": "22222222-2222-4222-8222-222222222222",
+    "expectedBindingGeneration": 7,
+    "command": {
+      "operation": "appearance_publish",
+      "input": {
+        "commandId": "11111111-1111-4111-8111-111111111111",
+        "expectedRevision": 3
+      }
+    }
+  },
+  "canonicalPayload": "{\"chatId\":\"-9007199254740993\",\"command\":{\"input\":{\"commandId\":\"11111111-1111-4111-8111-111111111111\",\"expectedRevision\":3},\"operation\":\"appearance_publish\"},\"commandId\":\"11111111-1111-4111-8111-111111111111\",\"expectedBindingGeneration\":7,\"marketplaceId\":\"22222222-2222-4222-8222-222222222222\"}",
+  "payloadHash": "a4e59791314f6faf34f3afe2e73713848e7309eda424cda1095281f9cafe1802",
+  "actualRevision": 4,
+  "invalid": [
+    {
+      "id": "invalid-expiry-format",
+      "schema": "authority",
+      "patch": {
+        "expiresAt": "not-a-date"
+      }
+    },
+    {
+      "id": "unknown-access-decision",
+      "schema": "access",
+      "patch": {
+        "reason": "owner"
+      }
+    },
+    {
+      "id": "numeric-chat-id",
+      "schema": "management",
+      "patch": {
+        "chatId": 9007199254740992
+      }
+    },
+    {
+      "id": "invalid-revision",
+      "schema": "management",
+      "patch": {
+        "command": {
+          "operation": "appearance_publish",
+          "input": {
+            "commandId": "11111111-1111-4111-8111-111111111111",
+            "expectedRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "mismatched-replay-command",
+      "schema": "management",
+      "patch": {
+        "command": {
+          "operation": "appearance_publish",
+          "input": {
+            "commandId": "33333333-3333-4333-8333-333333333333",
+            "expectedRevision": 3
+          }
+        }
+      }
+    },
+    {
+      "id": "unbounded-proxy-operation",
+      "schema": "management",
+      "patch": {
+        "command": {
+          "operation": "proxy",
+          "path": "/operator/stores"
+        }
+      }
+    }
+  ]
+}

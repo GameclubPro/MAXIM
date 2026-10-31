@@ -45,6 +45,32 @@ test('assesses staged config-only and model schema changes from the Git index', 
   });
 });
 
+test('since schema review compares the task baseline with the current worktree', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'maxim-prisma-since-'));
+  git(repo, ['init', '-q']);
+  git(repo, ['config', 'user.email', 'agent-planner@example.invalid']);
+  git(repo, ['config', 'user.name', 'Agent Planner']);
+  const initial = schema('output = "./generated/one"', 'name String');
+  write(repo, schemaPath, initial);
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-qm', 'baseline']);
+  const base = git(repo, ['rev-parse', 'HEAD']).trim();
+  write(repo, schemaPath, schema('output = "./generated/one"', 'name String\n age Int?'));
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-qm', 'model change']);
+  assert.equal(
+    assessPrismaSchemaImpact(collectGitChanges({ cwd: repo, mode: 'since', since: base }))
+      .migrationRequired,
+    true,
+  );
+  write(repo, schemaPath, initial);
+  assert.equal(
+    assessPrismaSchemaImpact(collectGitChanges({ cwd: repo, mode: 'since', since: base }))
+      .migrationRequired,
+    false,
+  );
+});
+
 function schema(generatorLine, modelFields) {
   return `generator client {
   provider = "prisma-client"

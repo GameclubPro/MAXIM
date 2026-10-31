@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +11,7 @@ import { DEFAULT_CONFIG_PATH, loadImpactConfig } from './impact-config.mjs';
 import { parseImpactPlanArgs } from './plan.mjs';
 import { assessPrismaSchemaImpact } from './prisma-impact.mjs';
 import { runPreflight } from './preflight.mjs';
+import { runVerificationCommand } from './verification-command.mjs';
 import {
   assertStagedWorktreeMatches,
   assertStagedSnapshotUnchanged,
@@ -67,47 +68,129 @@ export function selectVerificationScripts({ config, plan, full = false }) {
   });
 }
 
-export async function runVerifyCli(argv = process.argv.slice(2), io = defaultIo()) {
-  const options = parseVerifyArgs(argv);
-  const config = await loadImpactConfig(options.configPath ?? DEFAULT_CONFIG_PATH);
-  let plan = null;
+export async function runVerifyCli(
+  argv = process.argv.slice(2),
+  io = defaultIo(),
+  dependencies = {},
+) {
+  let json = requestsJson(argv);
+  let stage = 'arguments';
+  let activeCommand = null;
+  const result = {
+    schemaVersion: 1,
+    repo: 'major',
+    root: null,
+    head: null,
+    mode: null,
+    dryRun: argv.includes('--dry-run'),
+    status: 'failed',
+    plan: null,
+    commands: [],
+    requiresSubmissionAggregate: true,
+    requiresExactShaCi: true,
+    snapshotTree: null,
+    error: null,
+  };
 
-  if (!options.full) {
-    const changeSet = collectGitChanges({
-      cwd: options.repo,
-      mode: options.mode,
-      base: options.base,
-      head: options.head,
-    });
-    plan = createImpactPlan({
-      config,
-      changeSet,
-      prismaSchemaImpact: assessPrismaSchemaImpact(changeSet),
-    });
-    io.stdout(renderImpactPlanHuman(plan, config));
-    if (plan.migration.reviewRequired) {
+  try {
+    const options = parseVerifyArgs(argv);
+    json = options.format === 'json';
+    result.mode = options.full ? 'full' : options.mode;
+    result.dryRun = options.dryRun;
+    const log = json ? (value) => (io.stderr ?? defaultIo().stderr)(value) : io.stdout;
+    stage = 'planning';
+    const config = await loadImpactConfig(options.configPath ?? DEFAULT_CONFIG_PATH);
+    let plan = null;
+
+    if (!options.full) {
+      const changeSet = collectGitChanges({
+        cwd: options.repo,
+        mode: options.mode,
+        base: options.base,
+        head: options.head,
+        since: options.since,
+      });
+      result.root = changeSet.repoRoot;
+      plan = createImpactPlan({
+        config,
+        changeSet,
+        prismaSchemaImpact: assessPrismaSchemaImpact(changeSet),
+      });
+      result.plan = plan;
+      if (!json) io.stdout(renderImpactPlanHuman(plan, config));
+    }
+    if (json) {
+      result.root ??= gitText(options.repo, ['rev-parse', '--show-toplevel']);
+      result.head = gitText(result.root, ['rev-parse', '--verify', 'HEAD']);
+    }
+    stage = 'migration';
+    if (plan?.migration.reviewRequired) {
       throw new Error('Verification stopped: a Prisma migration review is required.');
     }
-  }
 
-  const scripts = selectVerificationScripts({ config, plan, full: options.full });
-  await assertScriptsExist(options.repo, scripts);
-  io.stdout(
-    `Verification commands:\n${scripts.map(({ script }) => `  npm run ${script}`).join('\n')}\n`,
-  );
+    stage = 'commands';
+    const scripts = selectVerificationScripts({ config, plan, full: options.full });
+    const cwd = json ? result.root : options.repo;
+    result.commands = scripts.map(({ id, script }) => ({
+      id,
+      kind: 'npm-script',
+      executable: 'npm',
+      args: ['run', script],
+      cwd: resolve(cwd),
+      resources: ['checkout'],
+      status: options.dryRun ? 'planned' : 'not-run',
+      exitCode: null,
+      signal: null,
+    }));
+    await assertScriptsExist(cwd, scripts);
+    if (!json) {
+      io.stdout(
+        `Verification commands:\n${scripts.map(({ script }) => `  npm run ${script}`).join('\n')}\n`,
+      );
+    }
 
-  if (options.dryRun) {
+    if (options.dryRun) {
+      result.status = 'planned';
+    } else {
+      stage = 'snapshot';
+      const stagedTree = options.mode === 'staged' ? assertStagedWorktreeMatches(cwd) : null;
+      result.snapshotTree = stagedTree;
+      stage = 'preflight';
+      (dependencies.runPreflight ?? runPreflight)(cwd, (line) => log(`${line}\n`));
+      for (const [index, { id, script }] of scripts.entries()) {
+        activeCommand = result.commands[index];
+        stage = 'command';
+        log(`\n[agent:verify] ${id} -> npm run ${script}\n`);
+        await runVerificationCommand(activeCommand, json ? log : null);
+        activeCommand.status = 'passed';
+        activeCommand.exitCode = 0;
+        stage = 'snapshot-after-command';
+        if (stagedTree) assertStagedSnapshotUnchanged(cwd, stagedTree);
+        activeCommand = null;
+      }
+      result.status = 'passed';
+    }
+    if (json) io.stdout(`${JSON.stringify(result, null, 2)}\n`);
     return 0;
+  } catch (error) {
+    if (!json) throw error;
+    if (activeCommand && stage === 'command') {
+      activeCommand.status = 'failed';
+      activeCommand.exitCode = error.exitCode ?? null;
+      activeCommand.signal = error.signal ?? null;
+    }
+    result.error = {
+      stage,
+      code:
+        stage === 'migration'
+          ? 'MIGRATION_REVIEW_REQUIRED'
+          : `${stage.replaceAll('-', '_').toUpperCase()}_FAILED`,
+      message: error.message,
+      commandId: activeCommand?.id ?? null,
+    };
+    io.stdout(`${JSON.stringify(result, null, 2)}\n`);
+    return 2;
   }
-
-  const stagedTree = options.mode === 'staged' ? assertStagedWorktreeMatches(options.repo) : null;
-  runPreflight(options.repo, (line) => io.stdout(`${line}\n`));
-  for (const { id, script } of scripts) {
-    io.stdout(`\n[agent:verify] ${id} -> npm run ${script}\n`);
-    await runNpmScript(options.repo, script);
-    if (stagedTree) assertStagedSnapshotUnchanged(options.repo, stagedTree);
-  }
-  return 0;
 }
 
 async function assertScriptsExist(repo, scripts) {
@@ -119,38 +202,43 @@ async function assertScriptsExist(repo, scripts) {
   }
 }
 
-function runNpmScript(cwd, script) {
-  const child = spawn('npm', ['run', script], {
-    cwd,
-    env: { ...process.env, MAXIM_AGENT_VERIFY: '1' },
-    stdio: 'inherit',
-  });
-  return new Promise((resolveRun, reject) => {
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) {
-        resolveRun();
-        return;
-      }
-      reject(
-        new Error(`npm run ${script} failed${signal ? ` with ${signal}` : ` with code ${code}`}.`),
-      );
-    });
-  });
-}
-
 function defaultIo() {
   return {
     stdout(value) {
       process.stdout.write(value);
     },
+    stderr(value) {
+      process.stderr.write(value);
+    },
   };
+}
+
+export function requestsJson(argv) {
+  let json = false;
+  for (const [index, argument] of argv.entries()) {
+    if (argument === '--json') json = true;
+    if (argument === '--format') json = argv[index + 1] === 'json';
+  }
+  return json;
+}
+
+function gitText(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
 const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
-  runVerifyCli().catch((error) => {
-    process.stderr.write(`agent verification failed: ${error.message}\n`);
-    process.exitCode = 2;
-  });
+  runVerifyCli()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error) => {
+      process.stderr.write(`agent verification failed: ${error.message}\n`);
+      process.exitCode = 2;
+    });
 }

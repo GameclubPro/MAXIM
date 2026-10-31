@@ -175,6 +175,10 @@ acquire_deploy_lock() {
 require_market_statistics_lock_dispatch() {
   printf '%s\\n' market-statistics-source-checked >>"$COLD_ENTRY_TEST_LOG"
 }
+require_pair_release_admission_dispatch() {
+  [[ "$#" == 1 && ( "$1" == origin/main || "$1" == refs/heads/main || "$1" == "$COLD_ENTRY_TEST_SHA" ) ]] || return 93
+  printf 'pair-admission-source-checked:%s\\n' "$1" >>"$COLD_ENTRY_TEST_LOG"
+}
 require_deploy_lock() {
   [[ "\${FIXTURE_LOCK_OWNER:-}" == "$BASHPID" ]] || return 91
 }
@@ -362,6 +366,11 @@ for (const localBranchExists of [true, false]) {
         (log.match(/market-statistics-source-checked/gu) ?? []).length,
         localBranchExists ? 2 : 1,
       );
+      assert.equal(
+        (log.match(/pair-admission-source-checked:/gu) ?? []).length,
+        localBranchExists ? 2 : 1,
+      );
+      assert.match(log, /pair-admission-source-checked:origin\/main\n/u);
       assert.match(
         log,
         localBranchExists ? /git:checkout main\n/u : /git:checkout -b main origin\/main\n/u,

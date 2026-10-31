@@ -231,22 +231,31 @@ printf '%s\n' PARENT_RELEASED
       writeFileSync(fifo, 'continue\n');
       await owner.marker((line) => line === 'CHILD_DONE');
       await owner.done;
-      assert.equal(observe(data), 0);
+      assert.equal(spawnSync('flock', ['-n', data.file, 'true']).status, 0);
+      assert.equal(observe(data), termination === 'release' ? 0 : 1);
+      assert.equal(
+        existsSync(resolve(data.pair.state, 'admission.owner')),
+        termination !== 'release',
+      );
     },
   );
 }
 
 test(
-  'a killed owner leaves no stale admission state and never removes its lock file',
+  'a killed owner releases its product flock but preserves unresolved common admission and its inode',
   { timeout: 8_000 },
   async (t) => {
     const data = fixture(t);
     const owner = actor(t, data, 'acquire_deploy_lock; printf "%s\\n" HELD; read -r _');
     await owner.marker((line) => line === 'HELD');
     const inode = statSync(data.file).ino;
+    const ownerFile = resolve(data.pair.state, 'admission.owner');
+    const record = readFileSync(ownerFile, 'utf8');
     owner.child.kill('SIGKILL');
     await owner.done;
-    assert.equal(observe(data), 0);
+    assert.equal(spawnSync('flock', ['-n', data.file, 'true']).status, 0);
+    assert.equal(observe(data), 1);
+    assert.equal(readFileSync(ownerFile, 'utf8'), record);
     assert.equal(statSync(data.file).ino, inode);
   },
 );
@@ -345,9 +354,46 @@ read -r _
     writeFileSync(fifo, 'continue\n');
     await owner.marker((line) => line === 'NODE_DONE');
     await owner.done;
-    assert.equal(observe(data), 0);
+    assert.equal(spawnSync('flock', ['-n', data.file, 'true']).status, 0);
+    assert.equal(observe(data), 1);
+    assert.equal(existsSync(resolve(data.pair.state, 'admission.owner')), true);
   },
 );
+
+test('only physical Svyazka paths exclude common admission; inherited project variables do not', (t) => {
+  const data = fixture(t);
+  const svyazka = resolve(data.directory, 'svyazka');
+  mkdirSync(svyazka);
+  writeFileSync(
+    data.helper,
+    readFileSync(data.helper, 'utf8').replaceAll('/var/www/svyazka', svyazka),
+  );
+  const inherited = command(data, 'maxim_pair_release_required', [], {
+    root: svyazka,
+    source_dir: resolve(svyazka, 'release'),
+    PWD: svyazka,
+  });
+  assert.equal(inherited.status, 0, inherited.stderr);
+
+  const physicalDirectory = command(
+    data,
+    'cd "$2"; if maxim_pair_release_required; then exit 91; fi; maxim_pair_release_assert',
+    [svyazka],
+  );
+  assert.equal(physicalDirectory.status, 0, physicalDirectory.stderr);
+
+  const caller = resolve(svyazka, 'caller.sh');
+  writeFileSync(
+    caller,
+    'set -euo pipefail\nsource "$1"\nif maxim_pair_release_required; then exit 91; fi\nmaxim_pair_release_assert\n',
+  );
+  const physicalCaller = spawnSync('bash', [caller, data.helper], {
+    env: deployLockEnvironment(),
+    encoding: 'utf8',
+    timeout: 3_000,
+  });
+  assert.equal(physicalCaller.status, 0, physicalCaller.stderr);
+});
 
 test('matching unheld inherited FD is not authority', (t) => {
   const data = fixture(t);
