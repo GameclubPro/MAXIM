@@ -69,6 +69,50 @@ stopped before any exact-token release; never manually delete the key to restore
 readiness. Redis data loss and independently initiated legacy requests retain their
 existing limitations; this lease is not durable across loss of Redis state.
 
+### Recovering a quarantined CPU generation
+
+A persistent CPU lease with an idle, correctly identified model still requires
+managed recovery. A routine API restart retains the lease. Use the named host
+operation after exact controller CI and synchronization through the normal tooling
+release; it runs under the protected deploy and shared-project admission locks:
+
+```bash
+cpu_recovery_operation="$(node -p 'require("node:crypto").randomUUID()')"
+./infra/scripts/vps-connect.sh commercial-llm recover-cpu-quarantine "$cpu_recovery_operation"
+read -r -p 'Reviewed preview SHA-256: ' cpu_recovery_preview_sha
+./infra/scripts/vps-connect.sh commercial-llm recover-cpu-quarantine "$cpu_recovery_operation" --apply "$cpu_recovery_preview_sha"
+```
+
+Review the concrete preview before applying its digest. It binds the source SHA,
+CPU model and background dispatcher container IDs, image IDs, start clocks,
+restart counts and the persistent lease fingerprint. It exposes no lease token
+or model input. The initial preview makes no runtime or journal changes.
+
+Apply persists a separate operation journal before stopping the exact background
+dispatcher, then the exact model generation. Only positive readback of both stopped
+generations permits an exact-token lease CAS. The CAS atomically records its own
+release receipt; a missing lease alone never establishes completion. The original
+model container restarts, passes pinned readiness and the closed synthetic smoke,
+then the same dispatcher restarts and passes readiness. Other roles, stores,
+cooldowns, source proofs and uncertain moderation effects retain their identities.
+The temporary dispatcher pause reduces AI coverage during this operation.
+
+After interruption, resume the same operation UUID, controller source and reviewed
+digest. A later preview of an existing journal reports its original plan and phase;
+it does not prove that the current generations still match. Foreign generation,
+image, start-clock, lease or receipt drift fails closed and needs investigation.
+No automatic cleanup or unconditional restart follows a failed phase. A completed
+operation is terminal: repeating it never stops processes or removes a lease
+acquired by later natural work. Journals and release receipts remain as evidence.
+This operation never replays old sources or turns a prior uncertain answer into a
+moderation decision.
+
+After recovery, verify actual CPU pool attempts and completed consultations,
+classification outcomes and admission losses in a fresh window. Healthy containers
+or a successful release receipt alone do not establish useful classification,
+advertisement accuracy or complete traffic coverage. Governor pauses and the
+bounded admission policy still apply.
+
 The VPS and its Redis admission service remain the coordination point. A VPS or
 Redis outage prevents AI admission; adding PCs does not make that control plane
 highly available. Busy, uncertain, stale and failed work cannot delete a message.

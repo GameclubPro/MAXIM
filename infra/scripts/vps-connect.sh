@@ -93,6 +93,7 @@ Commands:
   preload-ci-image <component> [git-ref]
                               Stream a green CI exact-SHA MAXIM image to the VPS
   commercial-llm install|replace|upgrade-slots|enable|disable|stop [--apply]
+  commercial-llm recover-cpu-quarantine <operation-uuid> [--apply <preview-sha256>]
   commercial-llm status|smoke|check-client|check-workstation|check-workstation-offline
   commercial-llm workstation-bridge
   commercial-llm workstation-pool-bridge pc-a-4b|pc-b-9b
@@ -640,6 +641,16 @@ commercial_llm() {
     status|smoke|check-client|workstation-bridge|check-workstation|check-workstation-offline)
       [[ $# -le 1 ]] || { echo 'Unexpected commercial-llm arguments.' >&2; return 2; }
       remote_exec "$(shell_quote_args bash ./infra/scripts/vps-commercial-llm.sh "$operation")"
+      ;;
+    recover-cpu-quarantine)
+      if [[ ! ( $# -eq 2 || ( $# -eq 4 && "${3:-}" == --apply && "${4:-}" =~ ^[0-9a-f]{64}$ ) ) \
+        || ! "${2:-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+        echo 'Usage: commercial-llm recover-cpu-quarantine <operation-uuid> [--apply <preview-sha256>]' >&2
+        return 2
+      fi
+      target_sha="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+      node "$ROOT_DIR/scripts/ci/assert-green.mjs" "$target_sha"
+      remote_exec "$(shell_quote_args env "MAXIM_EXPECTED_DEPLOY_SHA=$target_sha" bash ./infra/scripts/vps-commercial-llm.sh "$@")"
       ;;
     install|replace|upgrade-slots|stop|enable|disable)
       [[ $# -le 2 && ( $# -eq 1 || "${2:-}" == --apply ) ]] || {
