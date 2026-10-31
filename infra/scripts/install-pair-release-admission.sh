@@ -98,10 +98,26 @@ prepare_target() {
   runuser -u "$OPERATOR" -- git -C "$root" merge-base --is-ancestor "$current" "$target"
   while IFS= read -r changed; do
     case "$changed" in
+      infra/scripts/vps-publisher-dispatch-rollout.sh)
+        # FLAG: This existing runtime wrapper is admitted only for the exact
+        # behavior-neutral literal quoting required by the tooling lint gate.
+        runuser -u "$OPERATOR" -- node --input-type=module - "$root" "$current" "$target" "$changed" <<'NODE'
+import { execFileSync } from 'node:child_process';
+const [root, beforeRef, afterRef, path] = process.argv.slice(2);
+const read = (ref) => execFileSync('git', ['-C', root, 'show', `${ref}:${path}`], { encoding: 'utf8' });
+const before = read(beforeRef);
+const original = '      command=start-rollup\n';
+if (before.split(original).length !== 2
+  || read(afterRef) !== before.replace(original, "      command='start-rollup'\n")) {
+  console.error('Bootstrap permits only the reviewed Publisher command literal quoting; runtime changes require normal release.');
+  process.exitCode = 1;
+}
+NODE
+        ;;
       ''|AGENTS.md|*.md|docs/*|tests/*|tools/*|scripts/agent/*|packages/contracts/test/*|infra/scripts/*test*|\
       infra/compatibility/karavan-store-profile-catalog-coverage-v1.json|infra/compatibility/karavan-transport-service-request-flow-v1.json|\
       infra/scripts/lib/deploy-lock.sh|infra/scripts/lib/pair-release-admission.sh|infra/scripts/pair-release-admission.sh|infra/scripts/pair-release-state.mjs|infra/scripts/install-pair-release-admission.sh|infra/scripts/karavan-operation-lock.sh|\
-      infra/scripts/vps-connect.sh|infra/scripts/vps-pull-build-up.sh|infra/scripts/vps-install-deploy-flock.sh|infra/scripts/vps-runtime-rollback.sh|infra/scripts/vps-rollback-karavan.sh|\
+      infra/scripts/check-infra.sh|infra/scripts/vps-connect.sh|infra/scripts/vps-pull-build-up.sh|infra/scripts/vps-install-deploy-flock.sh|infra/scripts/vps-runtime-rollback.sh|infra/scripts/vps-rollback-karavan.sh|\
       infra/scripts/vps-legacy-cold-recovery.sh|infra/scripts/vps-source-abandonment.sh|infra/scripts/vps-source-abandonment-corrective.sh|infra/scripts/vps-backlog-cancellation.sh|\
       infra/scripts/configure-karavan-api-cdn-transport.sh|infra/scripts/configure-karavan-cdn-security-headers.sh|infra/scripts/deploy-karavan-cdn-shells.sh|infra/scripts/deploy-karavan-reg-hosting.sh|infra/scripts/deploy-karavan-restricted-lte-edge.sh|\
       infra/scripts/local-backup-karavan.sh|infra/scripts/release-karavan.sh|infra/scripts/vps-apply-karavan-catalog-cleanup.sh|infra/scripts/vps-apply-nginx-karavan-origin.sh|infra/scripts/vps-apply-nginx-karavan.sh|\

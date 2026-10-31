@@ -17,7 +17,15 @@ import {
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
-function fixture(t, { runtime = false, detachedKaravan = false, compatibilityFiles = [] } = {}) {
+function fixture(
+  t,
+  {
+    runtime = false,
+    detachedKaravan = false,
+    compatibilityFiles = [],
+    publisherChange = null,
+  } = {},
+) {
   const directory = mkdtempSync(join(tmpdir(), 'pair-bootstrap-test-'));
   const stage = `/tmp/major-karavan-admission.${randomBytes(4).toString('hex')}`;
   const major = join(directory, 'major');
@@ -74,6 +82,12 @@ function fixture(t, { runtime = false, detachedKaravan = false, compatibilityFil
       join(source, 'infra/scripts/lib/deploy-lock.sh'),
       'require_market_statistics_lock_dispatch() { :; }\n',
     );
+    if (name === 'major' && publisherChange) {
+      writeFileSync(
+        join(source, 'infra/scripts/vps-publisher-dispatch-rollout.sh'),
+        "#!/usr/bin/env bash\n      command=start-rollup\nprintf '%s\\n' preserved\n",
+      );
+    }
     git(source, 'init', '-b', 'main');
     git(source, 'add', '.');
     git(source, 'commit', '-m', 'old');
@@ -86,6 +100,18 @@ function fixture(t, { runtime = false, detachedKaravan = false, compatibilityFil
     writeFileSync(join(source, helperPath), helper);
     writeFileSync(join(source, 'infra/scripts/pair-release-state.mjs'), reporter);
     if (name === 'major') {
+      if (publisherChange) {
+        const file = join(source, 'infra/scripts/vps-publisher-dispatch-rollout.sh');
+        writeFileSync(
+          file,
+          readFileSync(file, 'utf8').replace('command=start-rollup', "command='start-rollup'") +
+            (publisherChange === 'runtime' ? 'echo unexpected-runtime-change\n' : ''),
+        );
+        writeFileSync(
+          join(source, 'infra/scripts/check-infra.sh'),
+          '#!/usr/bin/env bash\nexit 0\n',
+        );
+      }
       writeFileSync(
         join(source, 'infra/scripts/lib/deploy-lock.sh'),
         relocate(readFileSync(new URL('./lib/deploy-lock.sh', import.meta.url), 'utf8')),
@@ -213,6 +239,23 @@ test('bootstrap refuses application source changes before advancing either check
   const refused = f.run();
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /application changes require normal release/u);
+  assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.before);
+  assert.equal(f.git(f.result.karavan.root, 'rev-parse', 'HEAD'), f.result.karavan.before);
+  assert.equal(existsSync(f.admission), false);
+});
+
+test('bootstrap admits tooling lint and only exact behavior-neutral Publisher literal quoting', (t) => {
+  const f = fixture(t, { publisherChange: 'quote' });
+  const installed = f.run();
+  assert.equal(installed.status, 0, `${installed.stdout}\n${installed.stderr}`);
+  assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.target);
+});
+
+test('bootstrap rejects an adjacent Publisher runtime change before advancing either source', (t) => {
+  const f = fixture(t, { publisherChange: 'runtime' });
+  const refused = f.run();
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /only the reviewed Publisher command literal quoting/u);
   assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.before);
   assert.equal(f.git(f.result.karavan.root, 'rev-parse', 'HEAD'), f.result.karavan.before);
   assert.equal(existsSync(f.admission), false);

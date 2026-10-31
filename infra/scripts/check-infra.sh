@@ -22,9 +22,6 @@ compose_validation -f infra/docker-compose.yml -f infra/docker-compose.scale.yml
 compose_validation -f infra/docker-compose.yml -f infra/docker-compose.runtime-no-build.yml
 MAXIM_ERASER_IMAGE=maxim-eraser:infra-check compose_validation -f infra/docker-compose.yml -f infra/docker-compose.eraser-no-build.yml
 compose_validation -p infra-scale -f infra/docker-compose.scale.yml -f infra/docker-compose.runtime-no-build.yml
-# FLAG: Each test file may create nested native/CLI processes; bound file workers too.
-node --test --test-concurrency=2 infra/scripts/*.test.mjs
-
 if command -v shellcheck >/dev/null 2>&1; then
   find infra/scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
 elif command -v npx >/dev/null 2>&1; then
@@ -41,3 +38,6 @@ if command -v actionlint >/dev/null 2>&1; then
 else
   echo "actionlint not installed; workflow lint is enforced in CI" >&2
 fi
+
+# FLAG: Each test file may create nested native/CLI processes; bound file workers too.
+node --test --test-concurrency=2 infra/scripts/*.test.mjs
