@@ -12,6 +12,7 @@ import {
 } from './commercial-llm-pool.mailbox';
 import {
   COMMERCIAL_LLM_POOL_PROFILES,
+  COMMERCIAL_LLM_POOL_CPU_MIN_REMAINING_MS,
   COMMERCIAL_LLM_POOL_RESPONSE_BYTES,
 } from './commercial-llm-pool.protocol';
 import {
@@ -82,6 +83,7 @@ export class CommercialLlmPoolServer {
       this.quarantinedLease ||
       !this.registered ||
       reservation.session !== this.session ||
+      reservation.deadlineAtMs - Date.now() < COMMERCIAL_LLM_POOL_CPU_MIN_REMAINING_MS ||
       signal?.aborted
     ) {
       await this.mailbox.releaseUndispatched(reservation);
@@ -101,7 +103,7 @@ export class CommercialLlmPoolServer {
         !token ||
         !(await this.hasHeadroom()) ||
         signal?.aborted ||
-        Date.now() >= reservation.deadlineAtMs
+        reservation.deadlineAtMs - Date.now() < COMMERCIAL_LLM_POOL_CPU_MIN_REMAINING_MS
       )
         throw new CommercialLlmError('BUSY');
       await this.mailbox.refreshWorker('server-9b', this.session, false);
@@ -112,7 +114,7 @@ export class CommercialLlmPoolServer {
       if (
         !(await this.lease.retainUntilReleased(token)) ||
         workSignal.aborted ||
-        Date.now() >= reservation.deadlineAtMs
+        reservation.deadlineAtMs - Date.now() < COMMERCIAL_LLM_POOL_CPU_MIN_REMAINING_MS
       )
         throw new CommercialLlmError('BUSY');
       dispatched = true;

@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from '../moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -34,30 +39,40 @@ export class ReportDeleteGuardService {
       reasons: readonly { ruleCode: string; reasonKey?: string; metadata: unknown }[],
     ) => boolean;
   }): Promise<'allowed' | 'absent' | 'not_applicable'> {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<ReportDeleteGuardService['assertIntentStillActionable']>[0],
+  ): Promise<DeleteAuthorityPreparation<'allowed' | 'absent' | 'not_applicable'>> {
     const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, reasonKey: true, metadata: true },
       orderBy: { reasonKey: 'asc' },
     });
-    // FLAG: Exact counter ownership is protected even when a generic cleanup reason bypasses report authority.
-    if (
-      reasons.some(
-        (reason) =>
-          reason.ruleCode === REPORT_COUNTER_RULE || reason.ruleCode === 'BOT_MESSAGE_AUTO_DELETE',
-      )
-    ) {
-      const owner = await this.prisma.chatReportCase.findFirst({
-        where: { chatId: params.chatId, counterMessageId: params.messageId },
-      });
-      if (owner) {
-        if (!REPORT_TERMINAL.includes(owner.status))
-          throw new ReportStaleStateError('Активный счётчик жалоб защищён от очистки.');
-        const settings = await this.state.settings(params.chatId);
-        if (owner.originBotId !== params.botId || !settings?.deleteBotMessagesEnabled)
-          throw new ReportStaleStateError('Очистка счётчика жалоб приостановлена.');
-        await this.state.assertCurrent(owner);
+    const assertCounterOwnership = async () => {
+      // FLAG: Exact counter ownership is protected even when a generic cleanup reason bypasses report authority.
+      if (
+        reasons.some(
+          (reason) =>
+            reason.ruleCode === REPORT_COUNTER_RULE ||
+            reason.ruleCode === 'BOT_MESSAGE_AUTO_DELETE',
+        )
+      ) {
+        const owner = await this.prisma.chatReportCase.findFirst({
+          where: { chatId: params.chatId, counterMessageId: params.messageId },
+        });
+        if (owner) {
+          if (!REPORT_TERMINAL.includes(owner.status))
+            throw new ReportStaleStateError('Активный счётчик жалоб защищён от очистки.');
+          const settings = await this.state.settings(params.chatId);
+          if (owner.originBotId !== params.botId || !settings?.deleteBotMessagesEnabled)
+            throw new ReportStaleStateError('Очистка счётчика жалоб приостановлена.');
+          await this.state.assertCurrent(owner);
+        }
       }
-    }
+    };
+    await assertCounterOwnership();
     // FLAG: Only an independently executable reason may bypass report authority. A dormant
     // observation merged into a report does not inherit that report's execution admission.
     const reportReasons = reasons.filter((reason) => REPORT_GUARDED_RULES.has(reason.ruleCode));
@@ -68,25 +83,48 @@ export class ReportDeleteGuardService {
       !reportReasons.length ||
       (independentReasons.length > 0 && params.isIndependentReasonExecutable?.(independentReasons))
     )
-      return 'not_applicable';
+      return prepareDeleteAuthority(async () => {
+        await assertCounterOwnership();
+        return 'not_applicable' as const;
+      });
     let stale: ReportStaleStateError | undefined;
     let rejection: ReportRejectedError | undefined;
+    const prepared: DeleteAuthorityPreparation<'allowed' | 'absent'>[] = [];
     for (const reason of reportReasons) {
       try {
-        return await this.assertReason(params, reason);
+        prepared.push(await this.prepareReason(params, reason));
       } catch (error) {
         if (error instanceof ReportStaleStateError) stale = error;
         else if (error instanceof ReportRejectedError) rejection = error;
-        else throw error; // Unknown remote/storage state cannot authorize a delete.
+        else throw error;
       }
     }
-    throw stale ?? rejection ?? new ReportRejectedError('Report binding missing');
+    if (!prepared.length)
+      throw stale ?? rejection ?? new ReportRejectedError('Report binding missing');
+    let authorizedCandidate: DeleteAuthorityPreparation<'allowed' | 'absent'> | undefined;
+    return prepareDeleteAuthority(async (finalizeNested) => {
+      await assertCounterOwnership();
+      // FLAG: Fallback rechecks the selected report evidence; an unfinalized alternative
+      // cannot inherit the first report's authority after its local state is revoked.
+      for (const candidate of authorizedCandidate ? [authorizedCandidate] : prepared) {
+        try {
+          const result = await finalizeNested(candidate);
+          authorizedCandidate = candidate;
+          return result;
+        } catch (error) {
+          if (error instanceof ReportStaleStateError) stale = error;
+          else if (error instanceof ReportRejectedError) rejection = error;
+          else throw error;
+        }
+      }
+      throw stale ?? rejection ?? new ReportRejectedError('Report binding missing');
+    });
   }
 
-  private async assertReason(
+  private async prepareReason(
     params: Parameters<ReportDeleteGuardService['assertIntentStillActionable']>[0],
     reason: { ruleCode: string; metadata: unknown },
-  ): Promise<'allowed' | 'absent'> {
+  ): Promise<DeleteAuthorityPreparation<'allowed' | 'absent'>> {
     const id = record(reason.metadata).reportCaseId;
     if (typeof id !== 'string') throw new ReportRejectedError('Report binding missing');
     if (reason.ruleCode === REPORT_COUNTER_RULE) {
@@ -103,7 +141,13 @@ export class ReportDeleteGuardService {
       if (!REPORT_TERMINAL.includes(report.status))
         throw new ReportStaleStateError('Активный счётчик жалоб защищён от очистки.');
       await this.state.assertCurrent(report);
-      return 'allowed';
+      return prepareDeleteAuthority(async () => {
+        const settings = await this.state.settings(params.chatId);
+        if (!settings?.deleteBotMessagesEnabled)
+          throw new ReportRejectedError('Report counter cleanup no longer authorized');
+        await this.state.assertCurrent(report);
+        return 'allowed' as const;
+      });
     }
     if (reason.ruleCode === REPORT_COMMAND_RULE) {
       const report = await this.prisma.chatReportCase.findUniqueOrThrow({ where: { id } });
@@ -133,9 +177,11 @@ export class ReportDeleteGuardService {
         reportLinkedMessageId(command, params.chatId) !== report.messageId
       )
         throw new ReportRejectedError('Report command changed');
-      await this.state.assertCurrent(report);
-      await this.state.assertPolicy(report);
-      return 'allowed';
+      return prepareDeleteAuthority(async () => {
+        const current = await this.state.assertCurrent(report);
+        await this.state.assertPolicy(current);
+        return 'allowed' as const;
+      });
     }
     const report = await this.state.assertCase(
       id,
@@ -201,9 +247,11 @@ export class ReportDeleteGuardService {
       )
         throw new ReportRejectedError('Report history binding mismatch');
     }
-    await this.state.assertLocalAuthor(report.chatId, report.authorId);
-    const current = await this.state.assertCurrent(report, ['PENDING', 'RUNNING']);
-    await this.state.assertPolicy(current);
-    return 'allowed';
+    return prepareDeleteAuthority(async () => {
+      await this.state.assertLocalAuthor(report.chatId, report.authorId);
+      const current = await this.state.assertCurrent(report, ['PENDING', 'RUNNING']);
+      await this.state.assertPolicy(current);
+      return 'allowed' as const;
+    });
   }
 }

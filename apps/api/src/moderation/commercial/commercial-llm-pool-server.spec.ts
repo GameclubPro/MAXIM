@@ -129,6 +129,36 @@ describe('pool server physical capacity containment', () => {
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
     expect(mailbox.releaseUndispatched).toHaveBeenCalledWith(request);
   });
+  it('allows a complete CPU response at the six-second admission boundary', async () => {
+    const request = reservation();
+    now = request.deadlineAtMs - 6_000;
+    await server.dispatch(request);
+    expect(mailbox.respond).toHaveBeenCalledWith('server-9b', session, request.id, reply);
+    expect(release).toHaveBeenCalledWith(lease);
+  });
+  it.each(['before admission', 'during headroom check', 'during retention'])(
+    'refuses a CPU handoff with insufficient useful budget %s',
+    async (stage) => {
+      const request = reservation();
+      const exhaustBudget = async () => {
+        now = request.deadlineAtMs - 25;
+        return true;
+      };
+      if (stage === 'before admission') await exhaustBudget();
+      else if (stage === 'during headroom check')
+        jest
+          .spyOn(server as unknown as { hasHeadroom(): Promise<boolean> }, 'hasHeadroom')
+          .mockImplementation(exhaustBudget);
+      else
+        jest
+          .mocked(CommercialLlmShadowLease.prototype.retainUntilReleased)
+          .mockImplementation(exhaustBudget);
+      await expect(server.dispatch(request)).rejects.toMatchObject({ kind: 'BUSY' });
+      expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+      expect(mailbox.releaseUndispatched).toHaveBeenCalledWith(request);
+      if (stage !== 'before admission') expect(release).toHaveBeenCalledWith(lease);
+    },
+  );
   it('holds the lease after an ambiguous transport failure even when the single slot becomes idle', async () => {
     fetchImpl.mockImplementation(async (_url, init) => {
       if (init?.method === 'POST') throw new Error('connection lost');

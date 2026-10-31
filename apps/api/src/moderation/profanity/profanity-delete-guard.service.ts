@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from '../moderation-delete-authority-preparation';
 import type { MaxUpdate } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -56,6 +61,19 @@ export class ProfanityDeleteGuardService {
   async assertIntentStillActionable(
     params: ProfanityDeleteGuardInput & { intentId: string; ownedReasonsOnly?: boolean },
   ): Promise<'allowed' | 'absent' | 'not_applicable' | 'missing_reason'> {
+    return finalizeDeleteAuthority(
+      await this.prepareForDispatch(params),
+      params.beforeFinalAuthority,
+    );
+  }
+
+  async prepareForDispatch(
+    params: Parameters<ProfanityDeleteGuardService['assertIntentStillActionable']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<
+      Awaited<ReturnType<ProfanityDeleteGuardService['assertIntentStillActionable']>>
+    >
+  > {
     const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, score: true },
@@ -72,7 +90,7 @@ export class ProfanityDeleteGuardService {
     if (reasons.some((reason) => reason.ruleCode !== PROFANITY_DELETE_RULE_CODE)) {
       return 'not_applicable';
     }
-    return this.assertMessageStillActionable({
+    return this.prepareMessageForDispatch({
       ...params,
       minimumScore: Math.max(...reasons.map((reason) => reason.score)),
     });
@@ -81,6 +99,19 @@ export class ProfanityDeleteGuardService {
   async assertMessageStillActionable(
     params: ProfanityDeleteGuardInput,
   ): Promise<'allowed' | 'absent'> {
+    return finalizeDeleteAuthority(
+      await this.prepareMessageForDispatch(params),
+      params.beforeFinalAuthority,
+    );
+  }
+
+  async prepareMessageForDispatch(
+    params: Parameters<ProfanityDeleteGuardService['assertMessageStillActionable']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<
+      Awaited<ReturnType<ProfanityDeleteGuardService['assertMessageStillActionable']>>
+    >
+  > {
     const senderId = params.subjectUserId;
     if (!senderId) {
       throw new ProfanityDeleteGuardRejectedError(
@@ -181,16 +212,17 @@ export class ProfanityDeleteGuardService {
       );
     }
 
-    await params.beforeFinalAuthority?.();
-    const finalSettings = await this.loadSettings(params.chatId, senderId);
-    const finalDecision = this.ruleEngine.detectProfanityForSettings(message.text, finalSettings);
-    if (!finalDecision || finalDecision.score < (params.minimumScore ?? 0)) {
-      throw new ProfanityDeleteGuardRejectedError(
-        'profanity_violation_no_longer_present',
-        'Profanity policy no longer authorizes the deletion',
-      );
-    }
-    return 'allowed';
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.loadSettings(params.chatId, senderId);
+      const finalDecision = this.ruleEngine.detectProfanityForSettings(message.text, finalSettings);
+      if (!finalDecision || finalDecision.score < (params.minimumScore ?? 0)) {
+        throw new ProfanityDeleteGuardRejectedError(
+          'profanity_violation_no_longer_present',
+          'Profanity policy no longer authorizes the deletion',
+        );
+      }
+      return 'allowed' as const;
+    });
   }
 
   private async loadSettings(chatId: string, senderId: string) {

@@ -46,6 +46,7 @@ import { isEnforceableLinkPolicyTarget } from './navigation/link-policy-target.u
 import type { NavigationTargetEvidence } from './navigation/navigation-evidence.types';
 import { RuleEngineDuplicateDetector } from './rule-engine-duplicate-detector';
 import type { DetectionResult, RuleViolation } from './rule-engine.contract';
+import { hasCompetingModerationViolation } from './moderation-rule-competition';
 import {
   createAllowlistLinkMatcher,
   detectBlockedLink,
@@ -1309,12 +1310,7 @@ export class RuleEngineService {
     );
     markRuleEngineDetectStage(profile, 'attachments');
 
-    const trafficEligible = violations.every(
-      (violation) =>
-        violation.ruleCode === 'COMMERCIAL_AD' &&
-        violation.metadata?.actionable === false &&
-        violation.metadata?.recordable === false,
-    );
+    const trafficEligible = !hasCompetingModerationViolation(violations);
     if (
       trafficEligible &&
       (settings.slowModeEnabled ||
@@ -1395,7 +1391,7 @@ export class RuleEngineService {
     markRuleEngineDetectStage(profile, 'duplicate-state');
 
     if (
-      violations.length === 0 &&
+      !hasCompetingModerationViolation(violations) &&
       !duplicateState?.hit &&
       !duplicateState?.decision &&
       !skipStatefulMessageLimits

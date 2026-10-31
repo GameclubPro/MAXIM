@@ -93,7 +93,7 @@ describe('independent commercial model pool classifier', () => {
   beforeEach(() => {
     options = {
       jobId: '00000000-0000-0000-0000-000000000001',
-      deadlineAtMs: Date.now() + 5000,
+      deadlineAtMs: Date.now() + 20_000,
       policy: 'confirm-positive',
       primaryFinished,
       canStartConsultation,
@@ -340,6 +340,26 @@ describe('independent commercial model pool classifier', () => {
     expect(canStartConsultation).not.toHaveBeenCalled();
   });
 
+  it('keeps GPU capacity usable when the remaining budget is too short for CPU', async () => {
+    mailbox.available.mockResolvedValue(['server-9b', 'pc-b-9b']);
+    const result = await client({
+      jobId: '00000000-0000-0000-0000-000000000003',
+      deadlineAtMs: Date.now() + 5000,
+    }).classify('synthetic');
+    expect(result.pool?.nodeId).toBe('pc-b-9b');
+    expect(mailbox.reserve.mock.calls.map(([node]) => node)).toEqual(['pc-b-9b']);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve CPU capacity with only milliseconds left', async () => {
+    mailbox.available.mockResolvedValue(['server-9b']);
+    await expect(
+      client({ deadlineAtMs: Date.now() + 100 }).classify('synthetic'),
+    ).rejects.toMatchObject({ kind: 'BUSY' });
+    expect(mailbox.reserve).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('never retries a failed consultation or silently trusts its unconfirmed positive', async () => {
     decisions['pc-a-4b'] = 'COMMERCIAL';
     mailbox.wait
@@ -377,13 +397,20 @@ describe('independent commercial model pool classifier', () => {
   });
 
   it('bounds even a stalled injected HTTP dispatcher by the original deadline', async () => {
-    mailbox.available.mockResolvedValue(['server-9b']);
-    dispatch.mockImplementation(() => new Promise(() => undefined));
-    await expect(
-      client({ deadlineAtMs: Date.now() + 30 }).classify('synthetic'),
-    ).rejects.toMatchObject({ kind: 'TIMEOUT' });
-    expect(mailbox.reserve).toHaveBeenCalledTimes(1);
-    expect(mailbox.release).toHaveBeenCalledTimes(1);
+    jest.useFakeTimers();
+    try {
+      mailbox.available.mockResolvedValue(['server-9b']);
+      dispatch.mockImplementation(() => new Promise(() => undefined));
+      const outcome = expect(
+        client({ deadlineAtMs: Date.now() + 20_000 }).classify('synthetic'),
+      ).rejects.toMatchObject({ kind: 'TIMEOUT' });
+      await jest.advanceTimersByTimeAsync(20_001);
+      await outcome;
+      expect(mailbox.reserve).toHaveBeenCalledTimes(1);
+      expect(mailbox.release).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('records an upstream deadline timeout as a failed attempt rather than caller cancellation', async () => {

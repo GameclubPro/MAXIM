@@ -250,6 +250,7 @@ import {
   createDuplicateMemberMutationGuard,
 } from './duplicate-execution-guards';
 import * as duplicateSafety from './duplicate-enforcement-safety';
+import { resolveDuplicateRuleEligibility } from './moderation-rule-competition';
 import {
   buildModerationMessageViolationProcessingClaimKey,
   resolveDuplicateMessageActionClaim,
@@ -2440,6 +2441,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
       const hasCompetingViolation = violations.length > 0;
+      const duplicateEligibility = resolveDuplicateRuleEligibility(violations, detection);
       const latestManualReleaseAt =
         detection.duplicateDecision || detection.duplicateHit
           ? await this.resolveLatestManualReleaseCreatedAt(chatId, senderId)
@@ -2573,9 +2575,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           botId: messageDuplicateBotId,
           readSelectedBotId: () =>
             this.maxBotContextService?.getActiveBotId() ?? messageDuplicateBotId,
-          track: !hasCompetingViolation,
-          actionEligible:
-            !hasCompetingViolation && !detection.duplicateDecision && !detection.duplicateHit,
+          ...duplicateEligibility,
           executeFullAction: (request) =>
             this.executeDuplicateAction(
               { ...request, rulesPublishedUrl, rulesPublishedMessageId },

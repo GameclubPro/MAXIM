@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from './moderation-delete-authority-preparation';
 import { isStateVoiceReason, readStateVoiceReasonKeys } from './state-voice-delete-source';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -55,6 +60,14 @@ export class ClosedChatDeleteGuardService {
         reasonDeadlines: { reasonKey: string; deadlineAtMs: number }[];
       }
   > {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<ClosedChatDeleteGuardService['authorize']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<Awaited<ReturnType<ClosedChatDeleteGuardService['authorize']>>>
+  > {
     let owned = params.reasons.filter((reason) =>
       CLOSED_CHAT_DELETE_RULE_CODES.has(reason.ruleCode),
     );
@@ -110,34 +123,36 @@ export class ClosedChatDeleteGuardService {
       })) === 'granted'
     )
       this.reject();
-    const finalSettings = await this.loadSettings(params.chatId, userId);
-    if (voiceReasons.length) {
-      const keys = await readStateVoiceReasonKeys(this.prisma, params, owned);
-      owned = owned.filter((reason) => keys.includes(reason.reasonKey));
-    }
-    const validReasons = owned.filter((reason) => this.matches(reason, finalSettings, sourceAt));
-    const reasonDeadlines = validReasons
-      .map((reason) => {
-        const closureDeadline =
-          reason.ruleCode === 'MANUAL_GROUP_CLOSE_DELETE'
-            ? finalSettings.nightModeForceCloseForever
-              ? Infinity
-              : Date.parse(finalSettings.nightModeForceCloseUntil)
-            : (resolveNextNightModeTransitionOccurrences(finalSettings)
-                .find((item) => item.transition === 'open')
-                ?.dueAt.getTime() ?? Infinity);
-        return {
-          reasonKey: reason.reasonKey,
-          deadlineAtMs: Math.min(sourceAt + 5 * 60_000, closureDeadline),
-        };
-      })
-      .filter((reason) => Date.now() < reason.deadlineAtMs);
-    if (!reasonDeadlines.length) this.reject();
-    return {
-      reasonKeys: reasonDeadlines.map((r) => r.reasonKey),
-      deadlineAtMs: Math.max(...reasonDeadlines.map((r) => r.deadlineAtMs)),
-      reasonDeadlines,
-    };
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.loadSettings(params.chatId, userId);
+      if (voiceReasons.length) {
+        const keys = await readStateVoiceReasonKeys(this.prisma, params, owned);
+        owned = owned.filter((reason) => keys.includes(reason.reasonKey));
+      }
+      const validReasons = owned.filter((reason) => this.matches(reason, finalSettings, sourceAt));
+      const reasonDeadlines = validReasons
+        .map((reason) => {
+          const closureDeadline =
+            reason.ruleCode === 'MANUAL_GROUP_CLOSE_DELETE'
+              ? finalSettings.nightModeForceCloseForever
+                ? Infinity
+                : Date.parse(finalSettings.nightModeForceCloseUntil)
+              : (resolveNextNightModeTransitionOccurrences(finalSettings)
+                  .find((item) => item.transition === 'open')
+                  ?.dueAt.getTime() ?? Infinity);
+          return {
+            reasonKey: reason.reasonKey,
+            deadlineAtMs: Math.min(sourceAt + 5 * 60_000, closureDeadline),
+          };
+        })
+        .filter((reason) => Date.now() < reason.deadlineAtMs);
+      if (!reasonDeadlines.length) this.reject();
+      return {
+        reasonKeys: reasonDeadlines.map((r) => r.reasonKey),
+        deadlineAtMs: Math.max(...reasonDeadlines.map((r) => r.deadlineAtMs)),
+        reasonDeadlines,
+      };
+    });
   }
 
   async loadSettings(chatId: string, userId: string) {

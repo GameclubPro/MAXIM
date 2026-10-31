@@ -12704,23 +12704,53 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('reads verified pin identity and rejects unknown pin responses', async () => {
+  it.each([
+    { data: {}, expected: null },
+    { data: { message: null }, expected: null },
+    {
+      data: { message: { body: { mid: 'm1' }, recipient: { chat_id: -1 } } },
+      expected: 'm1',
+    },
+  ])('reads documented pin response $data', async ({ data, expected }) => {
     const httpService = {
-      request: jest
-        .fn()
-        .mockReturnValueOnce(of({ data: { message: null } }))
-        .mockReturnValueOnce(
-          of({ data: { message: { body: { mid: 'm1' }, recipient: { chat_id: -1 } } } }),
-        )
-        .mockReturnValueOnce(of({ data: {} })),
+      request: jest.fn(() => of({ data })),
     };
     const service = createService(httpService);
     try {
-      expect(await service.getPinnedMessageId('-1', { trafficClass: 'background' })).toBeNull();
-      expect(await service.getPinnedMessageId('-1', { trafficClass: 'background' })).toBe('m1');
+      await expect(
+        service.getPinnedMessageId('-1', { trafficClass: 'background', timeoutMs: 4_000 }),
+      ).resolves.toBe(expected);
+      expect(httpService.request).toHaveBeenCalledTimes(1);
+      expect(httpService.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'get',
+          url: 'https://platform-api2.max.ru/chats/-1/pin',
+          timeout: 4_000,
+        }),
+      );
+    } finally {
+      await service.onModuleDestroy();
+    }
+  });
+
+  it.each(
+    [
+      null,
+      [],
+      '',
+      { success: true },
+      { message: {} },
+      { message: [] },
+      { message: { body: { mid: '' }, recipient: { chat_id: -1 } } },
+      { message: { body: { mid: 'm1' } } },
+      { message: { body: { mid: 'm1' }, recipient: { chat_id: -2 } } },
+    ].map((data) => ({ data })),
+  )('rejects unverifiable pin response $data', async ({ data }) => {
+    const service = createService({ request: jest.fn(() => of({ data })) });
+    try {
       await expect(
         service.getPinnedMessageId('-1', { trafficClass: 'background' }),
-      ).rejects.toThrow('not verifiable');
+      ).rejects.toThrow();
     } finally {
       await service.onModuleDestroy();
     }

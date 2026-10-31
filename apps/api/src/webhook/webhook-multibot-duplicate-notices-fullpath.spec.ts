@@ -14,6 +14,7 @@ import {
 import { extractDuplicateMessageContent } from '../moderation/message-duplicate/message-duplicate-content';
 import { MESSAGE_DUPLICATE_CONTROL_KEY } from '../moderation/message-duplicate/message-duplicate-policy.service';
 import { bindMessageLimitEvidence } from '../moderation/message-limits-delete-guard.service';
+import { CommercialAdDetector } from '../moderation/commercial';
 import type { EnsureModerationDeleteIntentInput } from '../moderation/moderation-delete-intent.types';
 import {
   createMultibotHarness,
@@ -186,6 +187,136 @@ describeStores(
       expect(f.s.effects.filter((effect) => effect.method === 'post')).toHaveLength(0);
       return { ...f, originalId, duplicateId, proof, intent };
     }
+
+    it('enforces modern duplicates alongside review-only commercial telemetry across mirrored receipts', async () => {
+      const f = await harness(4, { commercialAdsFilterEnabled: true });
+      const text =
+        'Водитель Абакан-Аскиз-ст. Аскиза 11.40-12.00 +7 900 000 00 00 с места до места завтра';
+      const originalId = `review-original-${randomUUID()}`;
+      const duplicateId = `review-duplicate-${randomUUID()}`;
+      const receipts: string[] = [];
+      for (const messageId of [originalId, duplicateId]) {
+        const at = Date.now();
+        receipts.push(
+          ...(await Promise.all(
+            f.s.bots.map((bot) =>
+              f.s.ingest({ chatId: f.chatId, messageId, text, at, botId: bot.id }),
+            ),
+          )),
+        );
+        await f.s.drain();
+      }
+      expect(f.jobs).toHaveLength(1);
+      const proof = readMessageDuplicateNoticeProof(f.jobs[0]!.ledgerContext?.duplicateNotice)!;
+      const intent = await f.s.prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: proof.intentId },
+        include: { reasons: true },
+      });
+      expect(intent.messageId).toBe(duplicateId);
+      expect(intent.status).toBe('SUCCEEDED');
+      expect(intent.reasons).toHaveLength(1);
+      expect(intent.reasons[0]!.metadata).toMatchObject({ moderationDeleteVerified: true });
+      expect(f.s.messages.has(originalId)).toBe(true);
+      expect(f.s.messages.has(duplicateId)).toBe(false);
+      expect(f.s.effects.filter((effect) => effect.method === 'delete')).toHaveLength(1);
+      expect(f.s.effects.filter((effect) => effect.method === 'post')).toHaveLength(0);
+      expect(
+        await f.s.prisma.violation.count({
+          where: { chatId: f.chatId, ruleCode: 'COMMERCIAL_AD' },
+        }),
+      ).toBe(0);
+      const settledReceipts = await f.s.prisma.webhookEvent.findMany({
+        where: { id: { in: receipts } },
+        select: {
+          id: true,
+          botId: true,
+          semanticKey: true,
+          status: true,
+          processedAt: true,
+          errorMessage: true,
+          nextEnqueueAt: true,
+          timeoutQuarantineExpiresAt: true,
+        },
+      });
+      expect(settledReceipts).toHaveLength(receipts.length);
+      // FLAG: One semantic execution completes each source; its bot mirrors settle as
+      // DUPLICATE. Both terminal states require cleared retries and positive settlement time.
+      const semanticKeys = [...new Set(settledReceipts.map((receipt) => receipt.semanticKey))];
+      expect(semanticKeys).toHaveLength(2);
+      expect(semanticKeys).not.toContain(null);
+      for (const semanticKey of semanticKeys) {
+        const sourceReceipts = settledReceipts.filter(
+          (receipt) => receipt.semanticKey === semanticKey,
+        );
+        expect(sourceReceipts).toHaveLength(f.s.bots.length);
+        expect(new Set(sourceReceipts.map((receipt) => receipt.botId)).size).toBe(f.s.bots.length);
+        expect(sourceReceipts.map((receipt) => receipt.status).sort()).toEqual([
+          'DUPLICATE',
+          'DUPLICATE',
+          'DUPLICATE',
+          'PROCESSED',
+        ]);
+        for (const receipt of sourceReceipts) {
+          expect(receipt).toMatchObject({
+            processedAt: expect.any(Date),
+            errorMessage: null,
+            nextEnqueueAt: null,
+            timeoutQuarantineExpiresAt: null,
+          });
+        }
+      }
+      expect(
+        await f.s.prisma.webhookExecutionClaim.count({
+          where: {
+            kind: 'EXECUTION',
+            webhookEventId: { in: receipts },
+            status: 'COMPLETED',
+          },
+        }),
+      ).toBe(2);
+      expect(f.s.failures).toHaveLength(0);
+    });
+
+    it('retains modern duplicate exclusion for a competing commercial WARN owner', async () => {
+      const f = await harness(4, { commercialAdsFilterEnabled: true });
+      const observe = jest.spyOn(f.s.duplicateService, 'observe');
+      const detectCommercial = CommercialAdDetector.prototype.detect;
+      const commercial = jest
+        .spyOn(CommercialAdDetector.prototype, 'detect')
+        .mockImplementation(function (this: CommercialAdDetector, input) {
+          const result = detectCommercial.call(this, input);
+          if (!result) throw new Error('Expected commercial classifier fixture');
+          return { ...result, actionBand: 'WARN', actionable: true, recordable: true };
+        });
+      try {
+        for (let index = 0; index < 2; index += 1) {
+          const at = Date.now();
+          const messageId = `commercial-owner-${index}-${randomUUID()}`;
+          await Promise.all(
+            f.s.bots.map((bot) =>
+              f.s.ingest({
+                chatId: f.chatId,
+                messageId,
+                text: 'Водитель Абакан-Аскиз-ст. Аскиза 11.40-12.00 +7 900 000 00 00 с места до места завтра',
+                at,
+                botId: bot.id,
+              }),
+            ),
+          );
+          await f.s.drain();
+        }
+        expect(observe).toHaveBeenCalledTimes(2);
+        for (const [input] of observe.mock.calls) {
+          expect(input).toMatchObject({ track: false, actionEligible: false });
+        }
+        expect(f.jobs).toHaveLength(0);
+        expect(f.s.effects).toHaveLength(0);
+        expect(f.s.failures).toHaveLength(0);
+      } finally {
+        commercial.mockRestore();
+        observe.mockRestore();
+      }
+    });
 
     it.each(['shadow', 'full'] as const)(
       'settles a delayed native history reply and the following same-chat message in %s',

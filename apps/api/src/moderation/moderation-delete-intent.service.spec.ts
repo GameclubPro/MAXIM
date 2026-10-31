@@ -47,13 +47,68 @@ import {
 } from './night-mode-transition-generation.util';
 import type { NightModeCloseNoticeCleanupBinding } from './night-mode-close-notice-cleanup-binding';
 import { ProfanityDeleteGuardRejectedError } from './profanity/profanity-delete-guard.service';
-import { StopWordsDeleteGuardRejectedError } from './stop-words/stop-words-delete-guard.service';
+import {
+  StopWordsDeleteGuardRejectedError,
+  type StopWordsDeleteGuardService,
+} from './stop-words/stop-words-delete-guard.service';
 import { CommercialDeleteGuardRejectedError } from './commercial/commercial-delete-guard.service';
 import { fingerprintCommercialDeleteReasons } from './commercial/commercial-delete-binding';
 import { MESSAGE_DUPLICATE_MEDIA_VERSION } from './message-duplicate/message-duplicate-state';
-import { MessageDuplicateGuardRejectedError } from './message-duplicate/message-duplicate-delete-guard.service';
+import {
+  MessageDuplicateGuardRejectedError,
+  type MessageDuplicateDeleteGuardService,
+} from './message-duplicate/message-duplicate-delete-guard.service';
 import { MessageDuplicateInitialSourceUnavailableError } from './message-duplicate/message-duplicate-guard.contract';
 import type { ModerationDeletePreDispatchPhase } from './moderation-delete-intent.types';
+import { MessageLimitsDeleteGuardService } from './message-limits-delete-guard.service';
+import type { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
+import {
+  finalizeDeleteAuthority,
+  prepareDeleteAuthority,
+  prepareDeleteAuthorityRecheck,
+} from './moderation-delete-authority-preparation';
+
+function preparedGuardFixture<Args extends unknown[], Result>(
+  run: (...args: Args) => Promise<Result>,
+) {
+  return async (...args: Args) => {
+    const result = await run(...args);
+    return prepareDeleteAuthority(async () => result);
+  };
+}
+
+function messageLimitsGuardFixture(authorize: MessageLimitsDeleteGuardService['authorize']) {
+  const run = jest.fn<
+    ReturnType<MessageLimitsDeleteGuardService['authorize']>,
+    Parameters<MessageLimitsDeleteGuardService['authorize']>
+  >(authorize);
+  return {
+    authorize: run,
+    prepareForDispatch: preparedGuardFixture(run),
+  } satisfies Pick<MessageLimitsDeleteGuardService, 'authorize' | 'prepareForDispatch'>;
+}
+
+function stateGuardFixture(authorize: ModerationStateDeleteGuardService['authorize']) {
+  const run = jest.fn<
+    ReturnType<ModerationStateDeleteGuardService['authorize']>,
+    Parameters<ModerationStateDeleteGuardService['authorize']>
+  >(authorize);
+  return {
+    authorize: run,
+    prepareForDispatch: preparedGuardFixture(run),
+  } satisfies Pick<ModerationStateDeleteGuardService, 'authorize' | 'prepareForDispatch'>;
+}
+
+function stopWordsGuardFixture(authorize: StopWordsDeleteGuardService['authorizeIntent']) {
+  const run = jest.fn<
+    ReturnType<StopWordsDeleteGuardService['authorizeIntent']>,
+    Parameters<StopWordsDeleteGuardService['authorizeIntent']>
+  >(authorize);
+  return {
+    authorizeIntent: run,
+    prepareForDispatch: preparedGuardFixture(run),
+  } satisfies Pick<StopWordsDeleteGuardService, 'authorizeIntent' | 'prepareForDispatch'>;
+}
 
 const VERIFIED_RECEIPT_RULE_CODES = [
   'MESSAGE_TOO_LONG_DELETE',
@@ -402,6 +457,16 @@ function createService(
     assertIntentStillActionable: jest.fn().mockResolvedValue('not_applicable'),
     ...commercialDeleteGuardOverrides,
   };
+  for (const guard of [
+    linkHistoryDeleteGuard,
+    commercialOcrDeleteGuard,
+    profanityDeleteGuard,
+    commercialDeleteGuard,
+  ]) {
+    Object.assign(guard, {
+      prepareForDispatch: preparedGuardFixture(guard.assertIntentStillActionable),
+    });
+  }
   const service = new ModerationDeleteIntentService(
     leaseDatabase as never,
     maxClient as never,
@@ -867,6 +932,50 @@ function accessAmbiguousSourceSendRow() {
 }
 
 describe('ModerationDeleteIntentService', () => {
+  it('keeps nested authority capsules single-use with only one local continuation', async () => {
+    const localAuthority = jest.fn(async () => 'allowed' as const);
+    const child = prepareDeleteAuthority(localAuthority);
+    const outer = prepareDeleteAuthority(async (finalizeNested) => finalizeNested(child));
+
+    expect(() => prepareDeleteAuthorityRecheck(outer)).toThrow('has not finished finalizing');
+    await expect(finalizeDeleteAuthority(outer)).resolves.toBe('allowed');
+    await expect(finalizeDeleteAuthority(outer)).rejects.toThrow('was already finalized');
+    const continuation = prepareDeleteAuthorityRecheck(outer);
+    await expect(finalizeDeleteAuthority(continuation)).resolves.toBe('allowed');
+    await expect(finalizeDeleteAuthority(continuation)).rejects.toThrow('was already finalized');
+    expect(() => prepareDeleteAuthorityRecheck(outer)).toThrow('recheck was already prepared');
+    expect(() => prepareDeleteAuthorityRecheck(continuation)).toThrow(
+      'recheck was already prepared',
+    );
+    expect(() => prepareDeleteAuthorityRecheck(child)).toThrow('recheck was already prepared');
+    expect(localAuthority).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves rejected nested evidence while rechecking its independent survivor', async () => {
+    const rejected = new Error('Original local reason revoked');
+    const rejectedAuthority = jest.fn(async () => {
+      throw rejected;
+    });
+    const denied = prepareDeleteAuthority(rejectedAuthority);
+    const localAuthority = jest.fn(async () => 'allowed' as const);
+    const survivor = prepareDeleteAuthority(localAuthority);
+    const outer = prepareDeleteAuthority(async (finalizeNested) => {
+      try {
+        return await finalizeNested(denied);
+      } catch (error) {
+        if (error !== rejected) throw error;
+      }
+      return finalizeNested(survivor);
+    });
+
+    await expect(finalizeDeleteAuthority(outer)).resolves.toBe('allowed');
+    await expect(finalizeDeleteAuthority(prepareDeleteAuthorityRecheck(outer))).resolves.toBe(
+      'allowed',
+    );
+    expect(rejectedAuthority).toHaveBeenCalledTimes(1);
+    expect(localAuthority).toHaveBeenCalledTimes(2);
+  });
+
   function initialDuplicateSourceFixture(attemptCount = 1) {
     const fixture = createService({}, { $executeRaw: jest.fn().mockResolvedValue(1) });
     const leased = {
@@ -1540,6 +1649,232 @@ describe('ModerationDeleteIntentService', () => {
     },
   );
 
+  it.each(['disabled policy', 'protected author', 'participant immunity'])(
+    'revokes an ordinary DELETE when quota admission observes %s',
+    async (revocation) => {
+      const f = initialDuplicateSourceFixture();
+      const leased = { ...f.leased, messageDuplicateOwned: false };
+      const reason = { ruleCode: 'MESSAGE_TOO_LONG_DELETE', reasonKey: 'length', metadata: {} };
+      const settings = {
+        maxMessageLengthEnabled: true,
+        maxMessageLength: 10,
+        chat: { entityType: 'CHAT', admins: [] as { userId: string }[] },
+      };
+      let immune = false;
+      const max = {
+        getChatMemberAccess: jest.fn(async () => ({
+          userId: leased.subjectUserId,
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        })),
+        getExactMessageRow: jest.fn(async () => ({
+          sender: { user_id: leased.subjectUserId },
+          recipient: { chat_id: leased.chatId, chat_type: 'chat' },
+          timestamp: Date.now(),
+          body: { mid: leased.messageId, text: '12345678901' },
+        })),
+      } satisfies Pick<MaxClientService, 'getChatMemberAccess' | 'getExactMessageRow'>;
+      const guard = new MessageLimitsDeleteGuardService(
+        { chatSettings: { findUnique: async () => settings } } as never,
+        max as never,
+        { isKnownBotUserId: () => false } as never,
+        { consumeForMessage: async () => (immune ? 'granted' : 'not_granted') } as never,
+        new ConfigService(),
+      );
+      f.prisma.moderationDeleteIntentReason.findMany.mockResolvedValue([reason]);
+      const rejected = { kind: 'terminal', status: 'FAILED_TERMINAL', confirmed: false };
+      const completed = { kind: 'confirmed', status: 'SUCCEEDED', confirmed: true };
+      Object.assign(f.service, {
+        loadIntent: jest.fn().mockResolvedValue(leased),
+        messageLimitsDeleteGuard: guard,
+        participantImmunity: {
+          consumeForMessage: async () => (immune ? 'granted' : 'not_granted'),
+        },
+        finishTerminalPreDispatchGuardRejection: jest.fn().mockResolvedValue(rejected),
+        recordRemoteSuccessAndFinalize: jest.fn().mockResolvedValue(completed),
+      });
+      f.maxClient.deleteMessage.mockImplementation(async (_chat, _message, options) => {
+        await options?.beforeImmediateDeleteMutation?.(async () => {
+          if (revocation === 'disabled policy') settings.maxMessageLengthEnabled = false;
+          if (revocation === 'protected author')
+            settings.chat.admins.push({ userId: leased.subjectUserId! });
+          if (revocation === 'participant immunity') immune = true;
+        });
+        f.remoteDelete();
+      });
+
+      await expect(f.service.executeLeasedIntent(leased.id, 'lease-1')).resolves.toEqual(rejected);
+      expect(f.remoteDelete).not.toHaveBeenCalled();
+      // All exact MAX evidence belongs to preparation, before admission changes local authority.
+      expect(max.getExactMessageRow).toHaveBeenCalledTimes(1);
+      expect(max.getChatMemberAccess).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['disabled policy', 'protected author', 'participant immunity', 'valid length'] as const)(
+    'rechecks independent authority when final duplicate refusal observes %s',
+    async (revocation) => {
+      const f = initialDuplicateSourceFixture();
+      const allowed = revocation === 'valid length';
+      let immune = false;
+      const settings = {
+        maxMessageLengthEnabled: true,
+        maxMessageLength: 10,
+        chat: { entityType: 'CHAT', admins: [] as { userId: string }[] },
+      };
+      const max = {
+        getChatMemberAccess: jest.fn(async () => ({
+          userId: f.leased.subjectUserId,
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        })),
+        getExactMessageRow: jest.fn(async () => ({
+          sender: { user_id: f.leased.subjectUserId },
+          recipient: { chat_id: f.leased.chatId, chat_type: 'chat' },
+          timestamp: Date.now(),
+          body: { mid: f.leased.messageId, text: '12345678901' },
+        })),
+      } satisfies Pick<MaxClientService, 'getChatMemberAccess' | 'getExactMessageRow'>;
+      const guard = new MessageLimitsDeleteGuardService(
+        { chatSettings: { findUnique: async () => settings } } as never,
+        max as never,
+        { isKnownBotUserId: () => false } as never,
+        { consumeForMessage: async () => (immune ? 'granted' : 'not_granted') } as never,
+        new ConfigService(),
+      );
+      const duplicateGuard = {
+        assertIntentStillActionable: jest.fn<
+          ReturnType<MessageDuplicateDeleteGuardService['assertIntentStillActionable']>,
+          Parameters<MessageDuplicateDeleteGuardService['assertIntentStillActionable']>
+        >(async (params) => {
+          if (params.authorityOnly) {
+            await Promise.resolve();
+            if (revocation === 'disabled policy') settings.maxMessageLengthEnabled = false;
+            if (revocation === 'protected author')
+              settings.chat.admins.push({ userId: f.leased.subjectUserId! });
+            if (revocation === 'participant immunity') immune = true;
+            throw new MessageDuplicateGuardRejectedError(
+              'message_duplicate_action_authority_revoked',
+            );
+          }
+          return 'allowed';
+        }),
+      } satisfies Pick<MessageDuplicateDeleteGuardService, 'assertIntentStillActionable'>;
+      f.prisma.moderationDeleteIntentReason.findMany.mockResolvedValue([
+        { ruleCode: 'MESSAGE_TOO_LONG_DELETE', reasonKey: 'length', metadata: {} },
+        {
+          ruleCode: 'DUPLICATE_DELETE',
+          reasonKey: 'MESSAGE_DUPLICATE:v1:current',
+          metadata: { duplicateSource: 'message_v1' },
+        },
+      ]);
+      const completed = { kind: 'confirmed', status: 'SUCCEEDED', confirmed: true };
+      const receipt = jest.fn().mockResolvedValue(completed);
+      Object.assign(f.service, {
+        messageLimitsDeleteGuard: guard,
+        messageDuplicateDeleteGuard: duplicateGuard,
+        participantImmunity: {
+          consumeForMessage: async () => (immune ? 'granted' : 'not_granted'),
+        },
+        finishTerminalPreDispatchGuardRejection: jest.fn().mockResolvedValue({
+          kind: 'terminal',
+          status: 'FAILED_TERMINAL',
+          confirmed: false,
+        }),
+        recordRemoteSuccessAndFinalize: receipt,
+      });
+      const admission = jest.fn(async () => undefined);
+      f.maxClient.deleteMessage.mockImplementation(async (_chat, _message, options) => {
+        await options?.beforeImmediateDeleteMutation?.(admission);
+        f.remoteDelete();
+      });
+
+      await f.service.executeLeasedIntent(f.leased.id, 'lease-1');
+
+      expect(duplicateGuard.assertIntentStillActionable).toHaveBeenCalledWith(
+        expect.objectContaining({ authorityOnly: true }),
+      );
+      expect(duplicateGuard.assertIntentStillActionable).toHaveBeenCalledTimes(2);
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(f.remoteDelete).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(receipt).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      if (allowed)
+        expect(receipt).toHaveBeenCalledWith(
+          expect.anything(),
+          'lease-1',
+          'bot-1',
+          false,
+          [],
+          ['length'],
+        );
+      expect(f.clear).toHaveBeenCalledTimes(allowed ? 0 : 1);
+      expect(max.getExactMessageRow).toHaveBeenCalledTimes(1);
+      expect(max.getChatMemberAccess).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not renew an independent deadline during local duplicate fallback', async () => {
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const f = initialDuplicateSourceFixture();
+      let checks = 0;
+      const authorize = jest.fn<
+        ReturnType<MessageLimitsDeleteGuardService['authorize']>,
+        Parameters<MessageLimitsDeleteGuardService['authorize']>
+      >(async () => ({
+        reasonKeys: ['length'],
+        deadlineAtMs: now + (++checks === 1 ? 100 : 10_000),
+      }));
+      f.prisma.moderationDeleteIntentReason.findMany.mockResolvedValue([
+        { ruleCode: 'MESSAGE_TOO_LONG_DELETE', reasonKey: 'length', metadata: {} },
+        {
+          ruleCode: 'DUPLICATE_DELETE',
+          reasonKey: 'MESSAGE_DUPLICATE:v1:current',
+          metadata: { duplicateSource: 'message_v1' },
+        },
+      ]);
+      Object.assign(f.service, {
+        messageLimitsDeleteGuard: {
+          authorize,
+          prepareForDispatch: async (params) => prepareDeleteAuthority(() => authorize(params)),
+        } satisfies Pick<MessageLimitsDeleteGuardService, 'authorize' | 'prepareForDispatch'>,
+        messageDuplicateDeleteGuard: {
+          assertIntentStillActionable: async (
+            params: Parameters<
+              MessageDuplicateDeleteGuardService['assertIntentStillActionable']
+            >[0],
+          ) => {
+            if (params.authorityOnly) {
+              clock.mockReturnValue(now + 100);
+              throw new MessageDuplicateGuardRejectedError(
+                'message_duplicate_action_authority_revoked',
+              );
+            }
+            return 'allowed';
+          },
+        } satisfies Pick<MessageDuplicateDeleteGuardService, 'assertIntentStillActionable'>,
+        assertVerifiedReasonDeadlineFence: jest.fn().mockResolvedValue(now),
+        finishTerminalPreDispatchGuardRejection: jest.fn().mockResolvedValue({
+          kind: 'terminal',
+          status: 'FAILED_TERMINAL',
+          confirmed: false,
+        }),
+        recordRemoteSuccessAndFinalize: jest.fn(),
+      });
+
+      await f.service.executeLeasedIntent(f.leased.id, 'lease-1');
+
+      expect(authorize).toHaveBeenCalledTimes(2);
+      expect(f.remoteDelete).not.toHaveBeenCalled();
+      expect(f.clear).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('reserves DELETE admission after remote guards and before the final deadline and duplicate permits', async () => {
     const f = initialDuplicateSourceFixture();
     const events: string[] = [];
@@ -1564,6 +1899,7 @@ describe('ModerationDeleteIntentService', () => {
     });
     const guards = jest.fn(async (...args: unknown[]) => {
       events.push(args[3] ? 'final-remote-guards' : 'initial-remote-guards');
+      await (args[5] as (() => Promise<void>) | undefined)?.();
       return {
         profanityVerified: false,
         commercialVerifiedReasonKeys: [],
@@ -1596,8 +1932,8 @@ describe('ModerationDeleteIntentService', () => {
       'initial-remote-guards',
       'dispatch-marker',
       'final-remote-guards',
-      'suggestion-authority',
       'admission',
+      'suggestion-authority',
       'deadline-fence',
       'duplicate-authority',
       'delete',
@@ -1620,10 +1956,13 @@ describe('ModerationDeleteIntentService', () => {
       intentId: f.leased.id,
     });
     Object.assign(f.service, {
-      runDeletePreDispatchGuards: jest.fn().mockResolvedValue({
-        profanityVerified: false,
-        commercialVerifiedReasonKeys: [],
-        messageDuplicateVerified: true,
+      runDeletePreDispatchGuards: jest.fn(async (...args: unknown[]) => {
+        await (args[5] as (() => Promise<void>) | undefined)?.();
+        return {
+          profanityVerified: false,
+          commercialVerifiedReasonKeys: [],
+          messageDuplicateVerified: true,
+        };
       }),
       assertVerifiedReasonDeadlineFence: finalAuthority,
       finishRetryableAttempt: retry,
@@ -1917,8 +2256,11 @@ describe('ModerationDeleteIntentService', () => {
             leaseToken
               ? composed(leased, 'bot-1', leaseToken)
               : { profanityVerified: false, commercialVerifiedReasonKeys: [] },
-          messageLimitsDeleteGuard: { authorize: jest.fn().mockResolvedValue(finitePermit) },
-          moderationStateDeleteGuard: { authorize: jest.fn().mockResolvedValue(finitePermit) },
+          messageLimitsDeleteGuard: messageLimitsGuardFixture(async () => finitePermit),
+          moderationStateDeleteGuard: stateGuardFixture(async () => ({
+            ...finitePermit,
+            deadlineAtMs: finitePermit.deadlineAtMs ?? now + 10_000,
+          })),
           messageDuplicateDeleteGuard: {
             assertIntentStillActionable: jest.fn(async (params: { authorityOnly?: boolean }) => {
               if (params.authorityOnly) {
@@ -6393,7 +6735,7 @@ describe('ModerationDeleteIntentService', () => {
       confirmed: true,
       status: 'SUCCEEDED',
     });
-    expect(transitionEventLookup).toHaveBeenCalledTimes(2);
+    expect(transitionEventLookup).toHaveBeenCalledTimes(3);
     expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -7804,12 +8146,7 @@ describe('ModerationDeleteIntentService', () => {
       kind: 'terminal',
       status: 'FAILED_TERMINAL',
     });
-    expect(events).toEqual([
-      'duplicate_full',
-      'later-check',
-      'duplicate_authority',
-      'duplicate_full',
-    ]);
+    expect(events).toEqual(['duplicate_full', 'later-check', 'duplicate_authority']);
     expect(remoteDelete).not.toHaveBeenCalled();
     expect(duplicateGuard.assertIntentStillActionable).toHaveBeenCalledWith(
       expect.objectContaining({ authorityOnly: true }),
@@ -8772,9 +9109,15 @@ describe('ModerationDeleteIntentService', () => {
       status: 'SUCCEEDED',
     });
 
-    expect(findUnique).toHaveBeenCalledTimes(2);
+    expect(findUnique).toHaveBeenCalledTimes(3);
     expect(maxHttpDelete).toHaveBeenCalledTimes(1);
-    expect(events).toEqual(['entity-guard', 'dispatch-fence', 'entity-guard', 'max-delete']);
+    expect(events).toEqual([
+      'entity-guard',
+      'dispatch-fence',
+      'entity-guard',
+      'entity-guard',
+      'max-delete',
+    ]);
   });
 
   it('clears the dispatch fence when a channel becomes a CHAT between the two delete guards', async () => {
@@ -9100,9 +9443,9 @@ describe('ModerationDeleteIntentService', () => {
         { assertIntentStillActionable },
       );
       Object.assign(service, {
-        messageLimitsDeleteGuard: {
-          authorize: jest.fn().mockResolvedValue({ reasonKeys: ['length'] }),
-        },
+        messageLimitsDeleteGuard: messageLimitsGuardFixture(async () => ({
+          reasonKeys: ['length'],
+        })),
       });
 
       await expect(service.executeLeasedIntent('intent-1', 'lease-1')).resolves.toMatchObject({
@@ -13043,11 +13386,9 @@ describe('durable stop-word guard rejection diagnostics', () => {
         },
       );
       Object.assign(service, {
-        stopWordsDeleteGuard: {
-          authorizeIntent: jest
-            .fn()
-            .mockRejectedValue(new StopWordsDeleteGuardRejectedError('policy_disabled')),
-        },
+        stopWordsDeleteGuard: stopWordsGuardFixture(async () => {
+          throw new StopWordsDeleteGuardRejectedError('policy_disabled');
+        }),
         enqueueWakeup: jest.fn(),
         loadRequiredIntent: jest.fn().mockResolvedValue({ ...latest, status: 'FAILED_TERMINAL' }),
       });

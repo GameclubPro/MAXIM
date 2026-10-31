@@ -1431,8 +1431,9 @@ export class MaxClientService implements OnModuleDestroy {
         }),
       options,
     );
-    if (response.message === null) return null;
-    const message = this.asRecord(response.message);
+    const envelope = this.asRecord(response);
+    if (envelope && (Object.keys(envelope).length === 0 || envelope.message === null)) return null;
+    const message = this.asRecord(envelope?.message);
     const body = this.asRecord(message?.body);
     const recipient = this.asRecord(message?.recipient);
     if (typeof body?.mid !== 'string' || !body.mid || String(recipient?.chat_id) !== chatId)

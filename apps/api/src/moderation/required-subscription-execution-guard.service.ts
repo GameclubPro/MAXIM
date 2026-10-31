@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from './moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { REQUIRED_SUBSCRIPTION_MAX_CHANNELS } from '@maxim/contracts';
@@ -264,6 +269,19 @@ export class RequiredSubscriptionExecutionGuardService {
         reasonDeadlines: { reasonKey: string; deadlineAtMs: number }[];
       }
   > {
+    return finalizeDeleteAuthority(
+      await this.prepareForDispatch(params),
+      params.beforeFinalAuthority,
+    );
+  }
+
+  async prepareForDispatch(
+    params: Parameters<RequiredSubscriptionExecutionGuardService['authorize']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<
+      Awaited<ReturnType<RequiredSubscriptionExecutionGuardService['authorize']>>
+    >
+  > {
     const reasons = params.reasons.filter(
       (r) => r.ruleCode === REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE,
     );
@@ -479,24 +497,25 @@ export class RequiredSubscriptionExecutionGuardService {
       })) === 'granted'
     )
       this.reject();
-    await params.beforeFinalAuthority?.();
-    if (
-      fingerprintModerationSettings(await load(), 'REQUIRED_SUBSCRIPTION') !==
-      fingerprintModerationSettings(settings, 'REQUIRED_SUBSCRIPTION')
-    )
-      this.reject();
-    const reasonDeadlines = eligible
-      .map((reason) => ({
-        reasonKey: reason.reasonKey,
-        deadlineAtMs: Number(this.metadata(reason.metadata).requiredSubscriptionDeadlineAtMs),
-      }))
-      .filter((reason) => Date.now() < reason.deadlineAtMs);
-    if (!reasonDeadlines.length) this.reject();
-    return {
-      reasonKeys: reasonDeadlines.map((r) => r.reasonKey),
-      deadlineAtMs: Math.max(...reasonDeadlines.map((r) => r.deadlineAtMs)),
-      reasonDeadlines,
-    };
+    return prepareDeleteAuthority(async () => {
+      if (
+        fingerprintModerationSettings(await load(), 'REQUIRED_SUBSCRIPTION') !==
+        fingerprintModerationSettings(settings, 'REQUIRED_SUBSCRIPTION')
+      )
+        this.reject();
+      const reasonDeadlines = eligible
+        .map((reason) => ({
+          reasonKey: reason.reasonKey,
+          deadlineAtMs: Number(this.metadata(reason.metadata).requiredSubscriptionDeadlineAtMs),
+        }))
+        .filter((reason) => Date.now() < reason.deadlineAtMs);
+      if (!reasonDeadlines.length) this.reject();
+      return {
+        reasonKeys: reasonDeadlines.map((r) => r.reasonKey),
+        deadlineAtMs: Math.max(...reasonDeadlines.map((r) => r.deadlineAtMs)),
+        reasonDeadlines,
+      };
+    });
   }
 
   private metadata(value: unknown): Record<string, unknown> {
