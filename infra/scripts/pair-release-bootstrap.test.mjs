@@ -391,6 +391,22 @@ test('bootstrap permits the exact CI workflow and its coverage guard', (t) => {
   assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.target);
 });
 
+test('bootstrap permits the exact backup refusal recovery controller only', (t) => {
+  const allowed = fixture(t, {
+    majorToolingFiles: ['infra/scripts/pair-release-backup-refusal-recovery.mjs'],
+  });
+  const installed = allowed.run();
+  assert.equal(installed.status, 0, installed.stderr);
+  const refused = fixture(t, {
+    majorToolingFiles: ['infra/scripts/pair-release-unreviewed-recovery.mjs'],
+  });
+  assert.equal(refused.run().status, 1);
+  assert.equal(
+    refused.git(refused.result.major.root, 'rev-parse', 'HEAD'),
+    refused.result.major.before,
+  );
+});
+
 test('bootstrap still refuses other workflows and CI executables before source advance', (t) => {
   for (const file of ['.github/workflows/unreviewed.yml', 'scripts/ci/impact.mjs']) {
     const f = fixture(t, { majorToolingFiles: [file] });

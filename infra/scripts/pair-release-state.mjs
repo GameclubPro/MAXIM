@@ -85,10 +85,16 @@ async function boundedFile(file) {
 
 async function checkout(root) {
   try {
-    const { stdout } = await execute('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], {
-      timeout: 2_000,
-      maxBuffer: 1_024,
-    });
+    // FLAG: Root systemd maintenance has no SUDO_UID. Trust only this fixed repository
+    // for the bounded read, so its source identity cannot silently become unavailable.
+    const { stdout } = await execute(
+      'git',
+      ['-c', `safe.directory=${root}`, '-C', root, 'rev-parse', '--verify', 'HEAD'],
+      {
+        timeout: 2_000,
+        maxBuffer: 1_024,
+      },
+    );
     return sha(stdout.trim());
   } catch {
     return null;

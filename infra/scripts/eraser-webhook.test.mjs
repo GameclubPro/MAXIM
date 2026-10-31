@@ -71,7 +71,7 @@ function fixture(t, mode = 'success') {
     join(bin, 'git'),
     [
       '#!/usr/bin/env bash',
-      'if [[ "$1" == -C && ( "$2" == "$FIXTURE_PAIR_MAJOR_ROOT" || "$2" == "$FIXTURE_PAIR_KARAVAN_ROOT" ) ]]; then exec "$REAL_GIT" "$@"; fi',
+      'if [[ "$#" == 7 && "$1" == -c && "$2" == "safe.directory=$4" && "$3" == -C && ( "$4" == "$FIXTURE_PAIR_MAJOR_ROOT" || "$4" == "$FIXTURE_PAIR_KARAVAN_ROOT" ) && "$5" == rev-parse && "$6" == --verify && "$7" == HEAD ]]; then exec "$REAL_GIT" "$@"; fi',
       ...prefix,
       'case "$*" in',
       '  "rev-parse HEAD") if [[ "$FIXTURE_MODE" == wrong-source ]]; then printf "%s\\n" "$FIXTURE_RUNTIME_SHA"; else printf "%s\\n" "$FIXTURE_TOOLING_SHA"; fi ;;',

@@ -77,6 +77,8 @@ Commands:
                                 Verify installed admission and both synchronized sources
   reconcile-pair-release-admission <owner-hash> <state-hash> <major|karavan> <target-sha> <runtime|tooling> [components]
                                 Archive one proved completed, interrupted admission
+  recover-pair-backup-refusal preview|apply <reviewed identity flags>
+                                Archive the exact unwritten root backup admission refusal
   legacy-cold-recovery <private-request.json>
                               Inspect or apply an exact journal-bound legacy recovery
   source-abandonment <private-request.json>
@@ -381,6 +383,26 @@ install_deploy_flock() {
   esac
   remote_exec "$(shell_quote_args bash -s -- "$1" "$target_sha")" <"$ROOT_DIR/infra/scripts/vps-install-deploy-flock.sh"
 }
+
+recover_pair_backup_refusal() (
+  set -euo pipefail
+  local controller_sha recovery_source
+  node --input-type=module - "$ROOT_DIR" "$@" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const [root, ...args] = process.argv.slice(2);
+const { parseBackupRefusalRecoveryArgs } = await import(pathToFileURL(`${root}/infra/scripts/pair-release-backup-refusal-recovery.mjs`));
+parseBackupRefusalRecoveryArgs(args);
+NODE
+  [[ -z "$(git status --porcelain)" ]] || { echo 'Backup admission recovery requires a clean exact controller.' >&2; return 2; }
+  controller_sha="$(git rev-parse HEAD)"
+  node scripts/ci/assert-green.mjs "$controller_sha"
+  recovery_source="$(mktemp)"
+  trap 'rm -f -- "$recovery_source"' EXIT
+  git show "$controller_sha:infra/scripts/pair-release-backup-refusal-recovery.mjs" >"$recovery_source"
+  # FLAG: The retained owner blocks normal installation. Stream only the exact green
+  # controller; it archives one proved pre-write refusal under all original locks.
+  remote_exec "$(shell_quote_args timeout --signal=TERM --kill-after=2 40 sudo -n node --input-type=module - "$@")" <"$recovery_source"
+)
 
 install_pair_release_admission() (
   set -euo pipefail
@@ -2044,6 +2066,9 @@ case "$command" in
   reconcile-pair-release-admission)
     [[ "$#" == 5 || "$#" == 6 ]] || exit 2
     remote_exec "$(shell_quote_args timeout 20 bash /var/lib/major-karavan-release/admission.sh reconcile "$@")"
+    ;;
+  recover-pair-backup-refusal)
+    recover_pair_backup_refusal "$@"
     ;;
   install-pair-release-admission)
     install_pair_release_admission "$@"

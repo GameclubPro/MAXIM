@@ -13,6 +13,12 @@ owner even when the kernel lock becomes free: independent remote work may still 
 Normal confirmed cleanup removes that owner. Owner and recovery records use narrow file and
 directory fsync; no host-wide synchronization is needed.
 
+Root maintenance, including the system backup units, publishes its temporary owner with the
+state directory's operator ownership before atomic publication. The owner assertion keeps the
+same strict ownership, mode and link checks for every caller. The bounded Git source reads trust
+only the two fixed repository paths per command, so a root systemd process without `SUDO_UID`
+still records their exact revisions. This does not change global Git trust or product authority.
+
 ## Initial installation and upgrades
 
 Prepare exact committed `main` targets in both local repositories. Major needs exact successful
@@ -105,3 +111,32 @@ calling this command. Reconciliation archives the original owner plus its proof 
 drift, incomplete publication or an interrupted standalone maintenance operation without the required
 outcome evidence stays blocked for a separately reviewed recovery. Never switch a runtime owner to
 tooling mode or invent a manifest to make recovery pass.
+
+### Known root backup admission refusal
+
+The separate `recover-pair-backup-refusal preview|apply` connector handles only the retained
+root-owned, empty-target backup refusal produced by the pinned legacy source supported by its
+controller. Run it from a clean controller with exact successful `Required` and CodeQL checks:
+
+```bash
+./infra/scripts/vps-connect.sh recover-pair-backup-refusal preview \
+  --owner-sha256 "$OWNER_SHA256" --initial-state-sha256 "$INITIAL_STATE_SHA256" \
+  --state-sha256 "$PAIR_STATE_SHA256" --source-sha "$LEGACY_SOURCE_SHA" \
+  --invocation-id "$BACKUP_INVOCATION_ID"
+```
+
+Review that concrete result, then repeat the identical identities with `apply`. The controller
+requires the original root-owned owner bytes, exact installed legacy sources, an inactive exact
+backup unit, its trusted journal refusal before product admission, a dead original process and
+no remaining operation actors. It separately proves current checkout revisions and reconstructs
+only the old root reporter's missing checkout fields before comparing the original state hash.
+Unknown source, configuration, process, journal or outcome evidence refuses recovery.
+
+Both preview and apply retain all three original kernel lock descriptions. Apply durably records
+the proof and atomically archives the unchanged owner under `state/backup-refusal-recoveries/`;
+the original owner remains root-owned, and its evidence requires root readback. It never changes
+lock inodes, product manifests, stores, queues or containers. A prior matching durable proof may
+resume before the owner move; a conflicting proof or existing archive refuses repetition.
+After recovery, install the identical corrected helper and reporter through the normal paired
+installer before retrying any root maintenance. A refused or skipped backup is never a completed
+copy, even when its systemd unit treats exit 75 as successful completion.
