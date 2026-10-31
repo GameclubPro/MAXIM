@@ -8,12 +8,13 @@ import {
 } from '../../lib/api/karavan-marketplace-client';
 import { ApiRequestError } from '../../lib/api-request-error';
 import type { ApiTransport } from '../../lib/api/transport';
-import {
-  hydrateMirroredItem,
-  removeMirroredItem,
-  saveMirroredItem,
-} from '../../lib/native-storage';
+import { removeMirroredItem, saveMirroredItem } from '../../lib/native-storage';
 import { describeUserFacingError } from '../../lib/user-facing-error';
+import {
+  karavanBindingRecoveryMessage,
+  readKaravanBindingRecovery,
+  type KaravanBindingRecoveryState,
+} from './karavan-binding-recovery';
 
 export function useKaravanMarketplaceBinding(
   api: ApiTransport,
@@ -24,41 +25,51 @@ export function useKaravanMarketplaceBinding(
   const queryClient = useQueryClient();
   const storageKey = actorId ? `karavan-binding:v1:${actorId}:${chatId}` : null;
   const [request, setRequest] = useState<KaravanChatBindingInput | null>(null);
-  const [hydrated, setHydrated] = useState(false);
+  const [recovery, setRecovery] = useState<{
+    key: string | null;
+    state: KaravanBindingRecoveryState;
+  }>({ key: null, state: { status: 'loading' } });
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
+  const hydrationState: KaravanBindingRecoveryState =
+    recovery.key === storageKey ? recovery.state : { status: 'loading' };
+  const hydrated = hydrationState.status === 'ready';
   const [error, setError] = useState<string | null>(null);
   const [rejected, setRejected] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const startingRef = useRef(false);
+  const liveStorageKey = useRef(storageKey);
+  liveStorageKey.current = storageKey;
   const hadUnknownOutcome = useRef(false);
   const requestStorageKey = useRef<string | null>(null);
   useEffect(() => {
     if (!storageKey) return;
     let active = true;
     requestStorageKey.current = null;
-    setHydrated(false);
+    setRecovery({ key: storageKey, state: { status: 'loading' } });
     setRequest(null);
-    void hydrateMirroredItem(storageKey)
-      .then((raw) => {
+    setError(null);
+    setRejected(false);
+    hadUnknownOutcome.current = false;
+    startingRef.current = false;
+    setStarting(false);
+    void readKaravanBindingRecovery(storageKey)
+      .then((state) => {
         if (!active) return;
-        if (raw) {
-          try {
-            const restored = karavanChatBindingInputSchema.parse(JSON.parse(raw));
-            requestStorageKey.current = storageKey;
-            setRequest(restored);
-            hadUnknownOutcome.current = true;
-          } catch {
-            setError('Не удалось восстановить запрос подключения. Обратитесь в поддержку.');
-            return;
-          }
+        if (state.status === 'ready' && state.request) {
+          requestStorageKey.current = storageKey;
+          setRequest(state.request);
+          hadUnknownOutcome.current = true;
         }
-        setHydrated(true);
+        setRecovery({ key: storageKey, state });
       })
       .catch(() => {
         if (active)
-          setError('Не удалось прочитать сохранённое подключение. Откройте настройки повторно.');
+          setRecovery({ key: storageKey, state: { status: 'error', reason: 'unavailable' } });
       });
     return () => {
       active = false;
     };
-  }, [storageKey]);
+  }, [storageKey, recoveryAttempt]);
   const mutation = useMutation({
     mutationFn: (input: KaravanChatBindingInput) => changeKaravanChatBinding(api, chatId, input),
     onSuccess: () => {
@@ -129,30 +140,73 @@ export function useKaravanMarketplaceBinding(
     freshBinding?.generation,
   ]);
   return {
-    request,
+    request: requestStorageKey.current === storageKey ? request : null,
     hydrated,
+    hydrationState,
+    recoveryError:
+      hydrationState.status === 'error'
+        ? karavanBindingRecoveryMessage(hydrationState.reason)
+        : null,
     error,
     rejected,
-    isPending: mutation.isPending,
+    isPending: mutation.isPending || starting,
     start(input: Omit<KaravanChatBindingInput, 'commandId'>) {
-      if (!storageKey || !hydrated || request || mutation.isPending) return;
+      if (
+        !storageKey ||
+        !actorId ||
+        !hydrated ||
+        request ||
+        mutation.isPending ||
+        startingRef.current
+      )
+        return;
       const next = karavanChatBindingInputSchema.parse({
         ...input,
         commandId: crypto.randomUUID(),
       });
-      saveMirroredItem(storageKey, JSON.stringify(next));
-      requestStorageKey.current = storageKey;
-      setRequest(next);
-      setError(null);
-      setRejected(false);
-      hadUnknownOutcome.current = false;
-      mutation.mutate(next);
+      const originalKey = storageKey;
+      startingRef.current = true;
+      setStarting(true);
+      void (async () => {
+        try {
+          const { assertShopEntryWriteAvailable } = await import('./karavan-shop/command-journal');
+          await assertShopEntryWriteAvailable(actorId, chatId, input.marketplaceId);
+          if (liveStorageKey.current !== originalKey || requestStorageKey.current) return;
+          saveMirroredItem(originalKey, JSON.stringify(next));
+          requestStorageKey.current = originalKey;
+          setRequest(next);
+          setError(null);
+          setRejected(false);
+          hadUnknownOutcome.current = false;
+          mutation.mutate(next);
+        } catch (cause) {
+          if (liveStorageKey.current === originalKey)
+            setError(
+              describeUserFacingError(
+                cause,
+                'Не удалось проверить сохранённое действие. Повторите.',
+              ),
+            );
+        } finally {
+          if (liveStorageKey.current === originalKey) {
+            startingRef.current = false;
+            setStarting(false);
+          }
+        }
+      })();
     },
     retry() {
-      if (request && !mutation.isPending) mutation.mutate(request);
+      if (hydrated && requestStorageKey.current === storageKey && request && !mutation.isPending)
+        mutation.mutate(request);
+    },
+    retryRecovery() {
+      if (hydrationState.status !== 'error' || mutation.isPending) return;
+      void queryClient.invalidateQueries({ queryKey: ['karavan-marketplace', chatId] });
+      setRecoveryAttempt((attempt) => attempt + 1);
     },
     resetRejected() {
-      if (!rejected || mutation.isPending) return;
+      if (!hydrated || requestStorageKey.current !== storageKey || !rejected || mutation.isPending)
+        return;
       if (storageKey) removeMirroredItem(storageKey);
       setRequest(null);
       setError(null);

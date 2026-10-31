@@ -346,9 +346,6 @@ export function SettingsStorefrontSection({
                       api={api}
                       chatId={chatId}
                       publications={publicationControls}
-                      publicationsFooter={footer}
-                      publicationsDirty={hasChanges}
-                      discardPublications={onDiscardChanges}
                     />
                   </Suspense>
                 ) : (

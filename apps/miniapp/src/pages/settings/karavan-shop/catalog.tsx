@@ -17,7 +17,7 @@ import {
 } from './runtime';
 
 import { publicationReasons } from './listing-status';
-import { SellerAccessAction } from './seller-access';
+import { AddOwnOfferAction, SellerAccessAction } from './seller-access';
 import { uniqueShopItems } from './shop-journey';
 
 function Sellers({
@@ -30,27 +30,41 @@ function Sellers({
   onEmpty: () => void;
 }) {
   const { module } = useShop();
+  const canReview = module.permissions.includes('review_listing');
   const [reason, setReason] = useState('');
   const [notice, setNotice] = useState('');
   const [selected, setSelected] = useState<MarketplaceListing | null>(null);
   const [arranging, setArranging] = useState(false);
-  useStorefrontDirty('catalog-seller', !!selected && !!reason.trim());
   const query = useShopPages<'listings'>({
     operation: 'listings',
     input: { cursor: null, limit: 24, q: search, visibility: 'all', orderableOnly: false },
   });
-  const mutation = useShopMutation((command) => {
+  const mutation = useShopMutation({ owner: 'sellers', page: 'catalog' }, (command) => {
     if (command.operation === 'moderate_listing') {
       setSelected(null);
       setReason('');
-      setNotice(command.input.action === 'resume' ? 'Ограничение витрины снято' : 'Витрина скрыта');
+      setNotice(
+        command.input.action === 'resume' ? 'Ограничение продавца снято' : 'Продавец скрыт',
+      );
     }
   });
+  useEffect(() => {
+    const saved = mutation.pendingCommand;
+    if (saved?.operation === 'reorder_listings') setArranging(true);
+    if (saved?.operation !== 'moderate_listing') return;
+    const subject = query.data?.pages
+      .flatMap((page) => page.listings)
+      .find((listing) => listing.id === saved.listingId);
+    if (subject) setSelected(subject);
+    setReason(saved.input.reason ?? '');
+  }, [mutation.pendingCommand, query.data]);
+  useStorefrontDirty('catalog-seller', (!!selected && !!reason.trim()) || mutation.uncertain);
   if (query.isPending) return <ShopLoading />;
   if (!query.data) return <ShopFailure error={query.error} retry={() => void query.refetch()} />;
   const listings = uniqueShopItems(query.data.pages.map((page) => page.listings));
   const meta = query.data.pages[0]!;
-  const selectedVisible = selected && listings.some((listing) => listing.id === selected.id);
+  const selectedVisible =
+    canReview && selected && listings.some((listing) => listing.id === selected.id);
   return (
     <>
       {notice ? <p role="status">{notice}</p> : null}
@@ -77,7 +91,7 @@ function Sellers({
                   label={listing.storeName}
                   index={index}
                   group="sellers"
-                  disabled={mutation.isPending || mutation.isError}
+                  disabled={mutation.blocked}
                   move={(_from, to) => {
                     const position = list[to]?.position;
                     if (position)
@@ -97,29 +111,26 @@ function Sellers({
             <ListingContentDisclosure listingId={listing.id} />
             {['approved', 'suspended'].includes(listing.reviewState) ? (
               <>
-                <div className="karavan-module__entry-actions">
-                  <button
-                    type="button"
-                    disabled={mutation.isPending || mutation.isError}
-                    onClick={() => {
-                      setSelected(listing);
-                      setReason('');
-                    }}
-                  >
-                    {listing.reviewState === 'suspended' ? 'Снять ограничение' : 'Скрыть'}
-                  </button>
-                </div>
+                {canReview ? (
+                  <div className="karavan-module__entry-actions">
+                    <button
+                      type="button"
+                      disabled={mutation.blocked}
+                      onClick={() => {
+                        setSelected(listing);
+                        setReason('');
+                      }}
+                    >
+                      {listing.reviewState === 'suspended' ? 'Снять ограничение' : 'Скрыть'}
+                    </button>
+                  </div>
+                ) : null}
                 {canArrange && arranging ? (
                   <div className="karavan-shop__reorder">
                     <div className="karavan-module__entry-actions">
                       <button
                         type="button"
-                        disabled={
-                          !canArrange ||
-                          mutation.isPending ||
-                          mutation.isError ||
-                          listing.position === 1
-                        }
+                        disabled={!canArrange || mutation.blocked || listing.position === 1}
                         onClick={() =>
                           mutation.mutate({
                             operation: 'reorder_listings',
@@ -137,7 +148,7 @@ function Sellers({
                         <button
                           type="button"
                           aria-label={`Выше: ${listing.storeName}`}
-                          disabled={mutation.isPending || mutation.isError}
+                          disabled={mutation.blocked}
                           onClick={() =>
                             mutation.mutate({
                               operation: 'reorder_listings',
@@ -158,7 +169,7 @@ function Sellers({
                         <button
                           type="button"
                           aria-label={`Ниже: ${listing.storeName}`}
-                          disabled={mutation.isPending || mutation.isError}
+                          disabled={mutation.blocked}
                           onClick={() =>
                             mutation.mutate({
                               operation: 'reorder_listings',
@@ -178,7 +189,7 @@ function Sellers({
                 ) : null}
               </>
             ) : null}
-            {selected?.id === listing.id ? (
+            {canReview && selected?.id === listing.id ? (
               <div className="karavan-module__actions">
                 <label className="karavan-module__field">
                   {listing.reviewState === 'suspended'
@@ -187,12 +198,13 @@ function Sellers({
                   <textarea
                     value={reason}
                     maxLength={2000}
+                    disabled={mutation.editingBlocked}
                     onChange={(event) => setReason(event.target.value)}
                   />
                 </label>
                 <button
                   type="button"
-                  disabled={!reason.trim() || mutation.isPending || mutation.isError}
+                  disabled={!reason.trim() || mutation.blocked}
                   onClick={() =>
                     void mutation
                       .mutateAsync({
@@ -213,12 +225,12 @@ function Sellers({
                     ? 'Сохраняем…'
                     : listing.reviewState === 'suspended'
                       ? 'Снять ограничение'
-                      : 'Скрыть витрину'}
+                      : 'Скрыть продавца'}
                 </button>
                 <MutationFailure mutation={mutation} />
                 <button
                   type="button"
-                  disabled={mutation.isPending || mutation.isError}
+                  disabled={mutation.uncertain}
                   onClick={() => setSelected(null)}
                 >
                   Отмена
@@ -229,11 +241,10 @@ function Sellers({
         ))
       ) : (
         <div className="karavan-module__actions">
-          <p>{search ? 'Ничего не найдено' : 'Витрин пока нет'}</p>
+          <p>{search ? 'Ничего не найдено' : 'Продавцов пока нет'}</p>
           {!search ? (
             <>
-              <SellerAccessAction />
-              {module.counts.pendingApplications > 0 ? (
+              {canReview && module.counts.pendingApplications > 0 ? (
                 <button type="button" onClick={onEmpty}>
                   Посмотреть заявки
                 </button>
@@ -260,26 +271,72 @@ function Sellers({
 function Offers({ search, canArrange }: { search: string; canArrange: boolean }) {
   const [kind, setKind] = useState<'product' | 'property'>('product'),
     [visibility, setVisibility] = useState<'all' | 'visible' | 'hidden'>('all');
-  const [cursor, setCursor] = useState<string | null>(null),
-    [selected, setSelected] = useState<MarketplaceOfferCard | null>(null),
+  const [selected, setSelected] = useState<MarketplaceOfferCard | null>(null),
     [reason, setReason] = useState('');
   const [notice, setNotice] = useState('');
-  useStorefrontDirty('catalog-offer', !!selected && !!reason.trim());
-  const query = useShopQuery<'catalog'>({
+  const { module } = useShop();
+  const canReview = module.permissions.includes('review_listing');
+  const [arranging, setArranging] = useState(false);
+  const detail = useShopQuery<'detail'>({ operation: 'detail' });
+  const properties = useShopQuery<'catalog'>(
+    {
+      operation: 'catalog',
+      input: { q: '', cursor: null, limit: 1, kind: 'property', visibility: 'all' },
+    },
+    !!detail.data && !detail.data.rules.allowedCategoryIds.includes('real_estate'),
+  );
+  const products = useShopQuery<'catalog'>(
+    {
+      operation: 'catalog',
+      input: { q: '', cursor: null, limit: 1, kind: 'product', visibility: 'all' },
+    },
+    !!detail.data && !detail.data.rules.allowedCategoryIds.some((id) => id !== 'real_estate'),
+  );
+  const hasProperties =
+    !detail.data ||
+    detail.data?.rules.allowedCategoryIds.includes('real_estate') ||
+    !properties.data ||
+    !!properties.data?.items.length;
+  const hasProducts =
+    !detail.data ||
+    detail.data.rules.allowedCategoryIds.some((id) => id !== 'real_estate') ||
+    !products.data ||
+    !!products.data?.items.length;
+  const activeKind =
+    !hasProducts && hasProperties
+      ? 'property'
+      : !hasProperties && kind === 'property'
+        ? 'product'
+        : kind;
+  const query = useShopPages<'catalog'>({
     operation: 'catalog',
-    input: { q: search, cursor, limit: 24, kind, visibility },
+    input: { q: search, cursor: null, limit: 24, kind: activeKind, visibility },
   });
+  const offers = uniqueShopItems(query.data?.pages.map((page) => page.items) ?? []);
   const pins = useShopQuery<'pins'>({ operation: 'pins' }, canArrange);
-  const mutation = useShopMutation((command) => {
+  const mutation = useShopMutation({ owner: 'offers', page: 'catalog' }, (command) => {
     if (command.operation === 'moderate_content') {
       setSelected(null);
       setReason('');
       setNotice(command.input.active ? 'Объявление скрыто' : 'Ограничение объявления снято');
     }
   });
-  useEffect(() => setCursor(null), [search, kind, visibility]);
+  useEffect(() => {
+    const saved = mutation.pendingCommand;
+    if (saved?.operation === 'pins_save') setArranging(true);
+    if (saved?.operation !== 'moderate_content') return;
+    setKind(saved.input.propertyId ? 'property' : 'product');
+    const subject = offers.find(
+      (offer) =>
+        offer.id === (saved.input.propertyId ?? saved.input.productId) &&
+        offer.storeId === saved.input.storeId,
+    );
+    if (subject) setSelected(subject);
+    setReason(saved.input.reason);
+  }, [mutation.pendingCommand, query.data]);
+  useStorefrontDirty('catalog-offer', (!!selected && !!reason.trim()) || mutation.uncertain);
   const savePins = (offers: MarketplaceOfferCard[]) => {
-    if (!canArrange || mutation.isPending || mutation.isError || !pins.data) return;
+    if (!canArrange || mutation.blocked || !pins.data) return;
     mutation.mutate({
       operation: 'pins_save',
       input: {
@@ -292,16 +349,23 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
   return (
     <>
       <div className="karavan-shop__filters">
-        <label>
-          Тип
-          <select value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}>
-            <option value="product">Товары и услуги</option>
-            <option value="property">Недвижимость</option>
-          </select>
-        </label>
+        {hasProperties && hasProducts ? (
+          <label>
+            Тип
+            <select
+              aria-label="Тип"
+              value={activeKind}
+              onChange={(event) => setKind(event.target.value as typeof kind)}
+            >
+              <option value="product">Товары и услуги</option>
+              <option value="property">Недвижимость</option>
+            </select>
+          </label>
+        ) : null}
         <label>
           Показ
           <select
+            aria-label="Показ"
             value={visibility}
             onChange={(event) => setVisibility(event.target.value as typeof visibility)}
           >
@@ -312,7 +376,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
         </label>
       </div>
       {notice ? <p role="status">{notice}</p> : null}
-      {!selected || !query.data?.items.some((item) => item.id === selected.id) ? (
+      {!canReview || !selected || !offers.some((item) => item.id === selected.id) ? (
         <MutationFailure mutation={mutation} />
       ) : null}
       {canArrange && pins.isError ? (
@@ -321,6 +385,11 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
       {canArrange && pins.data?.offers.length ? (
         <details>
           <summary>Закреплённые · {pins.data.offers.length}</summary>
+          {pins.data.offers.length > 1 ? (
+            <button type="button" aria-pressed={arranging} onClick={() => setArranging(!arranging)}>
+              {arranging ? 'Готово' : 'Изменить порядок'}
+            </button>
+          ) : null}
           {pins.data.offers.map((offer, index, list) => (
             <div
               className="karavan-shop__row"
@@ -330,49 +399,53 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
             >
               <div className="karavan-shop__identity">
                 <strong>{offer.title}</strong>
-                <MoveHandle
-                  label={offer.title}
-                  index={index}
-                  group="pins"
-                  disabled={mutation.isPending || mutation.isError}
-                  move={(from, to) => {
-                    if (to >= list.length) return;
-                    const next = [...list];
-                    next.splice(to, 0, ...next.splice(from, 1));
-                    savePins(next);
-                  }}
-                />
+                {arranging ? (
+                  <MoveHandle
+                    label={offer.title}
+                    index={index}
+                    group="pins"
+                    disabled={mutation.blocked}
+                    move={(from, to) => {
+                      if (to >= list.length) return;
+                      const next = [...list];
+                      next.splice(to, 0, ...next.splice(from, 1));
+                      savePins(next);
+                    }}
+                  />
+                ) : null}
               </div>
               {!offer.available ? <p>Сейчас не показывается</p> : null}
-              <div className="karavan-module__entry-actions">
-                <button
-                  type="button"
-                  disabled={index === 0 || mutation.isPending || mutation.isError}
-                  aria-label={`Выше: ${offer.title}`}
-                  onClick={() => {
-                    const next = [...list];
-                    [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
-                    savePins(next);
-                  }}
-                >
-                  Выше
-                </button>
-                <button
-                  type="button"
-                  disabled={index === list.length - 1 || mutation.isPending || mutation.isError}
-                  aria-label={`Ниже: ${offer.title}`}
-                  onClick={() => {
-                    const next = [...list];
-                    [next[index], next[index + 1]] = [next[index + 1]!, next[index]!];
-                    savePins(next);
-                  }}
-                >
-                  Ниже
-                </button>
-              </div>
+              {arranging ? (
+                <div className="karavan-module__entry-actions">
+                  <button
+                    type="button"
+                    disabled={index === 0 || mutation.blocked}
+                    aria-label={`Выше: ${offer.title}`}
+                    onClick={() => {
+                      const next = [...list];
+                      [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
+                      savePins(next);
+                    }}
+                  >
+                    Выше
+                  </button>
+                  <button
+                    type="button"
+                    disabled={index === list.length - 1 || mutation.blocked}
+                    aria-label={`Ниже: ${offer.title}`}
+                    onClick={() => {
+                      const next = [...list];
+                      [next[index], next[index + 1]] = [next[index + 1]!, next[index]!];
+                      savePins(next);
+                    }}
+                  >
+                    Ниже
+                  </button>
+                </div>
+              ) : null}
               <button
                 type="button"
-                disabled={mutation.isPending || mutation.isError}
+                disabled={mutation.blocked}
                 onClick={() => savePins(list.filter((row) => row !== offer))}
               >
                 Открепить
@@ -383,12 +456,12 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
       ) : null}
       {query.isPending ? (
         <ShopLoading />
-      ) : query.isError ? (
+      ) : !query.data ? (
         <ShopFailure error={query.error} retry={() => void query.refetch()} />
       ) : (
         <>
-          {query.data.items.length ? (
-            query.data.items.map((offer) => {
+          {offers.length ? (
+            offers.map((offer) => {
               const pinned = pins.data?.offers.some(
                 (row) => row.id === offer.id && row.kind === offer.kind,
               );
@@ -407,39 +480,41 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                     <p>Скрыто администратором: {offer.restriction.reason}</p>
                   ) : null}
                   <div className="karavan-module__entry-actions">
-                    <button
-                      type="button"
-                      disabled={mutation.isPending || mutation.isError}
-                      onClick={() => {
-                        setSelected(offer);
-                        setReason('');
-                      }}
-                    >
-                      {offer.restriction?.active ? 'Снять ограничение' : 'Скрыть'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={
-                        !canArrange ||
-                        mutation.isPending ||
-                        mutation.isError ||
-                        !pins.data ||
-                        (!pinned && (!offer.available || pins.data.offers.length >= 24))
-                      }
-                      onClick={() =>
-                        savePins(
-                          pinned
-                            ? pins.data!.offers.filter(
-                                (row) => row.id !== offer.id || row.kind !== offer.kind,
-                              )
-                            : [offer, ...pins.data!.offers],
-                        )
-                      }
-                    >
-                      {pinned ? 'Открепить' : 'Закрепить'}
-                    </button>
+                    {canReview ? (
+                      <button
+                        type="button"
+                        disabled={mutation.blocked}
+                        onClick={() => {
+                          setSelected(offer);
+                          setReason('');
+                        }}
+                      >
+                        {offer.restriction?.active ? 'Снять ограничение' : 'Скрыть'}
+                      </button>
+                    ) : null}
+                    {canArrange ? (
+                      <button
+                        type="button"
+                        disabled={
+                          mutation.blocked ||
+                          !pins.data ||
+                          (!pinned && (!offer.available || pins.data.offers.length >= 24))
+                        }
+                        onClick={() =>
+                          savePins(
+                            pinned
+                              ? pins.data!.offers.filter(
+                                  (row) => row.id !== offer.id || row.kind !== offer.kind,
+                                )
+                              : [offer, ...pins.data!.offers],
+                          )
+                        }
+                      >
+                        {pinned ? 'Открепить' : 'Закрепить'}
+                      </button>
+                    ) : null}
                   </div>
-                  {selected?.id === offer.id ? (
+                  {canReview && selected?.id === offer.id ? (
                     <div className="karavan-module__actions">
                       <label className="karavan-module__field">
                         {offer.restriction?.active
@@ -448,12 +523,13 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                         <textarea
                           value={reason}
                           maxLength={2000}
+                          disabled={mutation.editingBlocked}
                           onChange={(event) => setReason(event.target.value)}
                         />
                       </label>
                       <button
                         type="button"
-                        disabled={mutation.isPending || mutation.isError || !reason.trim()}
+                        disabled={mutation.blocked || !reason.trim()}
                         onClick={() =>
                           void mutation
                             .mutateAsync({
@@ -481,7 +557,7 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
                       <MutationFailure mutation={mutation} />
                       <button
                         type="button"
-                        disabled={mutation.isPending || mutation.isError}
+                        disabled={mutation.uncertain}
                         onClick={() => setSelected(null)}
                       >
                         Отмена
@@ -494,15 +570,17 @@ function Offers({ search, canArrange }: { search: string; canArrange: boolean })
           ) : (
             <p>{search ? 'Ничего не найдено' : 'Товаров и услуг пока нет'}</p>
           )}
-          {query.data.nextCursor ? (
-            <button type="button" onClick={() => setCursor(query.data.nextCursor)}>
-              Следующие объявления
+          {query.hasNextPage ? (
+            <button
+              type="button"
+              disabled={query.isFetchingNextPage}
+              onClick={() => void query.fetchNextPage()}
+            >
+              {query.isFetchingNextPage ? 'Загружаем…' : 'Показать ещё'}
             </button>
           ) : null}
-          {cursor ? (
-            <button type="button" onClick={() => setCursor(null)}>
-              В начало списка
-            </button>
+          {query.isFetchNextPageError ? (
+            <ShopFailure error={query.error} retry={() => void query.fetchNextPage()} />
           ) : null}
         </>
       )}
@@ -525,10 +603,12 @@ export default function ShopCatalog({ canArrange }: { canArrange: boolean }) {
   }, [search]);
   return (
     <>
+      <AddOwnOfferAction />
+      <SellerAccessAction />
       <div
         className="karavan-module__entry-actions"
         role="tablist"
-        aria-label="Витрины и предложения"
+        aria-label="Товары и продавцы"
         onKeyDown={(event) => {
           if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
           event.preventDefault();
@@ -553,7 +633,7 @@ export default function ShopCatalog({ canArrange }: { canArrange: boolean }) {
           aria-selected={tab === 'sellers'}
           onClick={() => selectTab('sellers')}
         >
-          Витрины
+          Продавцы
         </button>
         <button
           type="button"

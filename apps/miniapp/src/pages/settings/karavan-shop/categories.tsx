@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StorefrontActions, useStorefrontDirty } from '../storefront-workspace';
 import { useQuery } from '@tanstack/react-query';
 import type { MarketplaceManagementOperation } from '@maxim/contracts/karavan-marketplace-management';
@@ -12,6 +12,11 @@ import {
   useShopMutation,
   useShopQuery,
 } from './runtime';
+import {
+  sameShopRules,
+  shopRulesRequireAcceptance,
+  shopRulesNeedConfirmation,
+} from './category-changes';
 type Rules = Extract<
   MarketplaceManagementOperation,
   { operation: 'rules_preview' }
@@ -33,17 +38,22 @@ export default function ShopCategories() {
       input: PreviewInput;
       impact: ShopResponse<'rules_preview'>;
     } | null>(null);
-  const mutation = useShopMutation((command) => {
+  const mutation = useShopMutation({ owner: 'rules', page: 'categories' }, (command) => {
     if (command.operation === 'rules_update') {
       setDraft(null);
       setPreview(null);
     }
   });
+  useEffect(() => {
+    if (mutation.pendingCommand?.operation === 'rules_update')
+      setDraft(mutation.pendingCommand.input.rules);
+  }, [mutation.pendingCommand]);
   const [checking, setChecking] = useState(false),
     [error, setError] = useState<unknown>(null);
+  const [arranging, setArranging] = useState(false);
   const value = draft ?? query.data?.rules;
-  const changed = !!draft;
-  useStorefrontDirty('categories', changed || checking || mutation.isPending);
+  const changed = !!draft && !!query.data && !sameShopRules(draft, query.data.rules);
+  useStorefrontDirty('categories', changed || checking || mutation.uncertain);
   if (query.isPending || options.isPending) return <ShopLoading />;
   if (query.isError || options.isError || !value)
     return (
@@ -66,11 +76,9 @@ export default function ShopCategories() {
     setError(null);
   };
   const calculate = async () => {
+    if (checking || mutation.blocked || !changed) return;
     const original = query.data.rules;
-    const requiresAcceptance =
-      original.text !== value.text ||
-      original.allowedCategoryIds.some((id) => !value.allowedCategoryIds.includes(id)) ||
-      original.allowedSubcategoryIds.some((id) => !value.allowedSubcategoryIds.includes(id));
+    const requiresAcceptance = shopRulesRequireAcceptance(original, value);
     const delayed = requiresAcceptance && (query.data.counts.approvedListings ?? 1) > 0;
     const input: PreviewInput = {
       expectedPolicyRevision: query.data.marketplace.policyRevision,
@@ -86,13 +94,18 @@ export default function ShopCategories() {
     setChecking(true);
     setError(null);
     try {
-      setPreview({
+      const impact = await manageKaravanShop<'rules_preview'>(api, scope, {
+        operation: 'rules_preview',
         input,
-        impact: await manageKaravanShop<'rules_preview'>(api, scope, {
-          operation: 'rules_preview',
-          input,
-        }),
       });
+      if (shopRulesNeedConfirmation(impact, delayed)) setPreview({ input, impact });
+      else
+        await mutation
+          .mutateAsync({
+            operation: 'rules_update',
+            input: { ...input, commandId: crypto.randomUUID(), fingerprint: impact.fingerprint },
+          })
+          .catch(() => {});
     } catch (err) {
       setError(err);
     } finally {
@@ -110,7 +123,7 @@ export default function ShopCategories() {
           </p>
           <button
             type="button"
-            disabled={mutation.isPending}
+            disabled={mutation.blocked}
             onClick={() =>
               mutation.mutate({
                 operation: 'rules_cancel',
@@ -128,7 +141,7 @@ export default function ShopCategories() {
       ) : null}
       <fieldset
         className="karavan-shop__form"
-        disabled={mutation.isPending || checking || !!scheduled}
+        disabled={mutation.editingBlocked || checking || !!scheduled}
       >
         {options.data.categories.map((category) => {
           const enabled = value.allowedCategoryIds.includes(category.id);
@@ -211,38 +224,42 @@ export default function ShopCategories() {
           );
         })}
         {value.categoryOrder.length > 1 ? (
-          <details>
-            <summary>Порядок категорий</summary>
-            {value.categoryOrder.map((id, index) => {
-              const label = options.data.categories.find((item) => item.id === id)?.label ?? id;
-              const move = (offset: number) => {
-                const next = [...value.categoryOrder];
-                [next[index], next[index + offset]] = [next[index + offset]!, next[index]!];
-                change({ ...value, categoryOrder: next });
-              };
-              return (
-                <div className="karavan-shop__block" key={id}>
-                  <span>{label}</span>
-                  <button
-                    type="button"
-                    aria-label={`Выше: ${label}`}
-                    disabled={index === 0}
-                    onClick={() => move(-1)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Ниже: ${label}`}
-                    disabled={index === value.categoryOrder.length - 1}
-                    onClick={() => move(1)}
-                  >
-                    ↓
-                  </button>
-                </div>
-              );
-            })}
-          </details>
+          <div>
+            <button type="button" aria-pressed={arranging} onClick={() => setArranging(!arranging)}>
+              {arranging ? 'Готово' : 'Изменить порядок категорий'}
+            </button>
+            {arranging
+              ? value.categoryOrder.map((id, index) => {
+                  const label = options.data.categories.find((item) => item.id === id)?.label ?? id;
+                  const move = (offset: number) => {
+                    const next = [...value.categoryOrder];
+                    [next[index], next[index + offset]] = [next[index + offset]!, next[index]!];
+                    change({ ...value, categoryOrder: next });
+                  };
+                  return (
+                    <div className="karavan-shop__block" key={id}>
+                      <span>{label}</span>
+                      <button
+                        type="button"
+                        aria-label={`Выше: ${label}`}
+                        disabled={index === 0}
+                        onClick={() => move(-1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Ниже: ${label}`}
+                        disabled={index === value.categoryOrder.length - 1}
+                        onClick={() => move(1)}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  );
+                })
+              : null}
+          </div>
         ) : null}
         <details>
           <summary>Правила размещения</summary>
@@ -264,14 +281,11 @@ export default function ShopCategories() {
             type="button"
             className="karavan-module__primary"
             disabled={
-              checking ||
-              mutation.isPending ||
-              !value.allowedCategoryIds.length ||
-              !value.text.trim()
+              checking || mutation.blocked || !value.allowedCategoryIds.length || !value.text.trim()
             }
             onClick={() => void calculate()}
           >
-            {checking ? 'Проверяем…' : 'Проверить изменения'}
+            {checking ? 'Проверяем…' : 'Сохранить'}
           </button>
         ) : null}
       </StorefrontActions>
@@ -295,7 +309,7 @@ export default function ShopCategories() {
             <button
               type="button"
               className="karavan-module__primary"
-              disabled={mutation.isPending}
+              disabled={mutation.blocked}
               onClick={() =>
                 void mutation
                   .mutateAsync({

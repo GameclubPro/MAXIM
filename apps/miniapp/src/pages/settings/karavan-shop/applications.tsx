@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStorefrontDirty } from '../storefront-workspace';
 import type { MarketplaceApplication } from '@maxim/contracts/karavan-marketplace-management';
 import { ListingContentDisclosure } from './listing-content-disclosure';
@@ -9,9 +9,9 @@ import {
   useShopMutation,
   useShopPages,
 } from './runtime';
-import { SellerAccessAction } from './seller-access';
 import { uniqueShopItems } from './shop-journey';
 import { publicationReasons } from './listing-status';
+import { AddOwnOfferAction } from './seller-access';
 
 function Application({
   application,
@@ -22,25 +22,39 @@ function Application({
 }) {
   const [decision, setDecision] = useState<'reject' | 'changes_requested' | null>(null);
   const [reason, setReason] = useState('');
-  const mutation = useShopMutation((command, result) => {
-    if (command.operation !== 'decide') return;
-    const value = command.input.decision;
-    const label =
-      value === 'approve'
-        ? 'Витрина одобрена'
-        : value === 'reject'
-          ? 'Заявка отклонена'
-          : 'Заявка отправлена на доработку';
-    onResult(
-      value === 'approve' && 'listing' in result && result.listing.publicationReason !== 'published'
-        ? `${label}. ${publicationReasons[result.listing.publicationReason]}.`
-        : label,
-    );
-    setDecision(null);
-    setReason('');
-  });
-  const locked = mutation.isPending || mutation.isError;
-  useStorefrontDirty(`application:${application.id}`, !!decision && !!reason.trim());
+  const mutation = useShopMutation(
+    { owner: `application:${application.id}`, page: 'applications' },
+    (command, result) => {
+      if (command.operation !== 'decide') return;
+      const value = command.input.decision;
+      const label =
+        value === 'approve'
+          ? 'Продавец одобрен'
+          : value === 'reject'
+            ? 'Заявка отклонена'
+            : 'Заявка отправлена на доработку';
+      onResult(
+        value === 'approve' &&
+          'listing' in result &&
+          result.listing.publicationReason !== 'published'
+          ? `${label}. ${publicationReasons[result.listing.publicationReason]}.`
+          : label,
+      );
+      setDecision(null);
+      setReason('');
+    },
+  );
+  const locked = mutation.blocked;
+  useEffect(() => {
+    const saved = mutation.pendingCommand;
+    if (saved?.operation !== 'decide' || saved.applicationId !== application.id) return;
+    setDecision(saved.input.decision === 'approve' ? null : saved.input.decision);
+    setReason(saved.input.reason ?? '');
+  }, [application.id, mutation.pendingCommand]);
+  useStorefrontDirty(
+    `application:${application.id}`,
+    (!!decision && !!reason.trim()) || mutation.uncertain,
+  );
   const decide = async (value: 'approve' | 'reject' | 'changes_requested') => {
     await mutation.mutateAsync({
       operation: 'decide',
@@ -67,7 +81,7 @@ function Application({
         <p>Сейчас: {application.publishedProfile.name}</p>
       ) : null}
       <ListingContentDisclosure listingId={application.listingId} />
-      {application.canReview ? (
+      {application.canReview && !decision ? (
         <div className="karavan-module__entry-actions">
           <button
             type="button"
@@ -86,7 +100,6 @@ function Application({
             disabled={locked}
             onClick={() => {
               setDecision('changes_requested');
-              setReason('');
             }}
           >
             На доработку
@@ -96,26 +109,36 @@ function Application({
             disabled={locked}
             onClick={() => {
               setDecision('reject');
-              setReason('');
             }}
           >
             Отклонить
           </button>
         </div>
-      ) : (
-        <p>Вашу витрину проверяет другой администратор.</p>
-      )}
-      {decision ? (
+      ) : !application.canReview ? (
+        application.canPublishOwn ? (
+          <AddOwnOfferAction storeId={application.storeId} />
+        ) : (
+          <p>Заявку проверяет другой администратор.</p>
+        )
+      ) : null}
+      {decision && application.canReview ? (
         <div className="karavan-module__actions">
           <label className="karavan-module__field">
             {decision === 'reject' ? 'Причина отказа' : 'Что нужно исправить'}
             <textarea
               value={reason}
               maxLength={2000}
-              disabled={locked}
+              disabled={mutation.editingBlocked}
               onChange={(event) => setReason(event.target.value)}
             />
           </label>
+          <button
+            type="button"
+            disabled={mutation.editingBlocked}
+            onClick={() => setDecision(decision === 'reject' ? 'changes_requested' : 'reject')}
+          >
+            {decision === 'reject' ? 'На доработку' : 'Отклонить'}
+          </button>
           <button
             type="button"
             disabled={locked || !reason.trim()}
@@ -127,7 +150,7 @@ function Application({
                 ? 'Отклонить заявку'
                 : 'Отправить на доработку'}
           </button>
-          <button type="button" disabled={locked} onClick={() => setDecision(null)}>
+          <button type="button" disabled={mutation.uncertain} onClick={() => setDecision(null)}>
             Отмена
           </button>
         </div>
@@ -149,12 +172,7 @@ export default function ShopApplications() {
   return (
     <>
       {notice ? <p role="status">{notice}</p> : null}
-      {!applications.length ? (
-        <>
-          <p>Новых заявок нет</p>
-          <SellerAccessAction />
-        </>
-      ) : null}
+      {!applications.length ? <p>Новых заявок нет</p> : null}
       {applications.map((application) => (
         <Application key={application.id} application={application} onResult={setNotice} />
       ))}

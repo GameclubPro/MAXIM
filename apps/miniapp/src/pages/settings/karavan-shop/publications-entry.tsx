@@ -1,20 +1,13 @@
 import type { ReactNode } from 'react';
 import { SettingsSectionToggle } from '../../../components/ui/settings-section-toggle';
 import { StorefrontScreen, useStorefrontWorkspace } from '../storefront-workspace';
-export default function ShopPublicationsEntry({
-  children,
-}: {
-  children: ReactNode;
-  dirty?: boolean;
-  discard?: () => void;
-  footer?: ReactNode;
-}) {
+export default function ShopPublicationsEntry({ children }: { children: ReactNode }) {
   const workspace = useStorefrontWorkspace();
   return (
     <>
       <StorefrontScreen page="home">
         <SettingsSectionToggle
-          title="Кнопки в чате"
+          title="Объявления в чате"
           icon="send"
           tone="sky"
           open={false}

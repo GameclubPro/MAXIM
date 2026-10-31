@@ -15,12 +15,12 @@ import { SettingsSectionIcon } from '../../components/ui/settings-section-toggle
 
 const pages = {
   home: 'Магазин чата',
-  catalog: 'Витрины',
+  catalog: 'Товары и услуги',
   applications: 'Заявки',
   appearance: 'Оформление',
   categories: 'Категории и правила',
   chats: 'Подключённые чаты',
-  publications: 'Кнопки в чате',
+  publications: 'Объявления в чате',
   settings: 'Настройки',
 } as const;
 export type StorefrontPage = keyof typeof pages;
@@ -103,6 +103,7 @@ export function StorefrontWorkspace({
   children: ReactNode;
 }) {
   const [page, setPage] = useState<StorefrontPage>('home');
+  const [publicationsParent, setPublicationsParent] = useState<'home' | 'settings'>('home');
   const [visited, setVisited] = useState<ReadonlySet<StorefrontPage>>(() => new Set(['home']));
   const [drafts, setDrafts] = useState<Record<string, boolean>>({});
   const [footerTarget, setFooterTarget] = useState<HTMLDivElement | null>(null);
@@ -145,6 +146,7 @@ export function StorefrontWorkspace({
   const navigate = useCallback(
     (next: StorefrontPage) => {
       positions.current.set(page, body()?.scrollTop ?? 0);
+      if (next === 'publications') setPublicationsParent(page === 'settings' ? 'settings' : 'home');
       setVisited((value) => (value.has(next) ? value : new Set([...value, next])));
       setPage(next);
     },
@@ -164,6 +166,7 @@ export function StorefrontWorkspace({
   useEffect(() => {
     if (open) return;
     setPage('home');
+    setPublicationsParent('home');
     setVisited(new Set(['home']));
     setDrafts({});
     positions.current.clear();
@@ -172,7 +175,12 @@ export function StorefrontWorkspace({
     () => ({ page, visited, navigate, reportDirty, footerTarget, setBack }),
     [page, visited, navigate, reportDirty, footerTarget, setBack],
   );
-  const parent = ['appearance', 'categories', 'chats'].includes(page) ? 'settings' : 'home';
+  const parent =
+    page === 'publications'
+      ? publicationsParent
+      : ['appearance', 'categories', 'chats'].includes(page)
+        ? 'settings'
+        : 'home';
   const goBack = customBack ?? (page !== 'home' ? () => navigate(parent) : undefined);
   return (
     <WorkspaceContext.Provider value={context}>

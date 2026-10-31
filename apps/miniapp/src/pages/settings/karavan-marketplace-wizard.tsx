@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { z } from 'zod';
 import {
   karavanMarketplaceSetupSchema,
   karavanMarketplaceCategories,
@@ -12,11 +11,7 @@ import {
   getKaravanMarketplaceSetupOptions,
   previewKaravanMarketplace,
 } from '../../lib/api/karavan-marketplace-client';
-import {
-  hydrateMirroredItem,
-  saveMirroredItem,
-  removeMirroredItem,
-} from '../../lib/native-storage';
+import { saveMirroredItem } from '../../lib/native-storage';
 import { describeUserFacingError } from '../../lib/user-facing-error';
 import {
   StorefrontActions,
@@ -24,34 +19,23 @@ import {
   useStorefrontWorkspace,
 } from './storefront-workspace';
 import { changedMarketplaceSetupReview } from './karavan-marketplace-setup-review';
+import {
+  restoreShopSetupDraft,
+  shopSetupChangeRequiresAcceptance,
+  shopSetupDraftKey,
+  type ShopSetupDraft,
+  type ShopSetupIntent,
+} from './karavan-shop/setup-intent';
+import { readShopDraftRecovery } from './karavan-shop/setup-recovery';
 
 const defaultRules =
   'Продавец отвечает за описание, актуальность предложений и выполнение договорённостей. Размещение витрин — после проверки администратора. Запрещены товары и услуги, нарушающие закон и правила MAX.';
-const draftSchema = z
-  .object({
-    mode: z.enum(['new', 'existing']),
-    existingId: z.string().uuid().nullable(),
-    name: z.string().max(120),
-    rules: z.string().max(12000),
-    categories: z.array(z.string().max(100)).max(40),
-    subcategories: z.array(z.string().max(100)).max(1000),
-    initialized: z.boolean(),
-    admissionPolicy: z.enum(['applications', 'invitation']),
-    chatIds: z
-      .array(z.string().regex(/^-?\d{1,24}$/u))
-      .min(1)
-      .max(20),
-  })
-  .strict();
-type Draft = z.infer<typeof draftSchema>;
-
 export default function KaravanMarketplaceWizard({
   api,
   chatId,
   chatTitle,
   actorId,
-  existing = false,
-  initialMarketplaceId,
+  intent,
   onSubmit,
   onCancel,
 }: {
@@ -59,15 +43,16 @@ export default function KaravanMarketplaceWizard({
   chatId: string;
   chatTitle: string;
   actorId: string;
-  existing?: boolean;
-  initialMarketplaceId?: string;
+  intent: ShopSetupIntent;
   onSubmit: (input: KaravanMarketplaceSetup) => void;
   onCancel?: () => void;
 }) {
-  const storageKey = `karavan-setup-draft:v1:${actorId}:${chatId}${initialMarketplaceId ? `:${initialMarketplaceId}` : ''}`;
-  const [draft, setDraft] = useState<Draft>({
-    mode: existing ? 'existing' : 'new',
-    existingId: initialMarketplaceId ?? null,
+  const storageKey = shopSetupDraftKey(actorId, chatId, intent);
+  const creating = intent.kind === 'create';
+  const choosingMarketplace = intent.kind === 'connect_existing' || intent.kind === 'replace';
+  const freshDraft = (): ShopSetupDraft => ({
+    mode: creating ? 'new' : 'existing',
+    existingId: intent.kind === 'add_chats' ? intent.marketplaceId : null,
     name: chatTitle.slice(0, 120),
     rules: defaultRules,
     categories: [],
@@ -76,11 +61,14 @@ export default function KaravanMarketplaceWizard({
     admissionPolicy: 'applications',
     chatIds: [chatId],
   });
+  const [draft, setDraft] = useState<ShopSetupDraft>(freshDraft);
   const [hydrated, setHydrated] = useState(false);
+  const [draftRecoveryError, setDraftRecoveryError] = useState(false);
+  const [draftRecoveryAttempt, setDraftRecoveryAttempt] = useState(0);
   const [checking, setChecking] = useState(false);
   const submitting = useRef(false);
   const rulesDetails = useRef<HTMLDetailsElement>(null);
-  const [showChats, setShowChats] = useState(false);
+  const [showChats, setShowChats] = useState(intent.kind === 'add_chats');
   const [chatSearch, setChatSearch] = useState('');
   const [visibleChats, setVisibleChats] = useState(20);
   const [notice, setNotice] = useState<string | null>(null);
@@ -92,6 +80,7 @@ export default function KaravanMarketplaceWizard({
   });
   const available = useInfiniteQuery({
     queryKey: ['karavan-available', actorId, chatId],
+    enabled: choosingMarketplace,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => getAvailableKaravanMarketplaces(api, chatId, pageParam),
     getNextPageParam: (page) => page.nextCursor,
@@ -105,12 +94,16 @@ export default function KaravanMarketplaceWizard({
     retry: false,
   });
   const previewInput = {
-    chatIds: draft.chatIds,
-    marketplaceId: draft.mode === 'existing' ? draft.existingId : null,
+    chatIds: intent.kind === 'add_chats' ? draft.chatIds : [chatId],
+    marketplaceId: creating
+      ? null
+      : intent.kind === 'add_chats'
+        ? intent.marketplaceId
+        : draft.existingId,
   };
   const preview = useQuery({
     queryKey: ['karavan-setup-preview', actorId, chatId, previewInput],
-    enabled: hydrated && (draft.mode === 'new' || !!draft.existingId),
+    enabled: hydrated && (creating || !!previewInput.marketplaceId),
     queryFn: () => previewKaravanMarketplace(api, chatId, previewInput),
     retry: false,
     refetchOnWindowFocus: false,
@@ -127,31 +120,27 @@ export default function KaravanMarketplaceWizard({
   }, [preview.data]);
   useEffect(() => {
     let active = true;
-    void hydrateMirroredItem(storageKey)
-      .then((raw) => {
-        if (!active || !raw) return;
-        try {
-          const parsed = draftSchema.safeParse(JSON.parse(raw));
-          if (
-            parsed.success &&
-            parsed.data.chatIds[0] === chatId &&
-            new Set(parsed.data.chatIds).size === parsed.data.chatIds.length
-          )
-            setDraft(parsed.data);
-        } catch {
-          /* Invalid local drafts never become commands. */
+    setHydrated(false);
+    setDraftRecoveryError(false);
+    void readShopDraftRecovery(actorId, chatId, intent)
+      .then((state) => {
+        if (!active) return;
+        if (state.status === 'error') {
+          setDraftRecoveryError(true);
+          return;
         }
+        if (state.draft) setDraft(state.draft);
+        setHydrated(true);
       })
-      .catch(() => {})
-      .finally(() => {
-        if (active) setHydrated(true);
+      .catch(() => {
+        if (active) setDraftRecoveryError(true);
       });
     return () => {
       active = false;
     };
-  }, [storageKey, chatId]);
+  }, [storageKey, actorId, chatId, draftRecoveryAttempt]);
   useEffect(() => {
-    if (!hydrated || draft.initialized || !options.data) return;
+    if (!creating || !hydrated || draft.initialized || !options.data) return;
     setDraft((value) => ({
       ...value,
       name: value.name || options.data.chatTitle.slice(0, 120),
@@ -161,14 +150,14 @@ export default function KaravanMarketplaceWizard({
       ),
       initialized: true,
     }));
-  }, [hydrated, draft.initialized, options.data]);
+  }, [creating, hydrated, draft.initialized, options.data]);
   useEffect(() => {
     if (hydrated) saveMirroredItem(storageKey, JSON.stringify(draft));
   }, [draft, hydrated, storageKey]);
-  const change = (patch: Partial<Draft>) => {
+  const change = (patch: Partial<ShopSetupDraft>) => {
     setDraft((value) => ({ ...value, ...patch }));
     setNotice(null);
-    setAccepted(false);
+    if (shopSetupChangeRequiresAcceptance(patch)) setAccepted(false);
   };
   const back = () => {
     if (checking || preview.isFetching) return false;
@@ -180,8 +169,16 @@ export default function KaravanMarketplaceWizard({
   async function submit() {
     if (!preview.data || !accepted || submitting.current) return;
     setNotice(null);
+    if (!restoreShopSetupDraft(JSON.stringify(draft), chatId, intent)) {
+      setNotice('Настройки не соответствуют выбранному действию. Откройте его заново.');
+      return;
+    }
+    if (intent.kind === 'add_chats' && draft.chatIds.length < 2) {
+      setNotice('Выберите хотя бы один дополнительный чат.');
+      return;
+    }
     if (
-      draft.mode === 'new' &&
+      creating &&
       (!draft.name.trim() ||
         !draft.rules.trim() ||
         draft.categories.length === 0 ||
@@ -221,8 +218,8 @@ export default function KaravanMarketplaceWizard({
       }
       const parsed = karavanMarketplaceSetupSchema.safeParse({
         operationId: crypto.randomUUID(),
-        chatIds: draft.chatIds,
-        ...(draft.mode === 'new'
+        chatIds: previewInput.chatIds,
+        ...(creating
           ? {
               create: {
                 name: draft.name,
@@ -242,7 +239,7 @@ export default function KaravanMarketplaceWizard({
               },
             }
           : {
-              existingMarketplaceId: draft.existingId,
+              existingMarketplaceId: previewInput.marketplaceId,
               expectedPolicyRevision: latest.target?.marketplace.policyRevision,
             }),
         bindingExpectations: latest.chats.map((chat) => ({
@@ -250,7 +247,7 @@ export default function KaravanMarketplaceWizard({
           generation: chat.binding?.generation ?? null,
           action: !chat.binding
             ? 'bind_chat'
-            : chat.marketplace?.id === draft.existingId && draft.mode === 'existing'
+            : chat.marketplace?.id === previewInput.marketplaceId && !creating
               ? chat.binding.state === 'verified'
                 ? 'bind_chat'
                 : 'recover_chat'
@@ -263,7 +260,6 @@ export default function KaravanMarketplaceWizard({
       }
       // FLAG: The parent persists the immutable submitted command before any request.
       onSubmit(parsed.data);
-      removeMirroredItem(storageKey);
     } catch (error) {
       setNotice(
         describeUserFacingError(error, 'Не удалось проверить подключение. Повторите попытку.'),
@@ -280,6 +276,7 @@ export default function KaravanMarketplaceWizard({
       .filter(
         (item) =>
           item.marketplace.status !== 'archived' &&
+          (intent.kind !== 'replace' || item.marketplace.id !== intent.previousMarketplaceId) &&
           (item.permissions.includes('bind_chat') ||
             item.permissions.includes('manage_network') ||
             item.permissions.includes('manage_marketplace')),
@@ -290,11 +287,44 @@ export default function KaravanMarketplaceWizard({
         chat.id !== chatId &&
         chat.title.toLocaleLowerCase('ru').includes(chatSearch.toLocaleLowerCase('ru')),
     ) ?? [];
+  if (draftRecoveryError)
+    return (
+      <div className="karavan-module__wizard">
+        <p role="alert">
+          Не удалось восстановить сохранённые настройки. Повторите проверку. Если ошибка останется,
+          обратитесь в поддержку.
+        </p>
+        <button type="button" onClick={() => setDraftRecoveryAttempt((attempt) => attempt + 1)}>
+          Повторить проверку настроек
+        </button>
+        <p>Можно начать заново. Сохранённый ввод будет заменён.</p>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(freshDraft());
+            setAccepted(false);
+            setDraftRecoveryError(false);
+            setHydrated(true);
+          }}
+        >
+          Начать без черновика
+        </button>
+        {onCancel ? (
+          <button type="button" onClick={back}>
+            Отмена
+          </button>
+        ) : null}
+      </div>
+    );
+  if (!hydrated)
+    return (
+      <div className="karavan-module__wizard" role="status">
+        Проверяем сохранённые настройки…
+      </div>
+    );
   return (
     <div className="karavan-module__wizard">
-      {!existing && draft.mode === 'new' ? (
-        <p>Витрины продавцов вашего чата в одном магазине.</p>
-      ) : null}
+      {creating ? <p>Витрины продавцов вашего чата в одном магазине.</p> : null}
       {notice ? (
         <p role="alert" className="karavan-module__notice">
           {notice}
@@ -304,7 +334,7 @@ export default function KaravanMarketplaceWizard({
         className="karavan-module__wizard-fields"
         disabled={!hydrated || preview.isFetching || checking}
       >
-        {draft.mode === 'existing' ? (
+        {choosingMarketplace ? (
           <fieldset className="karavan-module__choices">
             <legend>Доступные магазины</legend>
             {available.isPending ? (
@@ -342,7 +372,7 @@ export default function KaravanMarketplaceWizard({
             ) : null}
           </fieldset>
         ) : null}
-        {draft.mode === 'new' ? (
+        {creating ? (
           <>
             <label className="karavan-module__field">
               <span>Название магазина</span>
@@ -362,27 +392,33 @@ export default function KaravanMarketplaceWizard({
                 </button>
               </div>
             ) : null}
-            <fieldset className="karavan-module__choices">
-              <legend>Кто может подать заявку</legend>
-              <label>
-                <input
-                  type="radio"
-                  name="karavan-admission"
-                  checked={draft.admissionPolicy === 'applications'}
-                  onChange={() => change({ admissionPolicy: 'applications' })}
-                />
-                Все желающие
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="karavan-admission"
-                  checked={draft.admissionPolicy === 'invitation'}
-                  onChange={() => change({ admissionPolicy: 'invitation' })}
-                />
-                По приглашению
-              </label>
-            </fieldset>
+            <details className="karavan-module__setup-rules">
+              <summary>
+                Продавцы:{' '}
+                {draft.admissionPolicy === 'applications' ? 'все желающие' : 'по приглашению'}
+              </summary>
+              <fieldset className="karavan-module__choices">
+                <legend>Кто может подать заявку</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="karavan-admission"
+                    checked={draft.admissionPolicy === 'applications'}
+                    onChange={() => change({ admissionPolicy: 'applications' })}
+                  />
+                  Все желающие
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="karavan-admission"
+                    checked={draft.admissionPolicy === 'invitation'}
+                    onChange={() => change({ admissionPolicy: 'invitation' })}
+                  />
+                  По приглашению
+                </label>
+              </fieldset>
+            </details>
             <p>Витрины появляются после вашего одобрения.</p>
             <details ref={rulesDetails} className="karavan-module__setup-rules">
               <summary>Категории и правила</summary>
@@ -459,7 +495,7 @@ export default function KaravanMarketplaceWizard({
               </label>
             </details>
           </>
-        ) : draft.existingId ? (
+        ) : previewInput.marketplaceId ? (
           target ? (
             <>
               <strong>{target.marketplace.name}</strong>
@@ -489,85 +525,73 @@ export default function KaravanMarketplaceWizard({
             </>
           ) : null
         ) : null}
-        {draft.mode === 'existing' ||
-        eligible.length > 0 ||
-        available.hasNextPage ||
-        available.isError ? (
-          <button
-            type="button"
-            aria-expanded={draft.mode === 'existing'}
-            onClick={() => change({ mode: draft.mode === 'existing' ? 'new' : 'existing' })}
+        {intent.kind === 'add_chats' ? (
+          <details
+            className="karavan-module__setup-chats"
+            open={showChats}
+            onToggle={(event) => setShowChats(event.currentTarget.open)}
           >
-            {draft.mode === 'existing'
-              ? 'Создать новый магазин'
-              : 'Подключить существующий магазин'}
-          </button>
-        ) : null}
-        <details
-          className="karavan-module__setup-chats"
-          open={showChats}
-          onToggle={(event) => setShowChats(event.currentTarget.open)}
-        >
-          <summary>
-            {draft.chatIds.length > 1 ? `Чаты магазина · ${draft.chatIds.length}` : 'Другие чаты'}
-          </summary>
-          <fieldset className="karavan-module__choices">
-            <legend>Чаты магазина</legend>
-            <p className="karavan-module__selected-chat">
-              {chatTitle || options.data?.chatTitle || 'Текущий чат'}
-            </p>
-            <p>Общие продавцы, правила и порядок витрин.</p>
-            <label className="karavan-module__field">
-              <span>Найти чат</span>
-              <input
-                value={chatSearch}
-                onChange={(event) => {
-                  setChatSearch(event.target.value);
-                  setVisibleChats(20);
-                }}
-              />
-            </label>
-            {chats.isPending ? (
-              <p>Загружаем чаты…</p>
-            ) : chats.isError ? (
-              <>
-                <p role="alert">Не удалось загрузить чаты.</p>
-                <button type="button" onClick={() => void chats.refetch()}>
-                  Повторить
+            <summary>
+              {draft.chatIds.length > 1 ? `Чаты магазина · ${draft.chatIds.length}` : 'Другие чаты'}
+            </summary>
+            <fieldset className="karavan-module__choices">
+              <legend>Чаты магазина</legend>
+              <p className="karavan-module__selected-chat">
+                {chatTitle || options.data?.chatTitle || 'Текущий чат'}
+              </p>
+              <p>Общие продавцы, правила и порядок витрин.</p>
+              <label className="karavan-module__field">
+                <span>Найти чат</span>
+                <input
+                  value={chatSearch}
+                  onChange={(event) => {
+                    setChatSearch(event.target.value);
+                    setVisibleChats(20);
+                  }}
+                />
+              </label>
+              {chats.isPending ? (
+                <p>Загружаем чаты…</p>
+              ) : chats.isError ? (
+                <>
+                  <p role="alert">Не удалось загрузить чаты.</p>
+                  <button type="button" onClick={() => void chats.refetch()}>
+                    Повторить
+                  </button>
+                </>
+              ) : (
+                matchingChats.slice(0, visibleChats).map((chat) => (
+                  <label key={chat.id}>
+                    <input
+                      type="checkbox"
+                      checked={draft.chatIds.includes(chat.id)}
+                      disabled={draft.chatIds.length >= 20 && !draft.chatIds.includes(chat.id)}
+                      onChange={(event) =>
+                        change({
+                          chatIds: event.target.checked
+                            ? [...draft.chatIds, chat.id]
+                            : draft.chatIds.filter((id) => id !== chat.id),
+                        })
+                      }
+                    />
+                    {chat.title}
+                  </label>
+                ))
+              )}
+              {!chats.isPending && !chats.isError && matchingChats.length === 0 ? (
+                <p>Других подходящих чатов нет.</p>
+              ) : null}
+              {matchingChats.length > visibleChats ? (
+                <button type="button" onClick={() => setVisibleChats((value) => value + 20)}>
+                  Показать ещё чаты
                 </button>
-              </>
-            ) : (
-              matchingChats.slice(0, visibleChats).map((chat) => (
-                <label key={chat.id}>
-                  <input
-                    type="checkbox"
-                    checked={draft.chatIds.includes(chat.id)}
-                    disabled={draft.chatIds.length >= 20 && !draft.chatIds.includes(chat.id)}
-                    onChange={(event) =>
-                      change({
-                        chatIds: event.target.checked
-                          ? [...draft.chatIds, chat.id]
-                          : draft.chatIds.filter((id) => id !== chat.id),
-                      })
-                    }
-                  />
-                  {chat.title}
-                </label>
-              ))
-            )}
-            {!chats.isPending && !chats.isError && matchingChats.length === 0 ? (
-              <p>Других подходящих чатов нет.</p>
-            ) : null}
-            {matchingChats.length > visibleChats ? (
-              <button type="button" onClick={() => setVisibleChats((value) => value + 20)}>
-                Показать ещё чаты
-              </button>
-            ) : null}
-            {draft.chatIds.length === 20 ? (
-              <p>За одно подключение можно выбрать до 20 чатов.</p>
-            ) : null}
-          </fieldset>
-        </details>
+              ) : null}
+              {draft.chatIds.length === 20 ? (
+                <p>За одно подключение можно выбрать до 20 чатов.</p>
+              ) : null}
+            </fieldset>
+          </details>
+        ) : null}
         {preview.isError ? (
           <div className="karavan-module__notice" role="alert">
             <p>{describeUserFacingError(preview.error, 'Не удалось проверить подключение.')}</p>
@@ -578,10 +602,10 @@ export default function KaravanMarketplaceWizard({
         ) : preview.isFetching ? (
           <p role="status">Проверяем подключение…</p>
         ) : null}
-        {preview.data && (draft.mode === 'new' || target) ? (
+        {preview.data && (creating || target) ? (
           <>
             <p>
-              {draft.mode === 'new'
+              {creating
                 ? 'Покупателям магазин пока недоступен.'
                 : 'Подключаемые чаты получат витрины и правила этого магазина.'}
             </p>
@@ -627,16 +651,21 @@ export default function KaravanMarketplaceWizard({
               !accepted ||
               !preview.data ||
               preview.isError ||
-              (draft.mode === 'existing' && (!draft.existingId || !target)) ||
-              (draft.mode === 'new' && !options.data)
+              (!creating && (!previewInput.marketplaceId || !target)) ||
+              (creating && !options.data) ||
+              (intent.kind === 'add_chats' && draft.chatIds.length < 2)
             }
             onClick={() => void submit()}
           >
             {checking || preview.isFetching
               ? 'Проверяем…'
-              : draft.mode === 'new'
+              : creating
                 ? 'Создать магазин'
-                : 'Подключить'}
+                : intent.kind === 'add_chats'
+                  ? 'Подключить чаты'
+                  : intent.kind === 'replace'
+                    ? 'Заменить магазин'
+                    : 'Подключить'}
           </button>
           {onCancel ? (
             <button type="button" disabled={checking || preview.isFetching} onClick={back}>
