@@ -24,6 +24,7 @@ import { readCurrentManifest, validateCompleteReleaseManifest } from './release-
 import { WORKSTATION_IDENTITY } from './commercial-llm-workstation-profile.mjs';
 import { poolProfile } from './commercial-llm-pool-profile.mjs';
 import { recoverCommercialLlmCpuQuarantine } from './commercial-llm-cpu-recovery.mjs';
+import { assertCommercialLlmCpuControllerIdentity } from './commercial-llm-cpu-controller-identity.mjs';
 
 import {
   COMMERCIAL_LLM_RUNTIME,
@@ -1572,6 +1573,49 @@ function cpuRecoveryGeneration(container) {
   };
 }
 
+export async function waitCommercialLlmCpuDispatcherReady(
+  generation,
+  {
+    inspect = () => inspectReleaseApiClient('api-moderation-background'),
+    now = Date.now,
+    pause = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds)),
+    progress = () => {},
+  } = {},
+) {
+  const deadline = now() + 180000;
+  let observedAt = null;
+  while (now() < deadline) {
+    const client = inspect();
+    if (now() >= deadline) break;
+    assertCommercialLlmApiClient(client, {
+      service: 'api-moderation-background',
+      imageId: generation.imageId,
+    });
+    const observed = cpuRecoveryGeneration(client);
+    if (
+      client.State.Status !== 'running' ||
+      client.State.Paused !== false ||
+      client.State.Restarting !== false ||
+      client.State.Dead !== false ||
+      ['id', 'imageId', 'startedAt', 'restartCount'].some(
+        (key) => observed[key] !== generation[key],
+      )
+    )
+      throw new Error('commercial_llm_cpu_recovery_generation_drift');
+    // FLAG: This role is headless and has no Docker healthcheck. Its maintained role
+    // readiness is the attested running generation, stable across independent reads.
+    // Functional CPU work and admission losses require the separate acceptance window.
+    if (observedAt !== null && now() - observedAt >= 5000) {
+      if (now() >= deadline) break;
+      return;
+    }
+    observedAt ??= now();
+    progress(new Date(deadline).toISOString());
+    await pause(5000);
+  }
+  throw new Error('commercial_llm_cpu_recovery_dispatcher_readiness_deadline');
+}
+
 async function recoverCpuQuarantine(sourceSha, operationId, expectedPlanSha256) {
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
@@ -1650,6 +1694,17 @@ async function recoverCpuQuarantine(sourceSha, operationId, expectedPlanSha256) 
     run('docker', ['start', expected.id], { timeout: 60000 });
   };
   const existing = readJournal();
+  const planSourceSha = assertCommercialLlmCpuControllerIdentity({
+    controllerSha: sourceSha,
+    journal: existing,
+    repositoryRoot: process.cwd(),
+  });
+  const requireOriginalControllerForMutation = () => {
+    // FLAG: Compatible old-source tail completion may attest and journal readiness only.
+    // It cannot start/stop a process or perform another lease CAS, even after later drift.
+    if (planSourceSha !== sourceSha)
+      throw new Error('commercial_llm_cpu_recovery_late_resume_mutation_refused');
+  };
   if (expectedPlanSha256 && existing?.phase !== 'complete') {
     // FLAG: These existing floors and pinned artifacts apply before either captured process stops.
     // Recovery changes no image, model weights, source proof, cooldown or other Redis key.
@@ -1657,7 +1712,7 @@ async function recoverCpuQuarantine(sourceSha, operationId, expectedPlanSha256) 
     await verifyPinnedArtifacts(slotsPin);
   }
   const result = await recoverCommercialLlmCpuQuarantine({
-    sourceSha,
+    sourceSha: planSourceSha,
     operationId,
     expectedPlanSha256,
     apply: expectedPlanSha256 !== undefined,
@@ -1670,6 +1725,7 @@ async function recoverCpuQuarantine(sourceSha, operationId, expectedPlanSha256) 
       },
       leaseStatus: () => leaseCommand('observe'),
       releaseLease: (_operationId, fingerprint) => {
+        requireOriginalControllerForMutation();
         // FLAG: Reattest both original stopped generations immediately before the exact CAS.
         // An idle slot or a missing key is never proof that this operation released its lease.
         const journal = readJournal();
@@ -1687,38 +1743,38 @@ async function recoverCpuQuarantine(sourceSha, operationId, expectedPlanSha256) 
         if (released.state !== 'released_receipt' || released.fingerprint !== fingerprint)
           throw new Error('commercial_llm_cpu_recovery_release_unproved');
       },
-      stopDispatcher: (generation) => stop('dispatcher', generation),
-      stopModel: (generation) => stop('model', generation),
-      startModel: (generation) => start('model', generation),
-      startDispatcher: (generation) => start('dispatcher', generation),
+      stopDispatcher: (generation) => {
+        requireOriginalControllerForMutation();
+        return stop('dispatcher', generation);
+      },
+      stopModel: (generation) => {
+        requireOriginalControllerForMutation();
+        return stop('model', generation);
+      },
+      startModel: (generation) => {
+        requireOriginalControllerForMutation();
+        return start('model', generation);
+      },
+      startDispatcher: (generation) => {
+        requireOriginalControllerForMutation();
+        return start('dispatcher', generation);
+      },
       waitModelReady: async (generation) => {
         await waitUntilReady(generation.id);
         smoke(generation.id);
       },
-      waitDispatcherReady: async (generation) => {
-        const deadline = Date.now() + 180000;
-        while (Date.now() < deadline) {
-          const client = inspectReleaseApiClient('api-moderation-background');
-          const observed = cpuRecoveryGeneration(client);
-          if (
-            ['id', 'imageId', 'startedAt', 'restartCount'].some(
-              (key) => observed[key] !== generation[key],
-            )
-          )
-            throw new Error('commercial_llm_cpu_recovery_generation_drift');
-          if (client.State.Health?.Status === 'healthy') return;
-          emit('cpu_recovery_readiness', {
-            operationId,
-            stage: 'dispatcher',
-            deadline: new Date(deadline).toISOString(),
-          });
-          await new Promise((done) => setTimeout(done, 5000));
-        }
-        throw new Error('commercial_llm_cpu_recovery_dispatcher_readiness_deadline');
-      },
+      waitDispatcherReady: (generation) =>
+        waitCommercialLlmCpuDispatcherReady(generation, {
+          progress: (deadline) =>
+            emit('cpu_recovery_readiness', {
+              operationId,
+              component: 'dispatcher',
+              deadline,
+            }),
+        }),
     },
   });
-  emit('cpu_quarantine_recovery', result);
+  emit('cpu_quarantine_recovery', { ...result, controllerSha: sourceSha });
 }
 
 async function cli(argv) {
