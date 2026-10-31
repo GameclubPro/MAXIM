@@ -1,4 +1,14 @@
 import {
+  MaxApiInternalRateLimitError,
+  type MaxApiRateLimitScope,
+} from './max-api-internal-rate-limit.error';
+export { MaxApiInternalRateLimitError } from './max-api-internal-rate-limit.error';
+import {
+  MaxModerationApiBudget,
+  MaxModerationApiBudgetError,
+  type MaxMuteApiBudgetScope,
+} from './max-moderation-api-budget';
+import {
   HIGHER_PRIORITY_ACTIVITY_KEY,
   HIGHER_PRIORITY_ACTIVITY_UNAVAILABLE_KEY,
   HIGHER_PRIORITY_ACTIVITY_LEASE_MS,
@@ -433,33 +443,6 @@ export function isMaxApiCircuitOpenError(error: unknown): error is MaxApiCircuit
       (error as { code?: unknown }).code === 'MAX_API_CIRCUIT_OPEN' &&
       (error as { preDispatch?: unknown }).preDispatch === true)
   );
-}
-
-type MaxApiRateLimitScope =
-  | 'bot'
-  | 'role_class'
-  | 'chat'
-  | 'message_target'
-  | 'retention_fleet'
-  | 'retention_chat'
-  | 'retention_priority'
-  | 'managed_refresh'
-  | 'external_cooldown'
-  | 'unknown';
-
-export class MaxApiInternalRateLimitError extends Error {
-  readonly code = 'MAX_API_INTERNAL_RATE_LIMIT';
-  readonly preDispatch = true;
-
-  constructor(
-    message: string,
-    readonly retryAfterMs: number,
-    // FLAG: Diagnostic attribution only; never grants retry or mutation authority.
-    readonly limitScope: MaxApiRateLimitScope = 'unknown',
-  ) {
-    super(message);
-    this.name = 'MaxApiInternalRateLimitError';
-  }
 }
 
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
@@ -1033,6 +1016,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly routedMutationsCanaryPercent: number;
   private readonly routedMutationsCanaryEntityIds: ReadonlySet<string>;
   private readonly globalRpsLimit: number;
+  private readonly globalBurstToleranceSlots: number;
   private readonly criticalGlobalRpsLimit: number;
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
@@ -1058,6 +1042,8 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly circuitHalfOpenProbeSec: number;
   private readonly resumableVideoUploadEnabled: boolean;
   private readonly limiterRedis: Redis;
+  private readonly muteApiBudget: MaxModerationApiBudget;
+  private readonly muteApiProtectionEnabled: boolean;
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly higherPriorityActivityTimers = new Map<string, NodeJS.Timeout>();
   private readonly pendingHigherPriorityActivityReleases = new Set<Promise<void>>();
@@ -1156,6 +1142,10 @@ export class MaxClientService implements OnModuleDestroy {
       this.readConfigInt(configService.get('MAX_API_GLOBAL_RPS'), DEFAULT_MAX_API_GLOBAL_RPS),
       DEFAULT_MAX_API_GLOBAL_RPS,
     );
+    this.globalBurstToleranceSlots = Math.min(
+      this.globalRpsLimit - 1,
+      this.readConfigInt(configService.get('MAX_API_GLOBAL_BURST'), this.globalRpsLimit - 1, 0),
+    );
     this.criticalGlobalRpsLimit = this.readConfigInt(
       configService.get('MAX_API_GLOBAL_RPS_CRITICAL'),
       Math.max(1, Math.floor(this.globalRpsLimit * 0.45)),
@@ -1251,9 +1241,14 @@ export class MaxClientService implements OnModuleDestroy {
       DEFAULT_MAX_API_CIRCUIT_HALF_OPEN_PROBE_SEC,
     );
     this.limiterRedis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.muteApiBudget = new MaxModerationApiBudget(configService.getOrThrow<string>('REDIS_URL'));
+    this.muteApiProtectionEnabled =
+      configService.get('MAX_MUTED_USER_API_PROTECTION_ENABLED') !== false &&
+      configService.get('MAX_MUTED_USER_API_PROTECTION_ENABLED') !== 'false';
   }
 
   async onModuleDestroy() {
+    this.muteApiBudget.close();
     this.actionFailureLog.close();
     this.mediaUploadValidationCache.clear();
     for (const timer of this.higherPriorityActivityTimers.values()) clearInterval(timer);
@@ -1282,6 +1277,10 @@ export class MaxClientService implements OnModuleDestroy {
       }
     }
     await this.limiterRedis.quit();
+  }
+
+  runWithMuteApiBudget<T>(scope: MaxMuteApiBudgetScope, callback: () => Promise<T>): Promise<T> {
+    return this.muteApiProtectionEnabled ? this.muteApiBudget.run(scope, callback) : callback();
   }
 
   async deleteMessage(chatId: string, messageId: string, options?: MaxActionDispatchOptions) {
@@ -7252,6 +7251,10 @@ export class MaxClientService implements OnModuleDestroy {
         this.actionHealthService.recordSuccessForLane(actionHealthLane, bot.id);
         return result;
       } catch (error: unknown) {
+        if (error instanceof MaxModerationApiBudgetError) {
+          await this.releaseUnusedHalfOpenProbe(bot.id, circuitPermit);
+          throw error;
+        }
         if (
           options.deferredQuotaState?.error === error &&
           error instanceof MaxApiInternalRateLimitError
@@ -8459,6 +8462,9 @@ export class MaxClientService implements OnModuleDestroy {
       {
         key: `maxapi:gcra:v1:bot:${botId}:all`,
         limit: this.globalRpsLimit,
+        // FLAG: Pace the shared token across roles when burst is zero. Keep its
+        // existing TAT, rolling-window and cooldown keys so rollout retains debt.
+        burstToleranceSlots: this.globalBurstToleranceSlots,
         reason: `MAX API per-bot rate limit exceeded for bot ${botId}`,
         limitScope: 'bot',
       },
@@ -9360,6 +9366,7 @@ export class MaxClientService implements OnModuleDestroy {
         // FLAG: Reserve the unchanged quota once at this exact HTTP mutation, after remote
         // preparation. Recheck the SQL route epoch after waits, then grant the feature permit last.
         await this.runPreDispatchMutationGuard(async () => {
+          this.muteApiBudget.consumeRequest();
           const proof = await this.assertChatMutationExecutionProof(
             scope.chatId,
             bot.id,
@@ -9404,8 +9411,11 @@ export class MaxClientService implements OnModuleDestroy {
             await verifyExecutionProof('feature qualification');
             await scope.preparePayload?.(config);
           });
+          this.muteApiBudget.assertRequestAllowed();
         }, scope.guardCode);
         scope.onDispatchAttempt?.();
+      } else {
+        this.muteApiBudget.consumeRequest();
       }
       this.recordPriorityHttpAttempt();
       return await performMaxHttpRequest({
@@ -9443,6 +9453,7 @@ export class MaxClientService implements OnModuleDestroy {
     const bot = this.getCurrentBot();
     const { skipAuthorization, ...requestConfig } = config;
     const headers = requestConfig.headers as Record<string, string> | undefined;
+    this.muteApiBudget.consumeRequest();
     this.recordPriorityHttpAttempt();
     const response = await firstValueFrom(
       this.httpService.request<T>({

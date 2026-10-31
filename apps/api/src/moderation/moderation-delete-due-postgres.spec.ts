@@ -52,7 +52,9 @@ describePostgres('PostgreSQL delete due selection', () => {
       'CREATE INDEX due_idx ON moderation_delete_intents(status, next_attempt_at, execute_at)',
     );
     await client.query(`CREATE TABLE moderation_delete_intent_reasons (
-      intent_id text NOT NULL, rule_code text NOT NULL, reason_key text NOT NULL, metadata jsonb
+      intent_id text NOT NULL, rule_code text NOT NULL, reason_key text NOT NULL, metadata jsonb,
+      id text NOT NULL DEFAULT 'fixture-reason',
+      created_at timestamp NOT NULL DEFAULT '2026-01-01'
     )`);
     await client.query(
       'CREATE INDEX reason_idx ON moderation_delete_intent_reasons(intent_id, reason_key)',
@@ -120,6 +122,7 @@ describePostgres('PostgreSQL delete due selection', () => {
       [count],
     );
     await client.query(`INSERT INTO moderation_delete_intent_reasons
+      (intent_id, rule_code, reason_key, metadata)
       SELECT id, 'BOT_MESSAGE_AUTO_DELETE', 'fixture', '{}'::jsonb FROM moderation_delete_intents`);
     await client.query('ANALYZE moderation_delete_intents');
     await client.query('ANALYZE moderation_delete_intent_reasons');
@@ -180,6 +183,72 @@ describePostgres('PostgreSQL delete due selection', () => {
     },
   );
 
+  it('indexes the production active-mute projection independently of unrelated reason history', async () => {
+    await seed(50_000);
+    await client.query(
+      "UPDATE moderation_delete_intent_reasons SET rule_code='MUTE_ACTIVE_DELETE' WHERE intent_id='7'",
+    );
+    await client.query("DELETE FROM moderation_delete_intent_reasons WHERE intent_id='9'");
+    await client.query('ANALYZE moderation_delete_intent_reasons');
+    const selectors = service as unknown as {
+      intentColumnsSql(alias?: string): Prisma.Sql;
+      intentSelectSql(alias: string): Prisma.Sql;
+    };
+    // FLAG: Exercise the real derived projection. Only base columns absent from this
+    // disposable schema are narrowed; no production reason predicate is duplicated here.
+    const columns = jest
+      .spyOn(selectors, 'intentColumnsSql')
+      .mockReturnValue(Prisma.sql`intent."id"`);
+    try {
+      for (const [id, activeMuteDeleteReason] of [
+        ['7', true],
+        ['8', false],
+        ['9', false],
+      ] as const) {
+        const statement = Prisma.sql`
+          SELECT ${selectors.intentSelectSql('intent')}
+          FROM moderation_delete_intents intent
+          WHERE intent."id" = ${id}
+          LIMIT 1
+        `;
+        const result = await client.query<{ id: string; activeMuteDeleteReason: boolean }>(
+          statement.text,
+          statement.values,
+        );
+        expect(result.rows).toHaveLength(1);
+        expect(result.rows[0]).toMatchObject({ id, activeMuteDeleteReason });
+        const explained = await client.query(
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.text}`,
+          statement.values,
+        );
+        const nodes: Plan[] = [];
+        const visit = (node: Plan) => {
+          nodes.push(node);
+          node.Plans?.forEach(visit);
+        };
+        visit(explained.rows[0]['QUERY PLAN'][0].Plan as Plan);
+        const muteScans = nodes.filter(
+          (node) =>
+            node['Relation Name'] === 'moderation_delete_intent_reasons' &&
+            node.Alias === 'mute_reason',
+        );
+        expect(muteScans).toHaveLength(1);
+        expect(muteScans[0]).toMatchObject({ 'Index Name': 'reason_idx' });
+        expect(String(muteScans[0]!['Index Cond'])).toContain('intent_id');
+        const visited = (node: Plan) =>
+          (Number(node['Actual Rows']) + Number(node['Rows Removed by Filter'] ?? 0)) *
+          Number(node['Actual Loops']);
+        expect(visited(muteScans[0]!)).toBeLessThanOrEqual(1);
+        const allReasonRows = nodes
+          .filter((node) => node['Relation Name'] === 'moderation_delete_intent_reasons')
+          .reduce((sum, node) => sum + visited(node), 0);
+        expect(allReasonRows).toBeLessThan(100);
+      }
+    } finally {
+      columns.mockRestore();
+    }
+  });
+
   it('keeps due, lease, retention, rollout and retry-evidence predicates in every status lane', async () => {
     await seed(30);
     await client.query(
@@ -212,11 +281,12 @@ describePostgres('PostgreSQL delete due selection', () => {
       SELECT 'old-'||n,'AMBIGUOUS','2026-01-01','2026-01-01','2026-01-02','2026-01-01'
       FROM generate_series(1,200)n;
       INSERT INTO moderation_delete_intent_reasons
+      (intent_id,rule_code,reason_key,metadata)
       SELECT id,'BOT_MESSAGE_AUTO_DELETE','fixture','{}'::jsonb FROM moderation_delete_intents;
       INSERT INTO moderation_delete_intents (id,status,next_attempt_at,created_at)
       VALUES ('fresh-voice','RETRYABLE','2026-10-01','2026-10-01'),
         ('fresh-pending','PENDING','2026-10-01','2026-10-01');
-      INSERT INTO moderation_delete_intent_reasons VALUES
+      INSERT INTO moderation_delete_intent_reasons (intent_id,rule_code,reason_key,metadata) VALUES
         ('fresh-voice','VOICE_BLOCKED_DELETE','voice','{}'),
         ('fresh-pending','PHOTO_BLOCKED_DELETE','photo','{}');`);
     const selected = (await select()).map((row) => row.id);
