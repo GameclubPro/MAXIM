@@ -498,6 +498,7 @@ model Chat {
   events                            ModerationEvent[]
   violationMessageClaims            ModerationViolationMessageClaim[]
   moderationDeleteIntents           ModerationDeleteIntent[]
+  requiredSubscriptionCandidates    RequiredSubscriptionCandidate[]
   linkHistoryScanState              ModerationLinkHistoryScanState?
   auditLogs                         AuditLog[]
   moderatorAssignments              ManagedModeratorAssignment[]
@@ -2534,6 +2535,38 @@ model ModerationRuleFollowup {
   @@index([status, deadlineAt, id], map: "moderation_rule_followups_deadline_idx")
   @@index([intentId, status], map: "moderation_rule_followups_intent_status_idx")
   @@map("moderation_rule_followups")
+}
+
+// FLAG: Only a new initial no-effect candidate owns qualification retry. Its original
+// source/deadline and atomically owned claim+decision never derive from historical effects.
+model RequiredSubscriptionCandidate {
+  id             String    @id
+  chatId         String    @map("chat_id")
+  userId         String    @map("user_id")
+  messageId      String    @map("message_id")
+  sourceAt       DateTime  @map("source_at")
+  deadlineAt     DateTime  @map("deadline_at")
+  policySha256   String    @map("policy_sha256")
+  source         Json
+  status         String    @default("WAITING_CHECK")
+  frozenPlan     Json?     @map("frozen_plan")
+  claimId        String?   @unique(map: "required_subscription_candidates_claim_key") @map("claim_id")
+  effects        Json      @default("{}")
+  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at")
+  leaseToken     String?   @map("lease_token")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  attemptCount   Int       @default(0) @map("attempt_count")
+  lastError      String?   @map("last_error")
+  completedAt    DateTime? @map("completed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt, id], map: "required_subscription_candidates_due_idx")
+  @@index([status, leaseExpiresAt, id], map: "required_subscription_candidates_lease_idx")
+  @@index([status, deadlineAt, id], map: "required_subscription_candidates_deadline_idx")
+  @@map("required_subscription_candidates")
 }
 
 // FLAG: Authenticated voice creation evidence and edit/removal tombstones. These rows

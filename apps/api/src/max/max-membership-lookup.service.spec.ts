@@ -151,7 +151,18 @@ jest.mock('ioredis', () => {
   };
 });
 
-import { MaxMembershipLookupService } from './max-membership-lookup.service';
+import {
+  isMaxMembershipLookupLocalQuotaResolution,
+  MaxMembershipLookupService,
+} from './max-membership-lookup.service';
+import { MaxApiInternalRateLimitError, type MaxClientService } from './max-client.service';
+import { MaxModerationApiBudgetError } from './max-moderation-api-budget';
+import type { MaxBotLinkService } from './max-bot-link.service';
+import {
+  markMaxMemberMutationAttempted,
+  markMaxMemberMutationConfirmed,
+} from './max-member-error.util';
+import { markMaxMessageSendAttempted } from './max-mutation-outcome.util';
 
 function createConfigMock(overrides: Partial<Record<string, number | string | boolean>> = {}) {
   return {
@@ -1553,6 +1564,423 @@ describe('MaxMembershipLookupService', () => {
       bypassCache: true,
       sourceTag: 'required_subscription_membership',
       ignoreFailureMetricStatuses: [403, 404],
+    });
+  });
+
+  describe('membership GET local quota provenance', () => {
+    const isLocalQuotaResolution = isMaxMembershipLookupLocalQuotaResolution;
+    const localQuota = () =>
+      new MaxApiInternalRateLimitError('Membership read capacity unavailable', 250, 'bot');
+    const fixture = (overrides: Partial<Record<string, number | string | boolean>> = {}) => {
+      const maxClient: jest.Mocked<Pick<MaxClientService, 'getChatMembersAccess'>> = {
+        getChatMembersAccess: jest.fn(),
+      };
+      const bots = {
+        getDefaultBotId: jest.fn(() => 'bot-1'),
+      } satisfies Pick<MaxBotLinkService, 'getDefaultBotId'>;
+      const service = new MaxMembershipLookupService(
+        maxClient as never,
+        createConfigMock(overrides) as never,
+        bots as never,
+      );
+      return { service, maxClient };
+    };
+
+    it.each(['single', 'coalesced', 'batch'] as const)(
+      'retains only its own nominal refusal through strict backoff: %s',
+      async (mode) => {
+        jest.useFakeTimers().setSystemTime(new Date('2026-10-31T12:00:00.000Z'));
+        const f = fixture();
+        f.maxClient.getChatMembersAccess.mockRejectedValueOnce(Object.freeze(localQuota()));
+        const resolutions =
+          mode === 'batch'
+            ? [
+                ...(
+                  await f.service.getMembershipResolutions(
+                    'channel-1',
+                    ['user-1', 'user-2'],
+                    'moderation_required_subscription',
+                    { forceRefresh: true, botId: 'bot-1' },
+                  )
+                ).values(),
+              ]
+            : await Promise.all(
+                (mode === 'single' ? ['user-1'] : ['user-1', 'user-2']).map((userId) =>
+                  f.service.getMembershipResolution(
+                    'channel-1',
+                    userId,
+                    'moderation_required_subscription',
+                    { forceRefresh: true, botId: 'bot-1' },
+                  ),
+                ),
+              );
+        for (const resolution of resolutions) {
+          expect(resolution).toEqual({
+            membership: null,
+            fresh: false,
+            unavailableReason: 'membership_get_local_quota',
+          });
+          expect(isLocalQuotaResolution(resolution)).toBe(true);
+          expect(isLocalQuotaResolution({ ...resolution })).toBe(false);
+          expect(isLocalQuotaResolution(JSON.parse(JSON.stringify(resolution)))).toBe(false);
+        }
+        const repeated = await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        );
+        expect(isLocalQuotaResolution(repeated)).toBe(true);
+        const unrelatedUser = await f.service.getMembershipResolution(
+          'channel-1',
+          'unrelated-user',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        );
+        expect(unrelatedUser).toEqual({ membership: null, fresh: false });
+        expect(isLocalQuotaResolution(unrelatedUser)).toBe(false);
+        expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+
+        jest.advanceTimersByTime(15_001);
+        f.maxClient.getChatMembersAccess.mockResolvedValueOnce(new Map());
+        const recovered = await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        );
+        expect(recovered).toEqual({ membership: false, fresh: true });
+        expect(isLocalQuotaResolution(recovered)).toBe(false);
+        expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([
+      [
+        'copied fields',
+        () =>
+          Object.assign(new Error('Membership read capacity unavailable'), {
+            code: 'MAX_API_INTERNAL_RATE_LIMIT',
+            name: 'MaxApiInternalRateLimitError',
+            preDispatch: true,
+          }),
+      ],
+      ['HTTP 429', () => Object.assign(localQuota(), { response: { status: 429 } })],
+      ['empty HTTP response', () => Object.assign(localQuota(), { response: {} })],
+      ['direct HTTP status', () => Object.assign(localQuota(), { status: 429 })],
+      ['transport request', () => Object.assign(localQuota(), { request: {} })],
+      ['lost pre-dispatch evidence', () => Object.assign(localQuota(), { preDispatch: false })],
+      ['POST method', () => Object.assign(localQuota(), { config: { method: 'post' } })],
+      ['DELETE method', () => Object.assign(localQuota(), { config: { method: 'delete' } })],
+      ['send attempt', () => markMaxMessageSendAttempted(localQuota())],
+      ['member attempt', () => markMaxMemberMutationAttempted(localQuota())],
+      ['member confirmation', () => markMaxMemberMutationConfirmed(localQuota())],
+      [
+        'ambiguous effect',
+        () => new MaxApiInternalRateLimitError('Ambiguous MAX membership effect', 250),
+      ],
+      [
+        'generic timeout',
+        () => Object.assign(new Error('Membership timeout'), { code: 'ECONNABORTED' }),
+      ],
+      [
+        'HTTP 503',
+        () => Object.assign(new Error('Membership unavailable'), { response: { status: 503 } }),
+      ],
+    ] as const)('does not nominate %s as its local GET refusal', async (_label, createError) => {
+      const f = fixture();
+      f.maxClient.getChatMembersAccess.mockRejectedValueOnce(createError());
+      const result = await f.service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true, botId: 'bot-1' },
+      );
+      expect(result).toEqual({ membership: null, fresh: false });
+      expect(isLocalQuotaResolution(result)).toBe(false);
+    });
+
+    it.each(['single', 'coalesced', 'batch'] as const)(
+      'does not promote the muted-user protection budget through lookup or repeated reads: %s',
+      async (mode) => {
+        const f = fixture();
+        const error = new MaxModerationApiBudgetError('attempt_budget', 1_000);
+        expect(error).toBeInstanceOf(MaxApiInternalRateLimitError);
+        expect(error.preDispatch).toBe(true);
+        f.maxClient.getChatMembersAccess.mockRejectedValue(error);
+        const resolutions =
+          mode === 'batch'
+            ? [
+                ...(
+                  await f.service.getMembershipResolutions(
+                    'channel-1',
+                    ['user-1', 'user-2'],
+                    'moderation_required_subscription',
+                    { forceRefresh: true, botId: 'bot-1' },
+                  )
+                ).values(),
+              ]
+            : await Promise.all(
+                (mode === 'single' ? ['user-1'] : ['user-1', 'user-2']).map((userId) =>
+                  f.service.getMembershipResolution(
+                    'channel-1',
+                    userId,
+                    'moderation_required_subscription',
+                    { forceRefresh: true, botId: 'bot-1' },
+                  ),
+                ),
+              );
+        for (const result of resolutions) {
+          expect(result).toEqual({ membership: null, fresh: false });
+          expect(isLocalQuotaResolution(result)).toBe(false);
+        }
+        const repeated = await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        );
+        expect(repeated).toEqual({ membership: null, fresh: false });
+        expect(isLocalQuotaResolution(repeated)).toBe(false);
+        expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('does not lend a refusal to another bot or policy when legacy cache keys are shared', async () => {
+      const f = fixture({ MAX_MEMBERSHIP_LOOKUP_BOT_SCOPED_CACHE_ENABLED: false });
+      const pending =
+        createDeferred<Awaited<ReturnType<MaxClientService['getChatMembersAccess']>>>();
+      f.maxClient.getChatMembersAccess.mockReturnValueOnce(pending.promise);
+      const own = f.service.getMembershipResolution('channel-1', 'user-1', 'giveaway_interactive', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+        botId: 'bot-1',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      const otherBot = f.service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'giveaway_interactive',
+        {
+          forceRefresh: true,
+          allowStaleOnError: false,
+          botId: 'bot-2',
+        },
+      );
+      pending.reject(localQuota());
+      expect(isLocalQuotaResolution(await own)).toBe(true);
+      expect(await otherBot).toEqual({ membership: null, fresh: false });
+      expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+      expect(
+        await f.service.getMembershipResolution('channel-1', 'user-1', 'giveaway_draw_background', {
+          forceRefresh: true,
+          allowStaleOnError: false,
+          botId: 'bot-1',
+        }),
+      ).toEqual({ membership: null, fresh: false });
+    });
+
+    it('validates implicit routes before preserving legacy-cache follower and backoff provenance', async () => {
+      const f = fixture();
+      const pending =
+        createDeferred<Awaited<ReturnType<MaxClientService['getChatMembersAccess']>>>();
+      f.maxClient.getChatMembersAccess.mockReturnValueOnce(pending.promise);
+      let selectedBot = 'bot-1';
+      const link = { resolveBotRoute: jest.fn(async () => ({ botId: selectedBot })) };
+      const service = new MaxMembershipLookupService(
+        f.maxClient as never,
+        createConfigMock({
+          MAX_MEMBERSHIP_LOOKUP_BOT_SCOPED_CACHE_ENABLED: false,
+        }) as never,
+        link as never,
+      );
+      const own = service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true },
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const follower = service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true },
+      );
+      pending.reject(localQuota());
+      expect(isLocalQuotaResolution(await own)).toBe(true);
+      expect(isLocalQuotaResolution(await follower)).toBe(true);
+      expect(
+        isLocalQuotaResolution(
+          await service.getMembershipResolution(
+            'channel-1',
+            'user-1',
+            'moderation_required_subscription',
+            { forceRefresh: true },
+          ),
+        ),
+      ).toBe(true);
+      selectedBot = 'bot-2';
+      expect(
+        await service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true },
+        ),
+      ).toEqual({ membership: null, fresh: false });
+      expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops retained provenance after membership invalidation without borrowing chat backoff', async () => {
+      const f = fixture();
+      f.maxClient.getChatMembersAccess.mockRejectedValueOnce(localQuota());
+      expect(
+        isLocalQuotaResolution(
+          await f.service.getMembershipResolution(
+            'channel-1',
+            'user-1',
+            'moderation_required_subscription',
+            { forceRefresh: true, botId: 'bot-1' },
+          ),
+        ),
+      ).toBe(true);
+      await f.service.invalidateMemberships('channel-1', ['user-1']);
+      expect(
+        await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        ),
+      ).toEqual({ membership: null, fresh: false });
+      expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not nominate a late quota refusal after its lookup guard timed out', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-10-31T12:00:00.000Z'));
+      const f = fixture({ MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL: 100 });
+      const pending =
+        createDeferred<Awaited<ReturnType<MaxClientService['getChatMembersAccess']>>>();
+      f.maxClient.getChatMembersAccess.mockReturnValueOnce(pending.promise);
+      const lookup = f.service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true, botId: 'bot-1' },
+      );
+      await jest.advanceTimersByTimeAsync(501);
+      const result = await lookup;
+      expect(result).toEqual({ membership: null, fresh: false });
+      pending.reject(localQuota());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(isLocalQuotaResolution(result)).toBe(false);
+      expect(
+        await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        ),
+      ).toEqual({ membership: null, fresh: false });
+    });
+
+    it('does not mark an invalidated in-flight refusal or restore its backoff', async () => {
+      const f = fixture();
+      const pending =
+        createDeferred<Awaited<ReturnType<MaxClientService['getChatMembersAccess']>>>();
+      f.maxClient.getChatMembersAccess
+        .mockReturnValueOnce(pending.promise)
+        .mockResolvedValueOnce(new Map());
+      const lookup = f.service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true, botId: 'bot-1' },
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await f.service.invalidateMemberships('channel-1', ['user-1']);
+      expect(
+        await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { forceRefresh: true, botId: 'bot-1' },
+        ),
+      ).toEqual({ membership: false, fresh: true });
+      pending.reject(localQuota());
+      expect(await lookup).toEqual({ membership: null, fresh: false });
+      expect(
+        await f.service.getMembershipResolution(
+          'channel-1',
+          'user-1',
+          'moderation_required_subscription',
+          { botId: 'bot-1' },
+        ),
+      ).toEqual({ membership: false, fresh: true });
+    });
+
+    it('does not mark a superseded probe after a newer policy lookup succeeds', async () => {
+      const f = fixture();
+      const pending =
+        createDeferred<Awaited<ReturnType<MaxClientService['getChatMembersAccess']>>>();
+      f.maxClient.getChatMembersAccess
+        .mockReturnValueOnce(pending.promise)
+        .mockResolvedValueOnce(new Map());
+      const older = f.service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'giveaway_interactive',
+        { forceRefresh: true, allowStaleOnError: false, botId: 'bot-1' },
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        await f.service.getMembershipResolution('channel-1', 'user-1', 'giveaway_draw_background', {
+          forceRefresh: true,
+          allowStaleOnError: false,
+          botId: 'bot-1',
+        }),
+      ).toEqual({ membership: false, fresh: true });
+      pending.reject(localQuota());
+      expect(await older).toEqual({ membership: null, fresh: false });
+      expect(
+        await f.service.getMembershipResolution('channel-1', 'user-1', 'giveaway_interactive', {
+          botId: 'bot-1',
+        }),
+      ).toEqual({ membership: false, fresh: true });
+    });
+
+    it('returns only the healthy peer result after a nominal local refusal', async () => {
+      const f = fixture();
+      f.maxClient.getChatMembersAccess
+        .mockRejectedValueOnce(localQuota())
+        .mockResolvedValueOnce(new Map());
+      const link = {
+        resolveBotRoute: jest
+          .fn()
+          .mockResolvedValueOnce({ botId: 'bot-1' })
+          .mockResolvedValueOnce({ botId: 'bot-2' }),
+      };
+      const service = new MaxMembershipLookupService(
+        f.maxClient as never,
+        createConfigMock() as never,
+        link as never,
+      );
+      const result = await service.getMembershipResolution(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+        { forceRefresh: true },
+      );
+      expect(result).toEqual({ membership: false, fresh: true });
+      expect(isLocalQuotaResolution(result)).toBe(false);
+      expect(f.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
     });
   });
 

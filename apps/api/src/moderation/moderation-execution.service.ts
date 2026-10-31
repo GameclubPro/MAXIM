@@ -9,11 +9,15 @@ import type { PhotoDuplicateOrderingLease } from './photo-duplicate/photo-duplic
 import { MessageDuplicateMediaService } from './message-duplicate/message-duplicate-media.service';
 import type { MessageDuplicateJob } from './message-duplicate/message-duplicate.queue';
 import type { ExecuteDuplicateModerationAction } from './duplicate-moderation.actions';
+import type { RequiredSubscriptionCandidateAttempt } from './required-subscription-candidate.contract';
 
 export const MODERATION_EXECUTION_LEGACY = Symbol('MODERATION_EXECUTION_LEGACY');
 
 export type ModerationExecutionLegacy = {
   executeDuplicateAction?: ExecuteDuplicateModerationAction;
+  executeRequiredSubscriptionCandidate?(
+    attempt: RequiredSubscriptionCandidateAttempt,
+  ): Promise<void>;
   processWebhookEvent(webhookEventId: string): Promise<void>;
   processNightModeTransitionJob(
     job: NightModeTransitionJob,
@@ -32,6 +36,14 @@ export class ModerationExecutionService {
 
   async processWebhookEvent(webhookEventId: string): Promise<void> {
     await this.legacyModerationService.processWebhookEvent(webhookEventId);
+  }
+
+  async executeRequiredSubscriptionCandidate(
+    attempt: RequiredSubscriptionCandidateAttempt,
+  ): Promise<void> {
+    const execute = this.legacyModerationService.executeRequiredSubscriptionCandidate;
+    if (!execute) throw new Error('Required subscription candidate execution unavailable');
+    await execute.call(this.legacyModerationService, attempt);
   }
 
   async processMessageDuplicateJob(
