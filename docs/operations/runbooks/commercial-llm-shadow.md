@@ -211,6 +211,9 @@ cannot still reach the model's task queue. A persistent CPU pool lease after an
 uncertain result must remain held. This upgrade does not inspect, expire or clear
 Redis leases and is not a pool quarantine recovery operation; recovery needs its
 own proved model drain/replacement and exact lease ownership protocol.
+The named [CPU quarantine recovery](commercial-ai-pool.md#recovering-a-quarantined-cpu-generation)
+provides that separate protocol for the installed slots profile; it preserves the
+original receipt and restarts the same captured model and dispatcher containers.
 
 ## Readback, stopping and rollback
 

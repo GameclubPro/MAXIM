@@ -23,6 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { readCurrentManifest, validateCompleteReleaseManifest } from './release-manifest.mjs';
 import { WORKSTATION_IDENTITY } from './commercial-llm-workstation-profile.mjs';
 import { poolProfile } from './commercial-llm-pool-profile.mjs';
+import { recoverCommercialLlmCpuQuarantine } from './commercial-llm-cpu-recovery.mjs';
 
 import {
   COMMERCIAL_LLM_RUNTIME,
@@ -690,29 +691,44 @@ export function validateCommercialLlmClientSmokeResponse(response) {
   };
 }
 
-function inspectBackgroundClient() {
+export function assertCommercialLlmApiClient(client, { service, imageId, requireRunning = true }) {
+  const role = { 'api-admin': 'admin', 'api-moderation-background': 'moderation' }[service];
+  if (
+    !role ||
+    !/^sha256:[0-9a-f]{64}$/u.test(imageId ?? '') ||
+    !/^[0-9a-f]{64}$/u.test(client?.Id ?? '') ||
+    client.Image !== imageId ||
+    (requireRunning && client.State?.Running !== true) ||
+    typeof client.State?.Running !== 'boolean' ||
+    client.Config?.Labels?.['com.maxim.release-protected'] !== 'true' ||
+    client.Config?.Labels?.['com.docker.compose.project'] !== 'infra' ||
+    client.Config?.Labels?.['com.docker.compose.service'] !== service ||
+    !Array.isArray(client.Config?.Env) ||
+    client.Config.Env.some((value) => typeof value !== 'string') ||
+    JSON.stringify(client.Config.Env.filter((value) => value.startsWith('APP_ROLE='))) !==
+      JSON.stringify([`APP_ROLE=${role}`]) ||
+    JSON.stringify(client.Config.Env.filter((value) => value.startsWith('APP_SERVICE_NAME='))) !==
+      JSON.stringify([`APP_SERVICE_NAME=${service}`])
+  ) {
+    throw new Error('commercial_llm_client_identity_refused');
+  }
+  return client;
+}
+
+function inspectReleaseApiClient(service, { requireRunning = true } = {}) {
   run('node', ['infra/scripts/release-manifest.mjs', 'validate-current']);
   const manifest = readCurrentManifest('/var/lib/maxim-deploy');
   validateCompleteReleaseManifest(manifest);
   const imageId = manifest.components['api-shared'].imageId;
-  const id = run('docker', [...composeArgs, 'ps', '-q', 'api-moderation-background']);
+  const id = run('docker', [...composeArgs, 'ps', '-a', '-q', service]);
   if (!/^[0-9a-f]{64}$/u.test(id)) throw new Error('commercial_llm_client_singleton_required');
   const rows = JSON.parse(run('docker', ['inspect', id]));
-  const client = rows[0];
-  if (
-    rows.length !== 1 ||
-    client.Image !== imageId ||
-    client.State?.Running !== true ||
-    client.Config?.Labels?.['com.maxim.release-protected'] !== 'true' ||
-    client.Config?.Labels?.['com.docker.compose.project'] !== 'infra' ||
-    client.Config?.Labels?.['com.docker.compose.service'] !== 'api-moderation-background' ||
-    client.Config?.Env?.filter((value) => value === 'APP_ROLE=moderation').length !== 1 ||
-    client.Config?.Env?.filter((value) => value === 'APP_SERVICE_NAME=api-moderation-background')
-      .length !== 1
-  ) {
-    throw new Error('commercial_llm_client_identity_refused');
-  }
-  return id;
+  if (rows.length !== 1) throw new Error('commercial_llm_client_singleton_required');
+  return assertCommercialLlmApiClient(rows[0], { service, imageId, requireRunning });
+}
+
+function inspectBackgroundClient() {
+  return inspectReleaseApiClient('api-moderation-background').Id;
 }
 
 function checkClient() {
@@ -1546,8 +1562,181 @@ function status() {
   });
 }
 
+function cpuRecoveryGeneration(container) {
+  return {
+    id: container.Id,
+    imageId: container.Image,
+    startedAt: container.State.StartedAt,
+    restartCount: container.RestartCount,
+    running: container.State.Running,
+  };
+}
+
+async function recoverCpuQuarantine(sourceSha, operationId, expectedPlanSha256) {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+      operationId ?? '',
+    )
+  )
+    throw new Error('commercial_llm_cpu_recovery_identity_invalid');
+  const journalPath = `${stateDir}/cpu-recovery-${operationId}.json`;
+  const readJournal = () => {
+    if (!existsSync(journalPath)) return undefined;
+    assertSafeFile(journalPath, { maximumBytes: 32768 });
+    return parseCommercialLlmModelJson(readFileSync(journalPath, 'utf8'));
+  };
+  const snapshot = () => {
+    sourceAdmission(sourceSha);
+    const receipt = readReceipt();
+    if (receipt.state !== 'installed' || commercialLlmReceiptProfile(receipt) !== slotsPin)
+      throw new Error('commercial_llm_cpu_recovery_installed_slots_required');
+    const model = inspectContainer({
+      profile: slotsPin,
+      requireHealthy: false,
+      requireRunning: false,
+    });
+    if (model.Id !== receipt.containerId)
+      throw new Error('commercial_llm_cpu_recovery_model_receipt_drift');
+    return {
+      model: cpuRecoveryGeneration(model),
+      dispatcher: cpuRecoveryGeneration(
+        inspectReleaseApiClient('api-moderation-background', { requireRunning: false }),
+      ),
+    };
+  };
+  const leaseCommand = (operation, fingerprint) => {
+    const admin = inspectReleaseApiClient('api-admin');
+    const helperPath = 'infra/scripts/commercial-llm-cpu-lease.cjs';
+    assertSafeFile(helperPath, { maximumBytes: 32768 });
+    const result = parseCommercialLlmModelJson(
+      run(
+        'docker',
+        [
+          'exec',
+          '-i',
+          admin.Id,
+          'node',
+          '-',
+          operation,
+          operationId,
+          ...(fingerprint ? [fingerprint] : []),
+        ],
+        {
+          input: readFileSync(helperPath, 'utf8'),
+          timeout: 5000,
+          maxBuffer: 8192,
+        },
+      ),
+    );
+    if (result.schemaVersion !== 1 || result.operationId !== operationId)
+      throw new Error('commercial_llm_cpu_recovery_lease_observation_invalid');
+    return result.state === 'held_persistent'
+      ? { state: 'held', fingerprint: result.fingerprint, ttlMs: result.leaseTtlMs }
+      : { state: result.state, fingerprint: result.fingerprint };
+  };
+  const stop = (role, expected) => {
+    const before = snapshot()[role];
+    if (['id', 'imageId', 'startedAt', 'restartCount'].some((key) => before[key] !== expected[key]))
+      throw new Error('commercial_llm_cpu_recovery_generation_drift');
+    run('docker', ['stop', '--time', '30', expected.id], { timeout: 40000 });
+  };
+  const start = (role, expected) => {
+    const before = snapshot()[role];
+    if (
+      before.running ||
+      ['id', 'imageId', 'startedAt', 'restartCount'].some((key) => before[key] !== expected[key])
+    )
+      throw new Error('commercial_llm_cpu_recovery_generation_drift');
+    run('docker', ['start', expected.id], { timeout: 60000 });
+  };
+  const existing = readJournal();
+  if (expectedPlanSha256 && existing?.phase !== 'complete') {
+    // FLAG: These existing floors and pinned artifacts apply before either captured process stops.
+    // Recovery changes no image, model weights, source proof, cooldown or other Redis key.
+    emit('capacity', capacity(false));
+    await verifyPinnedArtifacts(slotsPin);
+  }
+  const result = await recoverCommercialLlmCpuQuarantine({
+    sourceSha,
+    operationId,
+    expectedPlanSha256,
+    apply: expectedPlanSha256 !== undefined,
+    io: {
+      snapshot,
+      readJournal,
+      writeJournal: (journal) => {
+        atomicWrite(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+        emit('cpu_recovery_progress', { operationId, phase: journal.phase });
+      },
+      leaseStatus: () => leaseCommand('observe'),
+      releaseLease: (_operationId, fingerprint) => {
+        // FLAG: Reattest both original stopped generations immediately before the exact CAS.
+        // An idle slot or a missing key is never proof that this operation released its lease.
+        const journal = readJournal();
+        const current = snapshot();
+        for (const role of ['model', 'dispatcher']) {
+          if (
+            current[role].running ||
+            ['id', 'imageId', 'startedAt', 'restartCount'].some(
+              (key) => current[role][key] !== journal.plan[role][key],
+            )
+          )
+            throw new Error('commercial_llm_cpu_recovery_generation_drift');
+        }
+        const released = leaseCommand('release', fingerprint);
+        if (released.state !== 'released_receipt' || released.fingerprint !== fingerprint)
+          throw new Error('commercial_llm_cpu_recovery_release_unproved');
+      },
+      stopDispatcher: (generation) => stop('dispatcher', generation),
+      stopModel: (generation) => stop('model', generation),
+      startModel: (generation) => start('model', generation),
+      startDispatcher: (generation) => start('dispatcher', generation),
+      waitModelReady: async (generation) => {
+        await waitUntilReady(generation.id);
+        smoke(generation.id);
+      },
+      waitDispatcherReady: async (generation) => {
+        const deadline = Date.now() + 180000;
+        while (Date.now() < deadline) {
+          const client = inspectReleaseApiClient('api-moderation-background');
+          const observed = cpuRecoveryGeneration(client);
+          if (
+            ['id', 'imageId', 'startedAt', 'restartCount'].some(
+              (key) => observed[key] !== generation[key],
+            )
+          )
+            throw new Error('commercial_llm_cpu_recovery_generation_drift');
+          if (client.State.Health?.Status === 'healthy') return;
+          emit('cpu_recovery_readiness', {
+            operationId,
+            stage: 'dispatcher',
+            deadline: new Date(deadline).toISOString(),
+          });
+          await new Promise((done) => setTimeout(done, 5000));
+        }
+        throw new Error('commercial_llm_cpu_recovery_dispatcher_readiness_deadline');
+      },
+    },
+  });
+  emit('cpu_quarantine_recovery', result);
+}
+
 async function cli(argv) {
   const [operation = 'status', ...args] = argv;
+  if (operation === 'recover-cpu-quarantine') {
+    if (
+      !(
+        args.length === 1 ||
+        (args.length === 3 && args[1] === '--apply' && /^[0-9a-f]{64}$/u.test(args[2]))
+      )
+    )
+      throw new Error(
+        'Usage: commercial-llm recover-cpu-quarantine <operation-uuid> [--apply <preview-sha256>]',
+      );
+    const sourceSha = process.env.MAXIM_EXPECTED_DEPLOY_SHA;
+    sourceAdmission(sourceSha);
+    return recoverCpuQuarantine(sourceSha, args[0], args[2]);
+  }
   if (operation === 'workstation-pool-bridge') {
     if (args.length !== 1) throw new Error('Usage: workstation-pool-bridge pc-a-4b|pc-b-9b');
     return workstationBridge(args[0]);
