@@ -2,9 +2,11 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
+import { extractHttpStatusCode } from '../common/http-error.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import {
   MAX_API_SOURCE_TAGS,
+  MaxApiInternalRateLimitError,
   MaxClientService,
   type MaxApiTrafficClass,
 } from './max-client.service';
@@ -15,6 +17,11 @@ import {
 } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { resolveExplicitMembershipAccessDenial } from './max-membership-access-error';
+import { wasMaxMemberMutationAttempted } from './max-member-error.util';
+import {
+  isMaxMutationOutcomeAmbiguous,
+  wasMaxMessageSendAttempted,
+} from './max-mutation-outcome.util';
 
 export type MaxMembershipLookupPolicy =
   | 'moderation_required_subscription'
@@ -45,7 +52,78 @@ type MaxMembershipLookupOptions = {
 export type MaxMembershipLookupResolution = {
   membership: boolean | null;
   fresh: boolean;
+  unavailableReason?: 'membership_get_local_quota';
 };
+
+type MembershipLookupScope = {
+  chatId: string;
+  userId: string;
+  policyName: MaxMembershipLookupPolicy;
+  botId: string | null;
+};
+
+type MembershipLookupBackoff = {
+  untilMs: number;
+  localQuotaScope?: MembershipLookupScope;
+};
+
+const membershipGetLocalQuotaResolutions = new WeakMap<object, MembershipLookupScope>();
+
+// FLAG: Only an actual membership GET's nominal pre-dispatch refusal can nominate a
+// bounded recheck. Copied result fields and diagnostics grant no continuation authority.
+export function isMaxMembershipLookupLocalQuotaResolution(
+  value: unknown,
+): value is MaxMembershipLookupResolution & { unavailableReason: 'membership_get_local_quota' } {
+  if (!value || typeof value !== 'object' || !membershipGetLocalQuotaResolutions.has(value))
+    return false;
+  const resolution = value as MaxMembershipLookupResolution;
+  return (
+    resolution.membership === null &&
+    resolution.fresh === false &&
+    resolution.unavailableReason === 'membership_get_local_quota'
+  );
+}
+
+function sameMembershipLookupScope(left: MembershipLookupScope, right: MembershipLookupScope) {
+  return (
+    left.chatId === right.chatId &&
+    left.userId === right.userId &&
+    left.policyName === right.policyName &&
+    left.botId === right.botId
+  );
+}
+
+function withMembershipGetLocalQuotaProvenance(
+  resolution: MaxMembershipLookupResolution,
+  scope?: MembershipLookupScope,
+): MaxMembershipLookupResolution {
+  if (!scope || resolution.membership !== null || resolution.fresh) return resolution;
+  const marked: MaxMembershipLookupResolution = {
+    ...resolution,
+    unavailableReason: 'membership_get_local_quota',
+  };
+  membershipGetLocalQuotaResolutions.set(marked, scope);
+  return marked;
+}
+
+function isMembershipGetLocalQuotaRefusal(error: unknown): error is MaxApiInternalRateLimitError {
+  const evidence = error as {
+    response?: unknown;
+    request?: unknown;
+    config?: { method?: unknown };
+  };
+  return (
+    error instanceof MaxApiInternalRateLimitError &&
+    error.preDispatch === true &&
+    extractHttpStatusCode(error) === null &&
+    evidence.response == null &&
+    evidence.request == null &&
+    (evidence.config?.method === undefined || evidence.config.method === 'get') &&
+    !wasMaxMessageSendAttempted(error) &&
+    !wasMaxMemberMutationAttempted(error) &&
+    !isMaxMutationOutcomeAmbiguous(error)
+  );
+}
 
 type MembershipCacheSnapshot = {
   isMember: boolean;
@@ -265,7 +343,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private memoryCacheSweepRemaining = 0;
   private memoryCacheSweepTimer: NodeJS.Timeout | null = null;
   private readonly inFlight = new Map<string, Promise<MaxMembershipLookupResolution>>();
-  private readonly backoffUntilMs = new Map<string, number>();
+  private readonly backoffUntilMs = new Map<string, MembershipLookupBackoff>();
   private readonly chatBackoffUntilMs = new Map<string, number>();
   private readonly chatBackoffState = new Map<string, ChatBackoffState>();
   private readonly hotChannelStates = new Map<string, HotChannelState>();
@@ -616,20 +694,38 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     for (const userId of unresolvedUserIds) {
       const cacheKey = cacheKeyByUserId.get(userId)!;
-      const backoffUntilMs = this.backoffUntilMs.get(cacheKey) ?? 0;
-      if (backoffUntilMs > now) {
-        results.set(userId, {
-          membership: this.resolveLookupFallback(
-            normalizedChatId,
-            policyName,
-            cacheKey,
-            allowStaleOnError,
-            now,
+      const backoff = this.backoffUntilMs.get(cacheKey);
+      if (backoff && backoff.untilMs > now) {
+        const quotaScopeBotId = backoff.localQuotaScope
+          ? await this.resolveLocalQuotaScopeBotId(normalizedChatId, lookupBotId)
+          : undefined;
+        const scope =
+          quotaScopeBotId !== undefined
+            ? { chatId: normalizedChatId, userId, policyName, botId: quotaScopeBotId }
+            : undefined;
+        results.set(
+          userId,
+          withMembershipGetLocalQuotaProvenance(
+            {
+              membership: this.resolveLookupFallback(
+                normalizedChatId,
+                policyName,
+                cacheKey,
+                allowStaleOnError,
+                now,
+              ),
+              fresh: false,
+            },
+            backoff.localQuotaScope &&
+              scope &&
+              sameMembershipLookupScope(backoff.localQuotaScope, scope)
+              ? scope
+              : undefined,
           ),
-          fresh: false,
-        });
+        );
         continue;
       }
+      if (backoff) this.backoffUntilMs.delete(cacheKey);
 
       const inFlightKey = this.buildInFlightKey(cacheKey, policyName, allowStaleOnError);
       const inFlight = this.inFlight.get(inFlightKey);
@@ -691,7 +787,24 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       }
 
       const promise = pendingPromises.get(userId);
-      results.set(userId, promise ? await promise : { membership: null, fresh: false });
+      const resolution = promise ? await promise : { membership: null, fresh: false };
+      const origin = membershipGetLocalQuotaResolutions.get(resolution);
+      const quotaScopeBotId = origin
+        ? await this.resolveLocalQuotaScopeBotId(normalizedChatId, lookupBotId)
+        : undefined;
+      results.set(
+        userId,
+        origin &&
+          (quotaScopeBotId === undefined ||
+            !sameMembershipLookupScope(origin, {
+              chatId: normalizedChatId,
+              userId,
+              policyName,
+              botId: quotaScopeBotId,
+            }))
+          ? { membership: resolution.membership, fresh: resolution.fresh }
+          : resolution,
+      );
     }
 
     const unresolvedIds = normalizedUserIds.filter((id) => !results.get(id)?.fresh);
@@ -824,21 +937,28 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     const probeStartedAt = new Date();
+    let membershipGetQuotaRefusal: MaxApiInternalRateLimitError | undefined;
     try {
       const accessByUserId = await this.executeLookupWithGuard(
-        async () =>
-          this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
-            trafficClass: batch.policy.trafficClass,
-            timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
-            ...(batch.policyName === 'moderation_required_subscription'
-              ? { bypassCache: true }
-              : {}),
-            ...(batch.policy.sourceTag ? { sourceTag: batch.policy.sourceTag } : {}),
-            ...(batch.policy.ignoreFailureMetricStatuses
-              ? { ignoreFailureMetricStatuses: batch.policy.ignoreFailureMetricStatuses }
-              : {}),
-            ...(batch.botId ? { botId: batch.botId } : {}),
-          }),
+        async () => {
+          try {
+            return await this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
+              trafficClass: batch.policy.trafficClass,
+              timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
+              ...(batch.policyName === 'moderation_required_subscription'
+                ? { bypassCache: true }
+                : {}),
+              ...(batch.policy.sourceTag ? { sourceTag: batch.policy.sourceTag } : {}),
+              ...(batch.policy.ignoreFailureMetricStatuses
+                ? { ignoreFailureMetricStatuses: batch.policy.ignoreFailureMetricStatuses }
+                : {}),
+              ...(batch.botId ? { botId: batch.botId } : {}),
+            });
+          } catch (error: unknown) {
+            if (isMembershipGetLocalQuotaRefusal(error)) membershipGetQuotaRefusal = error;
+            throw error;
+          }
+        },
         {
           chatId: batch.chatId,
           userIds,
@@ -876,7 +996,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         lookup.resolve({ membership: isMember, fresh: true });
       }
     } catch (error: unknown) {
-      const transient = this.isTransientLookupError(error);
+      const localQuota =
+        error === membershipGetQuotaRefusal && membershipGetQuotaRefusal !== undefined;
+      const transient = localQuota || this.isTransientLookupError(error);
       const terminalBackoffMs = this.resolveTerminalChatBackoffMs(batch.policyName);
       const terminalAccess = this.isTerminalChatAccessError(error);
       const authoritative = this.hasAuthoritativePendingLookup(batch.lookups.values());
@@ -908,12 +1030,24 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         );
         appliedBackoffMs = appliedBackoff.backoffMs;
         this.recordHotChannelFailure(batch.chatId, batch.policyName);
-        for (const lookup of batch.lookups.values()) {
+        for (const [userId, lookup] of batch.lookups) {
           if (
             this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch) &&
             this.isLatestProbe(lookup.cacheKey, lookup.probeSequence)
           ) {
-            this.backoffUntilMs.set(lookup.cacheKey, appliedBackoff.backoffUntilMs);
+            this.backoffUntilMs.set(lookup.cacheKey, {
+              untilMs: appliedBackoff.backoffUntilMs,
+              ...(localQuota
+                ? {
+                    localQuotaScope: {
+                      chatId: batch.chatId,
+                      userId,
+                      policyName: batch.policyName,
+                      botId: batch.botId,
+                    },
+                  }
+                : {}),
+            });
           }
         }
       }
@@ -932,20 +1066,32 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         backoffMs: appliedBackoffMs,
       });
 
-      for (const lookup of batch.lookups.values()) {
+      for (const [userId, lookup] of batch.lookups) {
         if (!this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
           lookup.resolve({ membership: null, fresh: false });
           continue;
         }
-        lookup.resolve({
-          membership: this.resolveLookupFallback(
-            batch.chatId,
-            batch.policyName,
-            lookup.cacheKey,
-            lookup.allowStaleOnError,
+        lookup.resolve(
+          withMembershipGetLocalQuotaProvenance(
+            {
+              membership: this.resolveLookupFallback(
+                batch.chatId,
+                batch.policyName,
+                lookup.cacheKey,
+                lookup.allowStaleOnError,
+              ),
+              fresh: false,
+            },
+            localQuota && this.isLatestProbe(lookup.cacheKey, lookup.probeSequence)
+              ? {
+                  chatId: batch.chatId,
+                  userId,
+                  policyName: batch.policyName,
+                  botId: batch.botId,
+                }
+              : undefined,
           ),
-          fresh: false,
-        });
+        );
       }
     }
   }
@@ -970,19 +1116,26 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     );
     const batchLookupPromise = (async () => {
       const probeStartedAt = new Date();
+      let membershipGetQuotaRefusal: MaxApiInternalRateLimitError | undefined;
       try {
         const accessByUserId = await this.executeLookupWithGuard(
-          async () =>
-            this.maxClient.getChatMembersAccess(chatId, normalizedUserIds, {
-              trafficClass: policy.trafficClass,
-              timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
-              ...(policyName === 'moderation_required_subscription' ? { bypassCache: true } : {}),
-              ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
-              ...(policy.ignoreFailureMetricStatuses
-                ? { ignoreFailureMetricStatuses: policy.ignoreFailureMetricStatuses }
-                : {}),
-              ...(botId ? { botId } : {}),
-            }),
+          async () => {
+            try {
+              return await this.maxClient.getChatMembersAccess(chatId, normalizedUserIds, {
+                trafficClass: policy.trafficClass,
+                timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
+                ...(policyName === 'moderation_required_subscription' ? { bypassCache: true } : {}),
+                ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
+                ...(policy.ignoreFailureMetricStatuses
+                  ? { ignoreFailureMetricStatuses: policy.ignoreFailureMetricStatuses }
+                  : {}),
+                ...(botId ? { botId } : {}),
+              });
+            } catch (error: unknown) {
+              if (isMembershipGetLocalQuotaRefusal(error)) membershipGetQuotaRefusal = error;
+              throw error;
+            }
+          },
           {
             chatId,
             userIds: normalizedUserIds,
@@ -1029,7 +1182,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
         return results;
       } catch (error: unknown) {
-        const transient = this.isTransientLookupError(error);
+        const localQuota =
+          error === membershipGetQuotaRefusal && membershipGetQuotaRefusal !== undefined;
+        const transient = localQuota || this.isTransientLookupError(error);
         const terminalBackoffMs = this.resolveTerminalChatBackoffMs(policyName);
         const terminalAccess = this.isTerminalChatAccessError(error);
         const authoritative = normalizedUserIds.some((userId) => {
@@ -1068,7 +1223,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
               this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0) &&
               this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)
             ) {
-              this.backoffUntilMs.set(cacheKey, appliedBackoff.backoffUntilMs);
+              this.backoffUntilMs.set(cacheKey, {
+                untilMs: appliedBackoff.backoffUntilMs,
+                ...(localQuota ? { localQuotaScope: { chatId, userId, policyName, botId } } : {}),
+              });
             }
           }
         }
@@ -1092,10 +1250,23 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             results.set(userId, { membership: null, fresh: false });
             continue;
           }
-          results.set(userId, {
-            membership: this.resolveLookupFallback(chatId, policyName, cacheKey, allowStaleOnError),
-            fresh: false,
-          });
+          results.set(
+            userId,
+            withMembershipGetLocalQuotaProvenance(
+              {
+                membership: this.resolveLookupFallback(
+                  chatId,
+                  policyName,
+                  cacheKey,
+                  allowStaleOnError,
+                ),
+                fresh: false,
+              },
+              localQuota && this.isLatestProbe(cacheKey, probeSequenceByKey.get(cacheKey) ?? 0)
+                ? { chatId, userId, policyName, botId }
+                : undefined,
+            ),
+          );
         }
         return results;
       }
@@ -1175,6 +1346,20 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         },
         'Failed to persist terminal MAX membership lookup bot access',
       );
+    }
+  }
+
+  private async resolveLocalQuotaScopeBotId(
+    chatId: string,
+    botId: string | null,
+  ): Promise<string | null | undefined> {
+    if (botId || !this.maxBotLinkService) return botId;
+    // FLAG: Legacy shared cache keys cannot lend another bot's local quota evidence.
+    // Resolve this caller's route only to validate retained provenance; unknown stays unmarked.
+    try {
+      return await this.resolveLookupBotId(chatId);
+    } catch {
+      return undefined;
     }
   }
 
