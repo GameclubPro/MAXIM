@@ -23,6 +23,7 @@ function fixture(
     runtime = false,
     detachedKaravan = false,
     compatibilityFiles = [],
+    majorToolingFiles = [],
     publisherChange = null,
   } = {},
 ) {
@@ -100,6 +101,10 @@ function fixture(
     writeFileSync(join(source, helperPath), helper);
     writeFileSync(join(source, 'infra/scripts/pair-release-state.mjs'), reporter);
     if (name === 'major') {
+      for (const file of majorToolingFiles) {
+        mkdirSync(dirname(join(source, file)), { recursive: true });
+        writeFileSync(join(source, file), 'reviewed CI tooling fixture\n');
+      }
       if (publisherChange) {
         const file = join(source, 'infra/scripts/vps-publisher-dispatch-rollout.sh');
         writeFileSync(
@@ -375,4 +380,25 @@ test('bootstrap refuses an unlisted compatibility JSON before advancing source',
   assert.match(refused.stderr, /application changes require normal release/u);
   assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.before);
   assert.equal(f.git(f.result.karavan.root, 'rev-parse', 'HEAD'), f.result.karavan.before);
+});
+
+test('bootstrap permits the exact CI workflow and its coverage guard', (t) => {
+  const f = fixture(t, {
+    majorToolingFiles: ['.github/workflows/ci.yml', 'scripts/ci/static-coverage.test.mjs'],
+  });
+  const installed = f.run();
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.target);
+});
+
+test('bootstrap still refuses other workflows and CI executables before source advance', (t) => {
+  for (const file of ['.github/workflows/unreviewed.yml', 'scripts/ci/impact.mjs']) {
+    const f = fixture(t, { majorToolingFiles: [file] });
+    const refused = f.run();
+    assert.notEqual(refused.status, 0, file);
+    assert.match(refused.stderr, /application changes require normal release/u);
+    assert.equal(f.git(f.result.major.root, 'rev-parse', 'HEAD'), f.result.major.before);
+    assert.equal(f.git(f.result.karavan.root, 'rev-parse', 'HEAD'), f.result.karavan.before);
+    assert.equal(existsSync(f.admission), false);
+  }
 });

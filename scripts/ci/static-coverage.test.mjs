@@ -65,6 +65,19 @@ test('preserves full public aggregates and the bounded core selection', () => {
   assert.deepEqual(parseTestGlobs(scripts['test:agent-tools:core']), fullGlobs.slice(0, -1));
 });
 
+test('Static gives core and infrastructure independent bounded jobs without dropping full coverage', () => {
+  const job = parse(workflow).jobs.static;
+  assert.deepEqual(job.strategy, {
+    'fail-fast': false,
+    matrix: {
+      part: '${{ fromJSON(needs.impact.outputs.plan).mode == \'full\' && fromJSON(\'["core","infra"]\') || fromJSON(\'["core"]\') }}',
+    },
+  });
+  assert.equal(job['timeout-minutes'], 12);
+  assert.equal(job['continue-on-error'], undefined);
+  assert.equal(job.if, undefined);
+});
+
 test('CI core and standalone infrastructure select the full inventory exactly once', () => {
   const infra = read('infra/scripts/check-infra.sh');
   assert.match(infra, /^set -euo pipefail$/mu);
@@ -146,7 +159,7 @@ test('Static runs mandatory ShellCheck once through the infrastructure owner', (
 
 test('Static keeps its budget, core checks and infrastructure coverage for full plans', () => {
   const job = jobBody('static');
-  assert.match(job, /^ {4}name: Static$/mu);
+  assert.match(job, /^ {4}name: Static \(\$\{\{ matrix\.part \}\}\)$/mu);
   assert.deepEqual(
     [...job.matchAll(/^ {4}timeout-minutes: (.+)$/gmu)].map((entry) => entry[1]),
     ['12'],
@@ -170,13 +183,21 @@ test('Static keeps its budget, core checks and infrastructure coverage for full 
     redisSetup.run,
     'npm run check:infra',
   ]);
+  const core = new Set([
+    'npm audit --omit=dev --audit-level=high',
+    'npm run check:static:ci',
+    'npm run check:docs',
+  ]);
   for (const step of parsed.steps) {
     assert.equal(
       step.if,
       infrastructure.has(step.run)
-        ? "fromJSON(needs.impact.outputs.plan).mode == 'full'"
-        : undefined,
+        ? "matrix.part == 'infra'"
+        : core.has(step.run)
+          ? "matrix.part == 'core'"
+          : undefined,
     );
+    assert.equal(step['continue-on-error'], undefined);
   }
   const runs = [...job.matchAll(/^ {6}(?:- | {2})run: (.+)$/gmu)].map((entry) => entry[1]);
   assert.deepEqual(runs, [

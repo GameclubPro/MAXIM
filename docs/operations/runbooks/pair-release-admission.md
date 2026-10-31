@@ -20,7 +20,8 @@ Prepare exact committed `main` targets in both local repositories. Major needs e
 Use a clean, unchanged Major release checkout containing the new connector. Finish existing
 wrappers first; the installer refuses active wrappers, dirty production source or unsupported branches,
 non-fast-forward targets, busy locks and application changes. It accepts only the reviewed
-tooling/docs/tests slice, including `packages/contracts/test/`, and the named wrappers' admission
+tooling/docs/tests slice, including `packages/contracts/test/`, the exact CI workflow
+`.github/workflows/ci.yml` and its `scripts/ci/static-coverage.test.mjs` guard, and the named wrappers' admission
 cleanup plumbing; runtime changes use normal releases. Major stays on `main`. Karavan may stay
 on `main` or in its normal clean detached release mode; detached advancement never moves a branch.
 

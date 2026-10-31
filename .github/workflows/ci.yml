@@ -43,10 +43,16 @@ jobs:
         run: node scripts/ci/impact.mjs plan
 
   static:
-    name: Static
+    name: Static (${{ matrix.part }})
     needs: impact
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.impact.outputs.plan).mode == 'full' && fromJSON('["core","infra"]') || fromJSON('["core"]') }}
+    # FLAG: Full plans require both bounded parts through needs.static in Required.
+    # Keep their test inventories disjoint and preserve the per-job time budget.
     # FLAG: Public test commands bound file concurrency. Native/WASM fixtures keep
     # Node's default runtime pools, independently of that process concurrency limit.
     steps:
@@ -59,21 +65,24 @@ jobs:
       - name: Fast source and generated-input preflight
         run: node scripts/agent/preflight.mjs
       - name: Audit production dependencies
+        if: matrix.part == 'core'
         run: npm audit --omit=dev --audit-level=high
       - run: npm run check:static:ci
+        if: matrix.part == 'core'
       - run: npm run check:docs
+        if: matrix.part == 'core'
       - name: Validate GitHub Actions workflows
-        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
+        if: matrix.part == 'infra'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
       - name: Prepare private Redis infrastructure fixtures
-        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
+        if: matrix.part == 'infra'
         run: |
           if ! command -v redis-server >/dev/null; then
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends redis-server
           fi
       - run: npm run check:infra
-        if: fromJSON(needs.impact.outputs.plan).mode == 'full'
+        if: matrix.part == 'infra'
 
   contracts:
     name: Contracts
