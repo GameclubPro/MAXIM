@@ -4,6 +4,10 @@ import {
 } from './message-duplicate/message-duplicate-window.script';
 import { digestDuplicateContent } from './message-duplicate/message-duplicate-content';
 import {
+  DUPLICATE_RECOMPRESSION_INDEX_SCRIPT,
+  type DuplicateRecompressionIndexInput,
+} from './message-duplicate/message-duplicate-recompression-index';
+import {
   DUPLICATE_HEAVY_ADMISSION_SCRIPT,
   MESSAGE_DUPLICATE_HEAVY_ADMISSION_KEY,
   parseDuplicateHeavyAdmission,
@@ -339,6 +343,31 @@ export class RedisCounterService implements OnModuleDestroy {
 
   async resetDuplicateWindow(chatId: string, userId: string): Promise<void> {
     await this.duplicateWindow(chatId, { op: 'reset', author: digestDuplicateContent(userId) });
+  }
+
+  async duplicateRecompressionIndex(
+    keys: readonly string[],
+    input: DuplicateRecompressionIndexInput,
+  ): Promise<string> {
+    const scope = /^dup:recompression:v1:([a-f0-9]{64}):0:[a-f0-9]{2}$/u.exec(keys[0] ?? '')?.[1];
+    if (
+      !scope ||
+      keys.length !== 8 ||
+      keys.some(
+        (key, band) =>
+          !new RegExp(`^dup:recompression:v1:${scope}:${band}:[a-f0-9]{2}$`, 'u').test(key),
+      )
+    )
+      throw new Error('Invalid duplicate recompression index keys');
+    return String(
+      await this.redis.eval(
+        DUPLICATE_RECOMPRESSION_INDEX_SCRIPT,
+        keys.length,
+        ...keys,
+        JSON.stringify(input),
+        Date.now() + 250,
+      ),
+    );
   }
 
   async mergeDuplicateTelemetry(

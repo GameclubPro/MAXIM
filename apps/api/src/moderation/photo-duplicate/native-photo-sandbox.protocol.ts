@@ -1,5 +1,7 @@
 import type { PhotoFingerprint, SupportedPhotoFormat } from './photo-fingerprint';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from './photo-fingerprint-version';
+import { PHOTO_RECOMPRESSION_VERSION } from './photo-recompression-version';
+import type { PhotoRecompressionResult } from './photo-recompression';
 
 export const PHOTO_NATIVE_SOCKET_PATH = '/run/maxim-photo/native-photo.sock';
 export const PHOTO_NATIVE_MAX_BYTES = 16_777_216;
@@ -13,7 +15,8 @@ export const PHOTO_NATIVE_PROTOCOL_VERSION = 1;
 const MAGIC = Buffer.from('MXPH');
 
 export type NativePhotoRequest = {
-  operation: 'fingerprint';
+  operation: 'fingerprint' | 'verify_recompression';
+  originalBytes?: number;
   deadlineAtMs: number;
   maxInputBytes: number;
   maxInputPixels: number;
@@ -21,7 +24,7 @@ export type NativePhotoRequest = {
   remainingPixels: number;
   expectedFormat?: SupportedPhotoFormat;
 };
-export type NativePhotoResult =
+export type NativePhotoFingerprintResult =
   | { kind: 'complete'; fingerprint: PhotoFingerprint }
   | {
       kind: 'rejected';
@@ -35,6 +38,7 @@ export type NativePhotoResult =
         | 'decode_capacity_exceeded'
         | 'native_unavailable';
     };
+export type NativePhotoResult = NativePhotoFingerprintResult | PhotoRecompressionResult;
 
 export function encodePhotoFrame(metadata: object, payload: Buffer = Buffer.alloc(0)): Buffer {
   const json = Buffer.from(JSON.stringify(metadata));
@@ -80,8 +84,19 @@ export function decodePhotoFrame(
 }
 
 export function parsePhotoRequest(value: Record<string, unknown>): NativePhotoRequest {
-  if (value.operation !== 'fingerprint' || !Number.isSafeInteger(value.deadlineAtMs))
+  if (
+    !['fingerprint', 'verify_recompression'].includes(String(value.operation)) ||
+    !Number.isSafeInteger(value.deadlineAtMs)
+  )
     throw new Error('Invalid photo request');
+  if (
+    value.operation === 'verify_recompression'
+      ? !Number.isSafeInteger(value.originalBytes) ||
+        Number(value.originalBytes) < 1 ||
+        Number(value.originalBytes) >= PHOTO_NATIVE_MAX_BYTES
+      : value.originalBytes !== undefined
+  )
+    throw new Error('Invalid photo pair boundary');
   for (const key of ['maxInputBytes', 'remainingEncodedBytes'] as const) {
     if (
       !Number.isSafeInteger(value[key]) ||
@@ -128,6 +143,22 @@ export function parsePhotoResult(value: unknown): NativePhotoResult {
     ].includes(result.reason)
   )
     return result;
+  if (result.kind === 'recompression') {
+    if (
+      typeof result.matched !== 'boolean' ||
+      result.proof?.version !== PHOTO_RECOMPRESSION_VERSION ||
+      !/^[a-f0-9]{64}$/.test(result.proof.originalHash) ||
+      !/^[a-f0-9]{64}$/.test(result.proof.currentHash) ||
+      !Number.isSafeInteger(result.decodeCost?.encodedBytes) ||
+      result.decodeCost.encodedBytes < 2 ||
+      result.decodeCost.encodedBytes > PHOTO_NATIVE_MAX_BYTES ||
+      !Number.isSafeInteger(result.decodeCost?.pixels) ||
+      result.decodeCost.pixels < 2 ||
+      result.decodeCost.pixels > PHOTO_NATIVE_MAX_PIXELS
+    )
+      throw new Error('Invalid photo recompression proof');
+    return result;
+  }
   if (result.kind !== 'complete') throw new Error('Invalid photo result');
   const proof = result.fingerprint;
   const cost = proof?.decodeCost;
@@ -136,6 +167,7 @@ export function parsePhotoResult(value: unknown): NativePhotoResult {
     !/^[a-f0-9]{64}$/.test(proof.canonicalHash) ||
     proof.pdqHash !== '0'.repeat(64) ||
     proof.pdqQuality !== 0 ||
+    (proof.recompressionHash !== undefined && !/^[a-f0-9]{16}$/.test(proof.recompressionHash)) ||
     !cost ||
     !Number.isSafeInteger(cost.encodedBytes) ||
     cost.encodedBytes < 1 ||

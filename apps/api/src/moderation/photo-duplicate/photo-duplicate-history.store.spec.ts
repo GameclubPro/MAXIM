@@ -427,7 +427,10 @@ describe('PhotoDuplicateHistoryStore', () => {
 
   it('reads versioned photo-id fingerprints without putting raw ids in cache keys', async () => {
     const { redis, cacheRedis, service } = createService({});
-    const fingerprint = makeAlbum('0'.repeat(64), 'b'.repeat(64)).images[0];
+    const fingerprint = {
+      ...makeAlbum('0'.repeat(64), 'b'.repeat(64)).images[0],
+      recompressionHash: 'c'.repeat(16),
+    };
     cacheRedis.mget.mockResolvedValue([JSON.stringify(fingerprint), null, '{bad-json']);
 
     await expect(

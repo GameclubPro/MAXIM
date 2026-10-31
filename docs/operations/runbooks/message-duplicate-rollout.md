@@ -17,7 +17,8 @@ message duplicates: that would also promote unrelated historical moderation work
 
 `duplicateCompareMode=MESSAGE` compares text, navigation/actions and independently verified
 non-photo media. Complete photo messages use the explicit IMAGE path: exact canonical image
-sets, independent of captions, with administrator-selected SAME_AUTHOR or CHAT scope and the
+sets and separately verified recompression of a single photo, independent of captions,
+with administrator-selected SAME_AUTHOR or CHAT scope and the
 same configured reaction ladder. CHAT counts escalation per author, never across participants.
 `TEXT` compares text/captions and navigation/actions without media. Known media
 without a usable URL/photo identity remain comparable in TEXT, including through edits;
@@ -30,6 +31,43 @@ proof. Old message bindings with photos are rejected; they cannot acquire the ne
 The separate perceptual/photo-only filter is retired, its authority is permanently OFF and its
 queue consumer only abandons old ordering entries. Never infer equality from media IDs or
 bypass content verification. Legacy storage fields remain for rollback-safe schema compatibility.
+
+## Single-photo recompression evidence
+
+`native-recompression-v1` adds a bounded comparison of independently downloaded single-photo
+sources in the isolated photo sandbox. Candidate dHash bands only locate source pointers;
+they never establish equality. The native verifier retains both full-resolution canonical
+SHA-256 identities and checks dimensions, alpha and global/local pixel residuals, including
+overlapping windows. It uses no OCR. The exact raster hash remains unchanged, and albums still
+require exact equality of the whole photo set. Price, phone-number and text changes require
+negative regressions; those fixtures do not establish protection against every arbitrarily
+small edit or a corpus-wide false-deletion rate.
+
+An accepted copy retains its original anchor and cannot become a new approximate anchor.
+Source identity, original publication expiry, lifecycle, SAME_AUTHOR/CHAT scope and final
+authority remain mandatory. A missing or invalid source/index record supplies no action
+authority. Candidate buckets and returned results are capped; saturation can reduce recall.
+The read filters candidates to dHash distance at most six before the global result cap, so
+distant collisions in one band do not consume the entire bounded candidate list. Remembering
+an original never applies this query filter.
+Replay never extends the original expiry, and Redis TIME bounds physical retention to 48 hours.
+Candidate scopes include the exact button actions; captions remain outside IMAGE equality.
+A newer source with the same exact canonical SHA-256 can replace a retired source pointer;
+late older deliveries cannot restore it. This pointer replacement never changes the accepted
+history original, its publication window or reset fences.
+
+Approximate evidence carries the accepted original through observation. The Redis transaction
+pins its member, revision, original identity, epoch, content and live publication window before
+any lifecycle or counter write. Removal, reset, edit or expiry during native decoding returns
+stale; a previously accepted source cannot recreate a new approximate baseline in that race.
+
+The IMAGE settings fence is `image-recompression-fixed-window-v1`. A non-exact single-image
+binding carries `imageRecompression` with the native version and both exact raster hashes;
+schema, history and final dispatch reject unbound or inconsistent evidence. Old IMAGE grants
+fail closed while the new history warms from accepted observations. Both rollback routes
+require the actual reader/guard bodies, native verification and immutable-original candidate
+handling, even if runtime matching is disabled. Do not clear old keys, seed old authority or
+replay historical effects. See the [photo contract](exact-photo-duplicate-repair.md).
 
 ## Native photo admission near a deadline
 

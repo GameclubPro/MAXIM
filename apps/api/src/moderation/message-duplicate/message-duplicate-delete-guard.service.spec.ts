@@ -233,6 +233,32 @@ describe('scheduled duplicate final action guard', () => {
 });
 
 describe('message duplicate final delete guard', () => {
+  it.each(['missing', 'original', 'current', 'version'] as const)(
+    'rejects %s recompression evidence before qualification or external reads',
+    async (change) => {
+      const s = setup();
+      s.binding.compareMode = 'IMAGE';
+      s.binding.imageScope = 'CHAT';
+      s.binding.enforcementScope = 'full';
+      s.binding.hasPhotos = true;
+      s.binding.mediaHashes = ['b'.repeat(64)];
+      s.binding.original!.mediaHashes = ['a'.repeat(64)];
+      s.binding.imageRecompression = {
+        version: 'native-recompression-v1',
+        originalHash: 'a'.repeat(64),
+        currentHash: 'b'.repeat(64),
+      };
+      if (change === 'missing') delete s.binding.imageRecompression;
+      else if (change === 'original') s.binding.imageRecompression.originalHash = 'c'.repeat(64);
+      else if (change === 'current') s.binding.imageRecompression.currentHash = 'c'.repeat(64);
+      else (s.binding.imageRecompression as { version: string }).version = 'old';
+      await expect(
+        s.service.assertQualificationAuthority(s.params.chatId, s.binding),
+      ).rejects.toMatchObject({ code: 'message_duplicate_binding_invalid' });
+      expect(s.authorization.isAllowed).not.toHaveBeenCalled();
+      expect(s.max.getExactMessageRow).not.toHaveBeenCalled();
+    },
+  );
   it.each(['qualification', 'initial_delete', 'delete_recheck', 'sanction'] as const)(
     'retains the original author lookup refusal at %s without changing its outcome',
     async (phase) => {
@@ -642,6 +668,7 @@ describe('message duplicate final delete guard', () => {
           hasPhotos: true,
           mediaHashes: ['a'.repeat(64)],
         });
+        s.binding.original!.mediaHashes = [...s.binding.mediaHashes];
         s.policy.resolve.mockResolvedValue({
           mode: 'full',
           revision: 1,

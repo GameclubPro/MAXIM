@@ -1020,31 +1020,31 @@ export class PublisherBindingRefreshService implements OnModuleDestroy {
       if (locked.length !== 1) {
         return false;
       }
-      const [chat, binding, edge] = await Promise.all([
-        tx.chat.findUnique({
-          where: { id: chatId },
-          select: { title: true },
-        }),
-        tx.publisherEntityBinding.findUnique({
-          where: { chatId },
-          select: {
-            publisherBotId: true,
-            status: true,
-            botAccessState: true,
-            permissionsSnapshot: true,
-            botAccessSource: true,
-            lifecycleEventAt: true,
-            botAccessCheckedAt: true,
-            lastWebhookAt: true,
-          },
-        }),
-        tx.managedEntityAccessEdge.findUnique({
-          where: {
-            chatId_userId_botId: { chatId, userId, botId: this.publisherBotId },
-          },
-          select: { deniedReason: true, source: true, sourceVersion: true },
-        }),
-      ]);
+      // FLAG: These different-model reads share one transaction connection. Await
+      // each query to preserve the pg client contract before checking activation.
+      const chat = await tx.chat.findUnique({
+        where: { id: chatId },
+        select: { title: true },
+      });
+      const binding = await tx.publisherEntityBinding.findUnique({
+        where: { chatId },
+        select: {
+          publisherBotId: true,
+          status: true,
+          botAccessState: true,
+          permissionsSnapshot: true,
+          botAccessSource: true,
+          lifecycleEventAt: true,
+          botAccessCheckedAt: true,
+          lastWebhookAt: true,
+        },
+      });
+      const edge = await tx.managedEntityAccessEdge.findUnique({
+        where: {
+          chatId_userId_botId: { chatId, userId, botId: this.publisherBotId },
+        },
+        select: { deniedReason: true, source: true, sourceVersion: true },
+      });
       if (
         !chat ||
         !this.matchesExpectedForwardedBinding(binding, params.expectedBinding) ||

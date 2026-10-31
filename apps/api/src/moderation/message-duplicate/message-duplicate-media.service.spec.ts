@@ -24,7 +24,12 @@ import {
   PhotoDownloadFormatRejectedError,
   PhotoDownloadTimeoutError,
 } from '../photo-duplicate/secure-photo-downloader';
-import { PhotoNativeUnavailableError } from '../photo-duplicate/photo-fingerprint';
+import {
+  PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+  PhotoNativeUnavailableError,
+} from '../photo-duplicate/photo-fingerprint';
+import type { PhotoDuplicateAnalysisService } from '../photo-duplicate/photo-duplicate-analysis.service';
+import type { RedisCounterService } from '../redis-counter.service';
 import { UnrecoverableError } from 'bullmq';
 import { WebhookPreparationDeferredError } from '../../common/webhook-preparation-deferred.error';
 
@@ -47,6 +52,12 @@ function setup(config: Record<string, unknown> = {}) {
     admitDuplicateHeavyStart: jest
       .fn()
       .mockResolvedValue({ kind: 'granted', startedAtMs: Date.now() }),
+    duplicateRecompressionIndex: jest
+      .fn<
+        ReturnType<RedisCounterService['duplicateRecompressionIndex']>,
+        Parameters<RedisCounterService['duplicateRecompressionIndex']>
+      >()
+      .mockResolvedValue('[]'),
   };
   const prisma = {
     webhookEvent: {
@@ -54,7 +65,12 @@ function setup(config: Record<string, unknown> = {}) {
     },
     chatSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
   };
-  const photos = { fingerprintAlbum: jest.fn() };
+  const photos = {
+    fingerprintAlbum: jest.fn<
+      ReturnType<PhotoDuplicateAnalysisService['fingerprintAlbum']>,
+      Parameters<PhotoDuplicateAnalysisService['fingerprintAlbum']>
+    >(),
+  };
   const policy = {
     resolve: jest.fn().mockResolvedValue({
       mode: 'delete_only',
@@ -525,8 +541,21 @@ describe('bounded message duplicate media analysis', () => {
     };
     const complete = {
       kind: 'complete',
-      fingerprint: { images: [{ canonicalHash: 'a'.repeat(64) }] },
-    };
+      fingerprint: {
+        algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+        albumHash: 'b'.repeat(64),
+        images: [
+          {
+            algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+            canonicalHash: 'a'.repeat(64),
+            recompressionHash: '1'.repeat(16),
+            pdqHash: '0'.repeat(64),
+            pdqQuality: 0,
+            decodeCost: { encodedBytes: 100, pixels: 100 },
+          },
+        ],
+      },
+    } satisfies Awaited<ReturnType<PhotoDuplicateAnalysisService['fingerprintAlbum']>>;
     s.photos.fingerprintAlbum.mockResolvedValue(complete);
     return { ...s, photoJob, complete };
   }
@@ -635,10 +664,11 @@ describe('bounded message duplicate media analysis', () => {
       }),
       3600,
       expect.any(Number),
+      false,
     );
     expect(s.enforcement.enqueue).not.toHaveBeenCalled();
   });
-  it.each(['decode_deadline_exceeded', 'decode_capacity_exceeded'])(
+  it.each(['decode_deadline_exceeded', 'decode_capacity_exceeded'] as const)(
     'defers %s without enforcing an incomplete album',
     async (reason) => {
       const s = photoSetup();
@@ -948,6 +978,7 @@ describe('bounded message duplicate media analysis', () => {
         }),
         expect.any(Number),
         expect.any(Number),
+        true,
       );
       expect(s.history.observe).toHaveBeenLastCalledWith(
         expect.objectContaining({ messageId: 'b', mediaHashes: ['a'.repeat(64)] }),
@@ -1094,6 +1125,7 @@ describe('bounded message duplicate media analysis', () => {
       }),
       expect.any(Number),
       expect.any(Number),
+      true,
     );
     expect(s.history.observe).toHaveBeenCalledTimes(1);
     expect(s.history.observe).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'a' }));

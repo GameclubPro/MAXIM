@@ -140,6 +140,8 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
     return 1
   fi
 
+  # FLAG: The JavaScript parser matches quote literals, including backticks, without shell expansion.
+  # shellcheck disable=SC2016
   if ! printf '%s\0%s' "$binding_source" "$executor_source" | node -e '
       const { readFileSync } = require("node:fs");
       const input = readFileSync(0);
@@ -183,9 +185,41 @@ maxim_topology_require_image_text_stop_list_delete_guard() {
         checked[0].index + checked[0][0].length < dispatchAt;
       const legacyVoid = exactCount(executor, legacyVoidDefinition) === 1 &&
         exactCount(executor, legacyCall) === 1;
+      const code = (source) => source.replace(/("(?:\\.|[^"\\])*"|\u0027(?:\\.|[^\u0027\\])*\u0027|`(?:\\.|[^`\\])*`)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu,
+        (match, literal) => literal ?? "").replace(/\s+/gu, " ").trim();
+      const boundary = code(executor.slice(guardStart, guardEnd));
+      const preparationStart = executor.indexOf("private async prepareImageTextStopListDeleteAuthority(");
+      const preparationEnd = executor.indexOf("\n  private ", preparationStart + 1);
+      const preparation = code(executor.slice(preparationStart, preparationEnd));
+      const compatibilityStart = executor.search(methodDefinition);
+      const compatibilityEnd = executor.indexOf("\n  private ", compatibilityStart + 1);
+      const compatibility = code(executor.slice(compatibilityStart, compatibilityEnd));
+      const composed = boundary.indexOf("const proof = await this.authorizeGuardedUserDeleteReasons(");
+      const preparedAbsence = boundary.indexOf("if (imageTextStopListGuard === \u0027absent\u0027) { throw new ModerationDeleteGuardedMessageAbsentError( \u0027guarded_image_text_stop_list_predispatch_exact_absence\u0027,");
+      const caller = boundary.indexOf("await options?.beforeDeleteMutation?.(");
+      // FLAG: Prepared authority must be consumed by the awaited composer after its
+      // checkpoint. A decoy preparation or a discarded exact-absence result is insufficient.
+      const prepared = preparationStart >= 0 && preparationEnd > preparationStart &&
+        exactCount(executor, /private async prepareImageTextStopListDeleteAuthority\s*\(/gu) === 1 &&
+        /const imageTextPreparation = finalDispatchLeaseToken \? await this\.prepareImageTextStopListDeleteAuthority\(\s*intent,\s*botId\s*,?\s*\) : await this\.assertImageTextStopListDeleteIntentStillActionable\(\s*intent,\s*botId\s*,?\s*\);/u.test(boundary) &&
+        boundary.includes("let imageTextStopListGuard = isPreparedDeleteAuthority(imageTextPreparation) ? undefined : imageTextPreparation;") &&
+        preparedAbsence >= 0 && caller > preparedAbsence && composed > caller &&
+        boundary.slice(composed).includes("async () => { await beforeFinalAuthority?.(); imageTextStopListGuard = await finalizeDeleteAuthority(imageTextPreparation);") &&
+        exactCount(boundary, /imageTextStopListGuard = await finalizeDeleteAuthority\(imageTextPreparation\);/gu) === 1 &&
+        compatibilityStart >= 0 && compatibilityEnd > compatibilityStart &&
+        /return finalizeDeleteAuthority\(\s*await this\.prepareImageTextStopListDeleteAuthority\(\s*intent,\s*botId\s*,?\s*\)\s*,?\s*\);/u.test(compatibility) &&
+        boundary.includes("await this.assertImageTextStopListDispatchDeadline( intent.id, finalDispatchLeaseToken, botId, );") &&
+        boundary.includes("verifiedReasonKeys.push( ...imageTextStopListGuard.reasonDeadlines.map((permit) => permit.reasonKey), );") &&
+        boundary.includes("verifiedReasonDeadlines.push(...imageTextStopListGuard.reasonDeadlines);") &&
+        preparation.includes("const exactRow = await this.maxClient.getExactMessageRow(intent.chatId, intent.messageId,") &&
+        /if \(!exactRow\) \{ return \u0027absent\u0027; \}/u.test(preparation) &&
+        preparation.indexOf("if (!exactRow)") < preparation.indexOf("return prepareDeleteAuthority(async () => {") &&
+        preparation.includes("deadlineAtMs: Date.parse(validBindings[index]!.deleteDeadlineAt)");
       const valid =
         guardStart >= 0 && guardEnd > guardStart && callAt > guardStart && callAt < guardEnd &&
-        dispatchAt > callAt && dispatchAt < guardEnd && (resultHandled || legacyVoid);
+        exactCount(executor, /private async runDeletePreDispatchGuards\s*\(/gu) === 1 &&
+        dispatchAt > callAt && dispatchAt < guardEnd &&
+        (preparationStart >= 0 ? prepared : resultHandled || legacyVoid);
       process.exit(valid ? 0 : 1);
     ' >/dev/null 2>&1; then
     echo "Rollback target lacks the reviewed image-text stop-list pre-dispatch guard capability." >&2
@@ -666,6 +700,13 @@ maxim_topology_require_message_duplicate_delete_guard() {
     apps/api/src/moderation/message-duplicate/message-duplicate-publication-time.ts
     apps/api/src/webhook/webhook-semantic-event-key.ts
     apps/api/src/webhook/webhook-execution-deadline.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-recompression-index.ts
+    apps/api/src/moderation/photo-duplicate/photo-duplicate-analysis.service.ts
+    apps/api/src/moderation/photo-duplicate/photo-fingerprint.ts
+    apps/api/src/moderation/photo-duplicate/photo-recompression.ts
+    apps/api/src/moderation/photo-duplicate/photo-recompression-version.ts
+    apps/api/src/moderation/redis-counter.service.ts
   )
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
@@ -674,6 +715,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
   # normalization remain mandatory with v14 text fences, v8 phone evidence and bounded v4 history with retained v3 negative fences.
   # Case-sensitive quantity units before/after values and finite phone authority must survive
   # exact/near matching and lifecycle identity.
+  # FLAG: Retained single-image recompression grants require both exact hashes, independent
+  # native proof and the accepted original anchor. A candidate hash never becomes authority.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -687,34 +730,151 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 21 || parts.pop() !== "") process.exit(1);
-    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings, semantic, publicationTime, semanticKey, executionDeadline] = parts;
+    if (parts.length !== 28 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings, semantic, publicationTime, semanticKey, executionDeadline, media, recompressionIndex, photoAnalysis, photoFingerprint, photoRecompression, recompressionVersion, counters] = parts;
+    const stripComments = (source) => source.replace(/("(?:\\.|[^"\\])*"|\u0027(?:\\.|[^\u0027\\])*\u0027|`(?:\\.|[^`\\])*`)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu,
+      (match, literal) => literal ?? "");
     const method = (source, marker) => {
       const start = source.indexOf(marker);
       const end = source.indexOf("\n  private ", start + 1);
-      return start >= 0 && end > start ? source.slice(start, end) : "";
+      return start >= 0 && end > start && source.indexOf(marker, start + marker.length) === -1
+        ? source.slice(start, end) : "";
     };
     const topLevelFunction = (source, marker) => {
       const start = source.indexOf(marker);
-      const end = source.indexOf("\n}", start + 1);
+      const tail = source.slice(start + marker.length);
+      const closing = tail.search(/\n\}(?=\r?\n|$)/u);
+      const end = closing < 0 ? -1 : start + marker.length + closing;
       return start >= 0 && end > start ? source.slice(start, end + 2) : "";
+    };
+    const classMethod = (source, marker) => {
+      const start = source.indexOf(marker);
+      if (start < 0) return "";
+      const tail = source.slice(start + marker.length);
+      const boundary = tail.search(/\n  (?:(?:private|public|protected) )?(?:async )?[A-Za-z][A-Za-z0-9]*\(|\n\}/u);
+      return boundary >= 0 ? source.slice(start, start + marker.length + boundary) : "";
     };
     const count = (source, marker) => source.split(marker).length - 1;
     const squash = (source) => source.replace(/^\s*\/\/[^\r\n]*/gmu, "").replace(/\s+/gu, " ").trim();
     const start = executor.indexOf("private async runDeletePreDispatchGuards(");
     const end = executor.indexOf("\n  private ", start + 1);
-    const boundary = executor.slice(start, end);
+    const boundary = stripComments(method(executor, "private async runDeletePreDispatchGuards("));
     const check = method(guard, "private async checkMessage(");
-    const reasons = method(executor, "private async authorizeGuardedUserDeleteReasons(");
+    const reasons = stripComments(method(executor, "private async authorizeGuardedUserDeleteReasons("));
     const returnsDuplicateQualification = (source) => /return\s*\{[^}]*\bmessageDuplicateVerified\s*,/u.test(source);
+    const preparedReasons = squash(reasons).includes("const candidates: Candidate[] = [];");
+    const preparedQualification = preparedReasons &&
+      squash(reasons).includes("await prepare( () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), receipts.map((r) => r.reasonKey), \u0027duplicate\u0027, receipts, );") &&
+      squash(reasons).includes("const preparation = await run();") &&
+      squash(reasons).includes("candidates.push({ preparation, keys, tag, fixedDeadlines });") &&
+      squash(reasons).includes("const result = await finalizeDeleteAuthority(candidate.preparation);") &&
+      /if \(result !== \u0027allowed\u0027 && \(typeof result !== \u0027object\u0027 \|\| result === null\)\)/u.test(squash(reasons)) &&
+      squash(reasons).includes("if (candidate.tag === \u0027duplicate\u0027) messageDuplicateVerified = true;") &&
+      count(reasons, "await beforeFinalAuthority?.();") === 1 &&
+      reasons.indexOf("await beforeFinalAuthority?.();") >= 0 &&
+      reasons.indexOf("await beforeFinalAuthority?.();") < reasons.indexOf("const finalizeCandidates = async (") &&
+      reasons.includes("return finalizeCandidates(candidates, true);");
+    const legacyQualification =
+      squash(reasons).includes("messageDuplicateVerified = (await check(() => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), )) === \u0027allowed\u0027;") ||
+      squash(reasons).includes("messageDuplicateVerified = (await check( () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), duplicateReceipts.map((receipt) => receipt.reasonKey), )) === \u0027allowed\u0027;");
     const guardedReasons = boundary.includes("await this.authorizeGuardedUserDeleteReasons(") &&
       reasons.includes("ownedReasonsOnly: true") && reasons.includes("if (!reasons.length)") &&
-      (squash(reasons).includes("messageDuplicateVerified = (await check(() => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), )) === \u0027allowed\u0027;") ||
-        squash(reasons).includes("messageDuplicateVerified = (await check( () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params), duplicateReceipts.map((receipt) => receipt.reasonKey), )) === \u0027allowed\u0027;")) &&
+      (preparedReasons ? preparedQualification : legacyQualification) &&
       boundary.includes("messageDuplicateVerified = proof.messageDuplicateVerified;") &&
       returnsDuplicateQualification(reasons) && returnsDuplicateQualification(boundary);
     const permit = method(guard, "private async assertAuthorization(");
     const qualification = method(guard, "async assertQualificationAuthority(");
+    const imageEvidence = squash(topLevelFunction(state, "export function hasValidImageComparisonEvidence("));
+    const imageSettings = topLevelFunction(state, "export function exactImageSettingsDigest(");
+    const imageHistory = classMethod(history, "async observeWithOutcome(");
+    const imageHistoryRevision = method(history, "private hasCurrentRevision(");
+    const imageOriginal = squash(method(media, "private async findRecompression("));
+    const imageDownload = squash(classMethod(photoAnalysis, "async verifyRecompression("));
+    const imageNativeCall = squash(classMethod(photoFingerprint, "async verifyRecompression(")).replace(/\s+(?=\.)/gu, "");
+    const imageNative = squash(topLevelFunction(photoRecompression, "export async function verifyNativePhotoRecompression("));
+    const imageResidual = squash(topLevelFunction(photoRecompression, "function residualWithinBounds("));
+    const imageIndexRead = classMethod(recompressionIndex, "async read(");
+    const imageIndexRemember = classMethod(recompressionIndex, "async remember(");
+    const imageIndexLua = recompressionIndex.match(/export const DUPLICATE_RECOMPRESSION_INDEX_SCRIPT = `([\s\S]*?)`;/u)?.[1] ?? "";
+    const imageIndexCommand = classMethod(counters, "async duplicateRecompressionIndex(");
+    const imageObserveStart = window.indexOf("if p.op ~= \u0027observe\u0027 then");
+    const imagePinStart = window.indexOf("if p.recompressionOriginal then", imageObserveStart);
+    const imageObserveBoundary = window.indexOf("local previous = read(stateKey(p.member))", imageObserveStart);
+    const imageAtomicOriginal = squash(window.slice(imagePinStart, imageObserveBoundary));
+    const imagePinBeforeMutations = imageObserveStart >= 0 && imagePinStart > imageObserveStart &&
+      imageObserveBoundary > imagePinStart &&
+      !/\bwrite\s*\(|redis\.call\s*\(/u.test(window.slice(imageObserveStart, imagePinStart)) &&
+      imageAtomicOriginal.includes("local expected = p.recompressionOriginal") &&
+      imageAtomicOriginal.includes("if p.mode ~= \u0027IMAGE\u0027 or #p.fingerprints ~= 1 then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
+      imageAtomicOriginal.includes("local original = read(groupKey(p.fingerprints[1]))") &&
+      imageAtomicOriginal.includes("if not valid(original) or original.member ~= expected.member") &&
+      imageAtomicOriginal.includes("original.revision ~= expected.revision") &&
+      imageAtomicOriginal.includes("original.originalId ~= expected.originalId") &&
+      imageAtomicOriginal.includes("original.epoch ~= expected.epoch") &&
+      imageAtomicOriginal.includes("original.contentDigest ~= expected.contentDigest") &&
+      imageAtomicOriginal.includes("p.at < original.publishedAtMs") &&
+      imageAtomicOriginal.includes("p.at >= original.expiresAtMs") &&
+      imageAtomicOriginal.includes("or (p.periodStart and original.publishedAtMs < p.periodStart) then return cjson.encode({ kind = \u0027stale\u0027 }) end end");
+    const recompressionReader =
+      recompressionVersion.includes("PHOTO_RECOMPRESSION_VERSION = \u0027native-recompression-v1\u0027") &&
+      state.includes(".refine(hasValidImageComparisonEvidence)") &&
+      permit.includes("!hasValidImageComparisonEvidence(binding)") &&
+      imageHistoryRevision.includes("hasValidImageComparisonEvidence(binding)") &&
+      imageEvidence.includes("if (value.compareMode !== \u0027IMAGE\u0027) return proof === undefined;") &&
+      imageEvidence.includes("if (equal) return proof === undefined;") &&
+      imageEvidence.includes("proof.version === PHOTO_RECOMPRESSION_VERSION") &&
+      imageEvidence.includes("original.length === 1") && imageEvidence.includes("value.mediaHashes.length === 1") &&
+      imageEvidence.includes("proof.originalHash === original[0]") &&
+      imageEvidence.includes("proof.currentHash === value.mediaHashes[0]") &&
+      imageSettings.includes("version: \u0027image-recompression-fixed-window-v1\u0027") &&
+      imageHistory.includes("const anchorIdentity = recompression") &&
+      imageHistory.includes("[recompression.originalHash]") &&
+      imageHistory.includes("recompression.currentHash !== mediaHashes[0]") &&
+      history.includes("imageOriginal?: MessageDuplicateOriginal;") &&
+      imageHistory.includes("!input.imageOriginal ||") &&
+      imageHistory.includes("input.imageOriginal.mediaHashes.length !== 1") &&
+      imageHistory.includes("input.imageOriginal.mediaHashes[0] !== recompression.originalHash") &&
+      imageHistory.includes("recompressionOriginal: input.imageOriginal") && imagePinBeforeMutations &&
+      imageHistory.includes("if (!hasValidImageComparisonEvidence(binding))") &&
+      squash(media).includes("const anchor = parsed.data.recompressionAnchor ?? parsed.data;") &&
+      /if\s*\(\s*imageOnly && verified\.hashes\.length === 1 && verified\.recompressionHash && !recompression\.anchor\s*\)\s*await this\.rememberRecompression\(/u.test(squash(media)) &&
+      imageOriginal.includes("const baseline = await this.loadSource(candidate.webhookEventId);") &&
+      imageOriginal.includes("!isExactImageContent(content) || content.media.length !== 1") &&
+      imageOriginal.includes("message.messageId !== candidate.messageId") &&
+      imageOriginal.includes("candidate.expiresAtMs <= input.job.eventTimestampMs") &&
+      imageOriginal.includes("result = await this.photos.verifyRecompression({") &&
+      imageOriginal.includes("expectedOriginalHash: candidate.canonicalHash") &&
+      imageOriginal.includes("expectedCurrentHash: input.verified.hashes[0]!") &&
+      imageOriginal.includes("const original = await this.history.observeWithOutcome(originalInput)") &&
+      imageOriginal.includes("await this.history.findImageOriginal({") &&
+      imageOriginal.includes("accepted?.mediaHashes.length !== 1") &&
+      imageOriginal.includes("accepted.mediaHashes[0] !== candidate.canonicalHash") &&
+      imageOriginal.includes("mediaHashes: [candidate.canonicalHash]") &&
+      imageOriginal.includes("original.outcome === \u0027STALE\u0027") &&
+      imageDownload.includes("const original = await this.downloader.download(params.originalUrl,") &&
+      imageDownload.includes("const current = await this.downloader.download(params.currentUrl,") &&
+      imageDownload.includes("result.proof.originalHash !== params.expectedOriginalHash") &&
+      imageDownload.includes("result.proof.currentHash !== params.expectedCurrentHash") &&
+      imageNativeCall.includes("await this.nativeDecoder.verifyRecompression(original, current, request)") &&
+      imageNative.includes("a.info.width !== b.info.width") && imageNative.includes("a.info.height !== b.info.height") &&
+      imageNative.includes("originalHash: canonicalHash(a.data, a.info.width, a.info.height)") &&
+      imageNative.includes("currentHash: canonicalHash(b.data, b.info.width, b.info.height)") &&
+      /residualWithinBounds\(\s*blurredA, blurredB/u.test(imageNative) &&
+      /residualWithinBounds\(\s*colorA, colorB/u.test(imageNative) &&
+      imageResidual.includes("Math.abs(difference) > limits.maximum") &&
+      imageResidual.includes("square > count * limits.tileRms ** 2") &&
+      imageIndexRead.includes("await this.redis.duplicateRecompressionIndex(") &&
+      imageIndexRemember.includes("await this.redis.duplicateRecompressionIndex(") &&
+      imageIndexLua.includes("redis.call(\u0027TIME\u0027)") &&
+      imageIndexLua.includes("for i=1,8 do") && /#decoded\s*>\s*8\b/u.test(imageIndexLua) &&
+      imageIndexLua.includes("math.min(expires,r.expiresAtMs)") &&
+      imageIndexLua.includes("r.expiresAtMs>p.atMs") &&
+      imageIndexLua.includes("for i=1,16,2 do") &&
+      imageIndexLua.includes("if distance>6 then return false end") &&
+      imageIndexLua.includes("p.op~=\u0027read\u0027 or withinHamming(r.recompressionHash)") &&
+      imageIndexLua.indexOf("withinHamming(r.recompressionHash)") < imageIndexLua.indexOf("for i=1,math.min(8,#all) do") &&
+      imageIndexLua.includes("redis.call(\u0027SET\u0027,KEYS[i],encoded[i],\u0027PXAT\u0027,deadlines[i])") &&
+      imageIndexCommand.includes("DUPLICATE_RECOMPRESSION_INDEX_SCRIPT,");
     const near = method(detector, "private buildNearDuplicateFingerprint(");
     const fingerprints = method(detector, "\n  buildFingerprints(");
     const detectorTextNormalization = topLevelFunction(detector, "function normalizeDuplicateText(");
@@ -741,12 +901,21 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const authority = guard.slice(authorityStart, authorityEnd);
     const mutationStart = executor.search(/const beforeImmediateDeleteMutation = async \(\s*(?:beforeFinalAuthority\?: \(\) => Promise<void>,?\s*)?\) => \{/u);
     const mutationEnd = executor.indexOf("\n          };", mutationStart);
-    const mutation = executor.slice(mutationStart, mutationEnd);
+    const mutation = stripComments(executor.slice(mutationStart, mutationEnd));
     const suggestionProof = mutation.lastIndexOf("await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof)");
     const finalPermit = mutation.lastIndexOf("await this.messageDuplicateDeleteGuard.assertIntentStillActionable(");
     const markedMutation = /const beforeImmediateDeleteMutation = async \(\s*beforeFinalAuthority\?:/u.test(mutation);
     const transportCheckpoint = mutation.indexOf("await beforeFinalAuthority?.()");
     const finalDeadlineFence = mutation.indexOf("let verifiedReasonAuthorityAtMs = await this.assertVerifiedReasonDeadlineFence(");
+    const composedDispatch = squash(mutation).includes("let textProof = await this.runDeletePreDispatchGuards( intent, botId, options, leaseToken, \u0027dispatch\u0027, async () => { try { await beforeFinalAuthority?.();");
+    // FLAG: Prepared MAX evidence precedes the sole nested transport checkpoint;
+    // the final suggestion/deadline/duplicate permit still follow that reservation.
+    const preparedCheckpoint = preparedQualification && composedDispatch &&
+      transportCheckpoint >= 0 && transportCheckpoint < suggestionProof &&
+      count(mutation, "await beforeFinalAuthority?.()") === 1 &&
+      squash(boundary).includes("const proof = await this.authorizeGuardedUserDeleteReasons( intent, botId, finalDispatchLeaseToken, async () => { await beforeFinalAuthority?.();") &&
+      mutation.includes("textProof = await finalizeDeleteAuthority(textProof.independentRecheck);") &&
+      count(mutation, "await this.assertVerifiedReasonDeadlineFence(") === 2;
     const phoneContext = phones.match(/const PHONE_CONTEXT\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1];
     const phoneNumberContext = phones.match(/const PHONE_NUMBER_CONTEXT\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1];
     const quantitySuffix = phones.match(/const QUANTITY_SUFFIX\s*=\s*(\/[^\r\n]+\/iu);/u)?.[1] ?? "";
@@ -779,7 +948,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       const evidence = phoneExtraction.indexOf("const phone = phoneEvidence(");
       return ranges >= 0 && exclusion > ranges && evidence > exclusion;
     };
-    const valid = start >= 0 && end > start &&
+    const valid = recompressionReader && start >= 0 && end > start &&
       guard.includes("class MessageDuplicateDeleteGuardService") &&
       check.includes("await this.history.stillMatches(") &&
       check.includes("message_duplicate_content_changed") &&
@@ -1002,7 +1171,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
       mutationStart >= 0 && mutationEnd > mutationStart &&
       suggestionProof >= 0 && finalPermit > suggestionProof &&
       (!markedMutation || (count(mutation, "await beforeFinalAuthority?.()") === 1 &&
-        transportCheckpoint > suggestionProof && finalDeadlineFence > transportCheckpoint && finalPermit > finalDeadlineFence)) &&
+        (preparedReasons ? preparedCheckpoint : transportCheckpoint > suggestionProof) &&
+        finalDeadlineFence > transportCheckpoint && finalPermit > finalDeadlineFence)) &&
       (mutation.slice(suggestionProof, finalPermit).includes("intent.messageDuplicateOwned") ||
         (guardedReasons && mutation.slice(suggestionProof, finalPermit).includes("textProof.messageDuplicateVerified"))) &&
       /assertIntentStillActionable\(\{[^}]*authorityOnly:\s*true,[^}]*\}\)/u.test(mutation.slice(finalPermit)) &&
@@ -1027,6 +1197,8 @@ maxim_topology_require_participant_report_guard() {
     echo "Rollback target predates the participant report guard." >&2
     return 1
   fi
+  # FLAG: The JavaScript parser matches quote literals, including backticks, without shell expansion.
+  # shellcheck disable=SC2016
   if ! printf '%s\0%s' "$guard_source" "$executor_source" | node -e '
     const parts = require("node:fs").readFileSync(0).toString("utf8").split("\0");
     if (parts.length !== 2) process.exit(1);
@@ -1037,6 +1209,37 @@ maxim_topology_require_participant_report_guard() {
     const independentStart = executor.indexOf("private hasExecutableIndependentReportReason(");
     const independentEnd = executor.indexOf("\n  private ", independentStart + 1);
     const independent = executor.slice(independentStart, independentEnd);
+    const code = (source) => source.replace(/("(?:\\.|[^"\\])*"|\u0027(?:\\.|[^\u0027\\])*\u0027|`(?:\\.|[^`\\])*`)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu,
+      (match, literal) => literal ?? "").replace(/\s+/gu, " ").trim();
+    const reasonStart = executor.indexOf("private async authorizeGuardedUserDeleteReasons(");
+    const reasonEnd = executor.indexOf("\n  private ", reasonStart + 1);
+    const reasons = code(executor.slice(reasonStart, reasonEnd));
+    const preparedBoundary = code(boundary);
+    const prepared = preparedBoundary.includes("reportPreparation") || reasons.includes("const candidates: Candidate[] = [];");
+    // FLAG: Both report-only composition and non-report cleanup must consume their
+    // own prepared capsule after admission; independent report reasons cannot self-authorize.
+    const preparedWiring = reasonStart >= 0 && reasonEnd > reasonStart &&
+      executor.split("private async runDeletePreDispatchGuards(").length === 2 &&
+      executor.split("private async authorizeGuardedUserDeleteReasons(").length === 2 &&
+      /return finalizeDeleteAuthority\(\s*await this\.prepareForDispatch\(params\)\s*,?\s*\);/u.test(code(guard)) &&
+      preparedBoundary.includes("if (this.reportDeleteGuard && !hasReportReason) reportPreparation = await this.reportDeleteGuard.prepareForDispatch({ intentId: intent.id, chatId: intent.chatId, messageId: intent.messageId, subjectUserId: intent.subjectUserId, botId,") &&
+      preparedBoundary.includes("REPORT_GUARDED_RULES.has(r.ruleCode)") &&
+      preparedBoundary.includes("const proof = await this.authorizeGuardedUserDeleteReasons( intent, botId, finalDispatchLeaseToken, async () => { await beforeFinalAuthority?.(); imageTextStopListGuard = await finalizeDeleteAuthority(imageTextPreparation); const report = await finalizeDeleteAuthority(reportPreparation); if (report === \u0027absent\u0027) throw new ModerationDeleteGuardedMessageAbsentError(\u0027guarded_report_absence\u0027);") &&
+      preparedBoundary.split("const report = await finalizeDeleteAuthority(reportPreparation);").length === 2 &&
+      reasons.includes("if (reasons.some((r) => REPORT_GUARDED_RULES.has(r.ruleCode))) { if (!this.reportDeleteGuard) throw new Error(\u0027Participant report delete guard unavailable\u0027);") &&
+      reasons.includes("const reportParams = { ...params,") &&
+      reasons.includes("isIndependentReasonExecutable: () => false,") &&
+      reasons.includes("await prepare(() => deferred ? this.reportDeleteGuard!.prepareForDispatch(reportParams) : this.reportDeleteGuard!.assertIntentStillActionable(reportParams), );") &&
+      reasons.includes("const preparation = await run();") &&
+      reasons.includes("if (preparation === \u0027absent\u0027) throw new ModerationDeleteGuardedMessageAbsentError(\u0027guarded_current_message_absence\u0027);") &&
+      reasons.includes("candidates.push({ preparation, keys, tag, fixedDeadlines });") &&
+      reasons.includes("const result = await finalizeDeleteAuthority(candidate.preparation);") &&
+      /if \(result === \u0027absent\u0027\) throw new ModerationDeleteGuardedMessageAbsentError\(/u.test(reasons) &&
+      /if \(result !== \u0027allowed\u0027 && \(typeof result !== \u0027object\u0027 \|\| result === null\)\)/u.test(reasons) &&
+      reasons.split("await beforeFinalAuthority?.();").length === 2 &&
+      reasons.indexOf("await beforeFinalAuthority?.();") >= 0 &&
+      reasons.indexOf("await beforeFinalAuthority?.();") < reasons.indexOf("const finalizeCandidates = async (") &&
+      reasons.includes("return finalizeCandidates(candidates, true);");
     process.exit(start >= 0 && end > start &&
       guard.includes("class ReportDeleteGuardService") &&
       guard.includes("BINDING_VERSION = 3") &&
@@ -1054,7 +1257,7 @@ maxim_topology_require_participant_report_guard() {
       guard.includes("this.state.assertCurrent(") &&
       guard.includes("this.state.assertPolicy(report)") &&
       guard.includes("this.state.assertCase(") &&
-      boundary.includes("await this.reportDeleteGuard.assertIntentStillActionable(") &&
+      (prepared ? preparedWiring : boundary.includes("await this.reportDeleteGuard.assertIntentStillActionable(")) &&
       boundary.includes("this.hasExecutableIndependentReportReason(intent.chatId, reasons)") &&
       boundary.includes("Participant report delete guard unavailable") ? 0 : 1);
   ' >/dev/null 2>&1; then
@@ -2480,6 +2683,8 @@ maxim_topology_require_commercial_ai_delete_guard() {
     source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)" || {
       echo 'Rollback target predates guarded commercial AI deletion.' >&2; return 1;
     }
+    # FLAG: The JavaScript parser matches quote literals, including backticks, without shell expansion.
+    # shellcheck disable=SC2016
     if ! printf '%s' "$source" | node -e '
       const source = require("node:fs").readFileSync(0).toString("utf8");
       const path = process.argv[1];
@@ -2490,8 +2695,54 @@ maxim_topology_require_commercial_ai_delete_guard() {
           ? ["CommercialLlmDeleteGuardService", "hasProof(source)", "getExactMessageRow(", "commercialLlmSourceCurrent(source)", "settingsSha256"]
           : path.endsWith("effect-origin.ts")
             ? ["withCommercialLlmEffectOrigin", "readCommercialLlmEffectOrigin", "scope.active = false", "await hasProof()"]
-            : ["commercialLlmGuard!.authorize(", "Commercial AI guard unavailable", "CommercialLlmGuardRejectedError", "readCommercialLlmEffectOrigin(", "verifiedReasonDeadlines", "independentBoundedDeadlineAtMs"];
-      process.exit(required.every(marker => source.includes(marker)) ? 0 : 1);
+            : ["commercialLlmGuard!.authorize(", "Commercial AI guard unavailable", "CommercialLlmGuardRejectedError", "readCommercialLlmEffectOrigin(", "verifiedReasonDeadlines"];
+      let deadlineFlow = true;
+      if (path.endsWith("moderation-delete-intent.service.ts")) {
+        const clean = source.replace(/("(?:\\.|[^"\\])*"|\u0027(?:\\.|[^\u0027\\])*\u0027|`(?:\\.|[^`\\])*`)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu,
+          (match, literal) => literal ?? "");
+        const marker = "private async authorizeGuardedUserDeleteReasons(";
+        const start = clean.indexOf(marker);
+        const end = clean.indexOf("\n  private ", start + 1);
+        const reasons = start >= 0 && end > start ? clean.slice(start, end).replace(/\s+/gu, " ") : "";
+        const legacy = reasons.match(/independentAuthorityDeadlineAtMs: independentWithoutShortDeadline \? null : ([A-Za-z_$][\w$]*) \|\| null/u);
+        const prepared = reasons.match(/independentAuthorityDeadlineAtMs: unboundedIndependent \? null : ([A-Za-z_$][\w$]*) \|\| null/u);
+        const accumulator = (match) => match && reasons.includes("let " + match[1] + " = 0;") &&
+          reasons.includes(match[1] + " = Math.max(");
+        const snapshotStart = reasons.indexOf("for (const permit of candidate.authoritySnapshot?.deadlines ?? []) {");
+        const snapshotEnd = reasons.indexOf("const permits =", snapshotStart);
+        const snapshot = reasons.slice(snapshotStart, snapshotEnd);
+        const currentStart = reasons.indexOf("for (const permit of currentPermits) {");
+        const current = reasons.slice(currentStart, snapshotStart);
+        // FLAG: A local continuation may only retain original keys and intersect
+        // original deadlines. It must not renew a permit or introduce a new reason.
+        const preparedFlow = accumulator(prepared) &&
+          reasons.includes(prepared[1] + " = Math.max(" + prepared[1] + ", deadline);") &&
+          reasons.includes("await prepare(() => deferred ? this.commercialLlmGuard!.prepareForDispatch({ ...params, reasons }) : this.commercialLlmGuard!.authorize({ ...params, reasons }), );") &&
+          reasons.includes("const result = await finalizeDeleteAuthority(candidate.preparation);") &&
+          reasons.includes("const keys = candidate.authoritySnapshot ? preparedKeys.filter((key) => candidate.authoritySnapshot!.keys.includes(key)) : preparedKeys;") &&
+          reasons.includes("if (candidate.authoritySnapshot?.keys.length && !keys.length) throw new ModerationDeleteReasonsRejectedError(fingerprint);") &&
+          currentStart >= 0 && snapshotStart > currentStart &&
+          current.includes("if (keys.includes(permit.reasonKey)) boundedDeadlines.set( permit.reasonKey, Math.min(boundedDeadlines.get(permit.reasonKey) ?? Infinity, permit.deadlineAtMs), );") &&
+          snapshotStart >= 0 && snapshotEnd > snapshotStart &&
+          snapshot.includes("if (keys.includes(permit.reasonKey)) boundedDeadlines.set( permit.reasonKey, Math.min(boundedDeadlines.get(permit.reasonKey) ?? Infinity, permit.deadlineAtMs), );") &&
+          reasons.includes("deadline = Math.min(deadline ?? Infinity, candidate.authoritySnapshot.deadlineAtMs);") &&
+          reasons.includes("authoritySnapshot: { keys, deadlineAtMs: deadline, deadlines: permits },") &&
+          reasons.includes("for (const permit of permits) { verifiedReasonDeadlines.set( permit.reasonKey, Math.min( verifiedReasonDeadlines.get(permit.reasonKey) ?? Infinity, permit.deadlineAtMs, ), ); }") &&
+          reasons.includes("verifiedReasonDeadlines: [...verifiedReasonDeadlines].map(([reasonKey, deadlineAtMs]) => ({ reasonKey, deadlineAtMs, })),") &&
+          reasons.includes("independentRecheck: prepareDeleteAuthority(async () => finalizeCandidates( independentCandidates.map((candidate) => ({ ...candidate, preparation: prepareDeleteAuthorityRecheck(candidate.preparation), })), false, ), ),") &&
+          reasons.includes("return finalizeCandidates(candidates, true);");
+        const legacyAiStart = reasons.indexOf("if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_LLM_DELETE_RULE_CODE)) {");
+        const legacyAiEnd = reasons.indexOf("if (reasons.some(", legacyAiStart + 1);
+        const legacyAi = reasons.slice(legacyAiStart, legacyAiEnd > legacyAiStart ? legacyAiEnd : undefined)
+          .replace(/\s+/gu, "").replace(/,\)/gu, ")");
+        const legacyFlow = accumulator(legacy) && legacyAiStart >= 0 &&
+          legacyAi.includes("constpermit=awaitcheck(()=>this.commercialLlmGuard!.authorize({...params,reasons}));") &&
+          legacyAi.includes(legacy[1] + "=Math.max(" + legacy[1] + ",Number(permit.deadlineAtMs));") &&
+          reasons.includes("verifiedReasonDeadlines: [...verifiedReasonDeadlines]");
+        deadlineFlow = clean.split(marker).length === 2 &&
+          (reasons.includes("const candidates: Candidate[] = [];") ? preparedFlow : legacyFlow);
+      }
+      process.exit(required.every(marker => source.includes(marker)) && deadlineFlow ? 0 : 1);
     ' "$source_path"; then
       echo 'Rollback target lacks the commercial AI source/proof/deadline guard.' >&2; return 1
     fi

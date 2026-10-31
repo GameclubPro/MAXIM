@@ -235,6 +235,7 @@ describe('PhotoFingerprintService', () => {
       expect(fingerprint).toEqual({
         algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
         canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        recompressionHash: expect.stringMatching(/^[0-9a-f]{16}$/),
         pdqHash: expect.stringMatching(/^[0-9a-f]{64}$/),
         pdqQuality: expect.any(Number),
         decodeCost: { encodedBytes: expect.any(Number), pixels: expect.any(Number) },

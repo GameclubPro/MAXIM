@@ -146,6 +146,17 @@ local function counterKey(fingerprint, original)
   return 'count:' .. p.author .. ':' .. fingerprint .. ':' .. original.originalId
     .. ':' .. original.epoch .. ':' .. epoch(p.author)
 end
+-- FLAG: Candidate pointers are not accepted originals. This bounded read requires
+-- the same live lifecycle, reset epoch and immutable publication window as dispatch.
+if p.op == 'image_anchor' then
+  local original = read(groupKey(p.fingerprint))
+  if p.mode ~= 'IMAGE' or not valid(original) or p.at < original.publishedAtMs
+    or p.at >= original.expiresAtMs
+    or (p.periodStart and original.publishedAtMs < p.periodStart) then
+    return cjson.encode({ kind = 'stale' })
+  end
+  return cjson.encode({ kind = 'ok', original = original })
+end
 local function matching()
   if p.at <= epoch(p.author) then return nil end
   if read('removed:' .. p.member) and not p.afterDelete then return nil end
@@ -185,6 +196,20 @@ if p.op == 'check' or p.op == 'qualify' then
 end
 if p.op ~= 'observe' then return cjson.encode({ kind = 'stale' }) end
 if read('removed:' .. p.member) or p.at <= epoch(p.author) then return cjson.encode({ kind = 'stale' }) end
+-- FLAG: Approximate equality cannot establish a new original. Pin its accepted anchor
+-- atomically before lifecycle/counter writes, including a removal or reset during decoding.
+if p.recompressionOriginal then
+  local expected = p.recompressionOriginal
+  if p.mode ~= 'IMAGE' or #p.fingerprints ~= 1 then return cjson.encode({ kind = 'stale' }) end
+  local original = read(groupKey(p.fingerprints[1]))
+  if not valid(original) or original.member ~= expected.member
+    or original.revision ~= expected.revision or original.originalId ~= expected.originalId
+    or original.epoch ~= expected.epoch or original.contentDigest ~= expected.contentDigest
+    or p.at < original.publishedAtMs or p.at >= original.expiresAtMs
+    or (p.periodStart and original.publishedAtMs < p.periodStart) then
+    return cjson.encode({ kind = 'stale' })
+  end
+end
 local previous = read(stateKey(p.member))
 local currentEpoch = epoch(p.author)
 local previousLife = read('life:' .. p.member .. ':' .. p.mode)
@@ -360,6 +385,7 @@ export type DuplicateWindowResult = {
   qualified?: number;
   observedAt?: number;
   revision?: string;
+  original?: DuplicateWindowOriginal;
   matches?: {
     fingerprint: string;
     original: DuplicateWindowOriginal;

@@ -30,6 +30,14 @@ const paths = {
     'apps/api/src/moderation/message-duplicate/message-duplicate-publication-time.ts',
   semanticKey: 'apps/api/src/webhook/webhook-semantic-event-key.ts',
   executionDeadline: 'apps/api/src/webhook/webhook-execution-deadline.ts',
+  media: 'apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts',
+  recompressionIndex:
+    'apps/api/src/moderation/message-duplicate/message-duplicate-recompression-index.ts',
+  photoAnalysis: 'apps/api/src/moderation/photo-duplicate/photo-duplicate-analysis.service.ts',
+  photoFingerprint: 'apps/api/src/moderation/photo-duplicate/photo-fingerprint.ts',
+  photoRecompression: 'apps/api/src/moderation/photo-duplicate/photo-recompression.ts',
+  recompressionVersion: 'apps/api/src/moderation/photo-duplicate/photo-recompression-version.ts',
+  counters: 'apps/api/src/moderation/redis-counter.service.ts',
 };
 function probe(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'maxim-duplicate-floor-'));
@@ -76,6 +84,64 @@ test('requires the message-v3 reader, durable admission and last action permit o
 });
 
 const mutations = [
+  ['state', '.refine(hasValidImageComparisonEvidence)', '.refine(() => true)'],
+  ['state', 'image-recompression-fixed-window-v1', 'image-fixed-window-v2'],
+  ['state', 'original.length === 1', 'original.length > 0'],
+  ['state', 'value.mediaHashes.length === 1', 'value.mediaHashes.length > 0'],
+  ['state', 'proof.originalHash === original[0]', 'true'],
+  ['state', 'proof.currentHash === value.mediaHashes[0]', 'true'],
+  ['guard', '!hasValidImageComparisonEvidence(binding)', 'false'],
+  ['history', 'hasValidImageComparisonEvidence(binding)', 'true'],
+  ['history', '[recompression.originalHash]', '[recompression.currentHash]'],
+  ['history', 'recompression.currentHash !== mediaHashes[0]', 'false'],
+  ['history', 'imageOriginal?: MessageDuplicateOriginal;', 'imageOriginal?: unknown;'],
+  ['history', '!input.imageOriginal ||', 'false ||'],
+  ['history', 'input.imageOriginal.mediaHashes.length !== 1', 'false'],
+  ['history', 'input.imageOriginal.mediaHashes[0] !== recompression.originalHash', 'false'],
+  ['history', 'recompressionOriginal: input.imageOriginal', 'recompressionOriginal: undefined'],
+  ['window', "p.mode ~= 'IMAGE' or #p.fingerprints ~= 1", 'false'],
+  ['window', 'not valid(original) or original.member ~= expected.member', 'false'],
+  ['window', 'original.revision ~= expected.revision', 'false'],
+  ['window', 'original.originalId ~= expected.originalId', 'false'],
+  ['window', 'original.epoch ~= expected.epoch', 'false'],
+  ['window', 'original.contentDigest ~= expected.contentDigest', 'false'],
+  ['window', 'p.at < original.publishedAtMs', 'false'],
+  ['window', 'p.at >= original.expiresAtMs', 'false'],
+  ['window', 'p.periodStart and original.publishedAtMs < p.periodStart', 'false'],
+  ['media', 'parsed.data.recompressionAnchor ?? parsed.data', 'parsed.data'],
+  ['media', '!recompression.anchor', 'true'],
+  ['media', 'message.messageId !== candidate.messageId', 'false'],
+  ['media', 'candidate.expiresAtMs <= input.job.eventTimestampMs', 'false'],
+  ['media', 'accepted?.mediaHashes.length !== 1', 'false'],
+  ['media', 'accepted.mediaHashes[0] !== candidate.canonicalHash', 'false'],
+  [
+    'media',
+    'expectedOriginalHash: candidate.canonicalHash',
+    'expectedOriginalHash: input.verified.hashes[0]!',
+  ],
+  ['photoAnalysis', 'result.proof.originalHash !== params.expectedOriginalHash', 'false'],
+  ['photoAnalysis', 'result.proof.currentHash !== params.expectedCurrentHash', 'false'],
+  [
+    'photoFingerprint',
+    '.verifyRecompression(original, current, request)',
+    '.acceptUnverifiedSimilarity(original, current, request)',
+  ],
+  ['photoRecompression', 'a.info.width !== b.info.width', 'false'],
+  ['photoRecompression', 'a.info.height !== b.info.height', 'false'],
+  ['photoRecompression', 'Math.abs(difference) > limits.maximum', 'false'],
+  ['photoRecompression', 'square > count * limits.tileRms ** 2', 'false'],
+  ['recompressionVersion', 'native-recompression-v1', 'unsafe-similarity-v0'],
+  ['recompressionIndex', '#decoded>8', '#decoded>800'],
+  ['recompressionIndex', 'math.min(expires,r.expiresAtMs)', 'expires'],
+  ['recompressionIndex', 'r.expiresAtMs>p.atMs', 'true'],
+  ['recompressionIndex', "p.op~='read' or withinHamming(r.recompressionHash)", 'true'],
+  [
+    'recompressionIndex',
+    'if distance>6 then return false end',
+    'if distance>60 then return false end',
+  ],
+  ['recompressionIndex', 'for i=1,16,2 do', 'for i=1,#hash,2 do'],
+  ['counters', 'DUPLICATE_RECOMPRESSION_INDEX_SCRIPT,', 'UNVERIFIED_SIMILARITY_SCRIPT,'],
   ['window', 'at < prior.at or (at == prior.at', 'false or (at == prior.at'],
   ['window', 'prior.conflict or prior.source ~= source', 'false'],
   ['window', 'elseif prior.introducedKnown == false then', 'elseif false then'],
@@ -538,11 +604,34 @@ const mutations = [
   ['migration', 'OLD."duplicate_policy_revision" +', 'NEW."duplicate_policy_revision" +'],
   ['migration', 'BEFORE INSERT OR UPDATE ON "chat_settings"', 'BEFORE INSERT ON "chat_settings"'],
 ];
+test('rejects an original pin moved behind the observe mutation boundary', (t) => {
+  const source = readFileSync(resolve(root, paths.window), 'utf8');
+  const start = source.indexOf('if p.recompressionOriginal then');
+  const end = source.indexOf('local previous = read(stateKey(p.member))', start);
+  assert.ok(start >= 0 && end > start);
+  const pin = source.slice(start, end);
+  const mutation = "write('life:' .. p.member .. ':' .. p.mode,";
+  const mutationStart = source.indexOf(mutation, end);
+  assert.ok(mutationStart > end);
+  const insertion = source.indexOf('\n', mutationStart);
+  assert.ok(insertion > mutationStart);
+  const updated =
+    source.slice(0, start) + source.slice(end, insertion + 1) + pin + source.slice(insertion + 1);
+  const result = probe(t, { window: updated });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /lacks the message duplicate v3 lifecycle\/revocation\/pre-dispatch/u,
+  );
+});
+
 for (const [key, before, after] of mutations) {
   test(`rejects rollback after removing ${key} capability ${before}`, (t) => {
     const source = readFileSync(resolve(root, paths[key]), 'utf8');
     assert.ok(source.includes(before), `Missing mutation anchor: ${before}`);
-    const result = probe(t, { [key]: source.replaceAll(before, after) });
+    const changed = source.replaceAll(before, after);
+    assert.notEqual(changed, source);
+    const result = probe(t, { [key]: changed });
     assert.notEqual(result.status, 0);
     assert.match(
       result.stderr,
@@ -571,6 +660,9 @@ test('rejects broad phone roots even with phone evidence v8 and the v14 settings
 });
 
 for (const [key, marker, fallback] of [
+  ['state', 'export function hasValidImageComparisonEvidence(', 'true'],
+  ['photoRecompression', 'function residualWithinBounds(', 'true'],
+  ['photoRecompression', 'export async function verifyNativePhotoRecompression(', 'null'],
   ['semantic', 'export function hasDuplicateQuantityUnitPrefix(', 'false'],
   ['semantic', 'function prefixQuantityUnitSpans(', '[]'],
   ['phones', 'function hasConventionalInternationalPhoneFormat(', 'true'],
@@ -578,10 +670,11 @@ for (const [key, marker, fallback] of [
   test('rejects missing ' + marker + ' body even when its markers remain outside', (t) => {
     const source = readFileSync(resolve(root, paths[key]), 'utf8');
     const start = source.indexOf(marker);
-    const end = source.indexOf('\n}', start + 1);
+    const closing = source.slice(start).search(/\n\}(?=\r?\n|$)/u);
+    const end = closing < 0 ? -1 : start + closing;
     assert.ok(start >= 0 && end > start);
     const body = source.slice(start, end + 2);
-    const opening = body.indexOf('{');
+    const opening = body.indexOf('{', body.lastIndexOf('):'));
     assert.ok(opening > 0);
     const stub = body.slice(0, opening + 1) + '\n  return ' + fallback + ';\n}';
     const updated = source.replace(body, stub) + '\n/* Removed capability:\n' + body + '\n*/\n';
@@ -838,7 +931,131 @@ test('rejects removal of only the last duplicate permit fence after suggestion p
 const checkpointSignature =
   /const beforeImmediateDeleteMutation = async \(\s*beforeFinalAuthority\?: \(\) => Promise<void>,?\s*\) => \{/u;
 const checkpointBlock =
-  / {12}try \{\n {14}await beforeFinalAuthority\?\.\(\);\n {12}\} catch \(error\) \{\n {14}throw new ModerationDeletePreDispatchGuardError\(error\);\n {12}\}\n/u;
+  / {14}async \(\) => \{\n {16}try \{\n {18}await beforeFinalAuthority\?\.\(\);\n {16}\} catch \(error\) \{\n {18}throw new ModerationDeletePreDispatchGuardError\(error\);\n {16}\}\n {14}\},\n/u;
+
+function replaceChecked(source, before, after) {
+  if (typeof before === 'string') assert.ok(source.includes(before), `Missing anchor: ${before}`);
+  else assert.match(source, before);
+  const changed = source.replace(before, after);
+  assert.notEqual(changed, source, `Unchanged mutation: ${before}`);
+  return changed;
+}
+
+function changeExecutorMethod(source, marker, change) {
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, `Missing method: ${marker}`);
+  assert.equal(source.indexOf(marker, start + marker.length), -1, `Ambiguous method: ${marker}`);
+  const end = source.indexOf('\n  private ', start + 1);
+  assert.ok(end > start);
+  const body = source.slice(start, end);
+  const changed = change(body);
+  assert.notEqual(changed, body);
+  return source.slice(0, start) + changed + source.slice(end);
+}
+
+function changeMutation(source, change) {
+  const start = source.search(checkpointSignature);
+  const end = source.indexOf('\n          };', start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  const changed = change(body);
+  assert.notEqual(changed, body);
+  return source.slice(0, start) + changed + source.slice(end);
+}
+
+// Representative direct qualification used before authority preparations. The
+// remaining source fixtures retain the same lifecycle and final-permit floors.
+const legacyDuplicateReasons = `private async authorizeGuardedUserDeleteReasons(intent, botId) {
+    const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
+      where: { intentId: intent.id },
+    });
+    if (!reasons.length) throw new ModerationDeleteReasonMissingError();
+    const params = { intentId: intent.id, chatId: intent.chatId, messageId: intent.messageId,
+      subjectUserId: intent.subjectUserId, botId, ownedReasonsOnly: true };
+    let messageDuplicateVerified = false;
+    const verifiedReasonDeadlines = new Map();
+    const check = async (run, keys = []) => {
+      const result = await run();
+      if (result === 'absent') throw new ModerationDeleteGuardedMessageAbsentError();
+      if (result !== 'allowed') throw new Error('Required moderation reason guard did not supply authority');
+      return result;
+    };
+    if (reasons.some((reason) => reason.reasonKey.startsWith('MESSAGE_DUPLICATE:'))) {
+      if (!this.messageDuplicateDeleteGuard) throw new Error('Message duplicate delete guard unavailable');
+      const duplicateReceipts = reasons.flatMap((reason) => {
+        const binding = reason.ruleCode === 'DUPLICATE_DELETE' ? parseMessageDuplicateBinding(reason.metadata) : null;
+        return binding?.version === 3 && binding.original && binding.authorization ? [{
+          reasonKey: reason.reasonKey,
+          deadlineAtMs: Math.min(binding.authorization.deadlineAtMs, binding.original.expiresAtMs),
+        }] : [];
+      });
+      messageDuplicateVerified = (await check(
+        () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params),
+        duplicateReceipts.map((receipt) => receipt.reasonKey),
+      )) === 'allowed';
+      if (messageDuplicateVerified)
+        for (const receipt of duplicateReceipts)
+          verifiedReasonDeadlines.set(receipt.reasonKey, receipt.deadlineAtMs);
+    }
+    return { messageDuplicateVerified, profanityVerified: false,
+      commercialVerifiedReasonKeys: [], verifiedReasonKeys: [],
+      verifiedReasonDeadlines: [...verifiedReasonDeadlines].map(([reasonKey, deadlineAtMs]) => ({ reasonKey, deadlineAtMs })),
+      independentVerified: false, independentAuthorityDeadlineAtMs: null };
+  }
+`;
+
+function legacyDuplicateExecutor(source, marked) {
+  let executor = changeExecutorMethod(
+    source,
+    'private async authorizeGuardedUserDeleteReasons(',
+    () => legacyDuplicateReasons,
+  );
+  executor = changeMutation(executor, (body) => {
+    const callback = body.match(checkpointBlock)?.[0];
+    assert.ok(callback);
+    let changed = replaceChecked(body, callback, '');
+    const suggestion = changed.lastIndexOf('            if (suggestionProof)');
+    const afterSuggestion = changed.indexOf(
+      '\n',
+      changed.indexOf('assertDeletionAllowed(suggestionProof);', suggestion),
+    );
+    assert.ok(suggestion >= 0 && afterSuggestion > suggestion);
+    const directCheckpoint = `
+            try {
+              await beforeFinalAuthority?.();
+            } catch (error) {
+              throw new ModerationDeletePreDispatchGuardError(error);
+            }`;
+    if (marked) {
+      changed =
+        changed.slice(0, afterSuggestion) + directCheckpoint + changed.slice(afterSuggestion);
+    } else {
+      changed = replaceChecked(
+        changed,
+        checkpointSignature,
+        'const beforeImmediateDeleteMutation = async () => {',
+      );
+    }
+    return changed;
+  });
+  if (!marked)
+    executor = replaceChecked(
+      executor,
+      /beforeImmediateDeleteMutation: withMaxFinalAuthorityCheckpoint\(\s*beforeImmediateDeleteMutation,\s*\),/u,
+      'beforeImmediateDeleteMutation,',
+    );
+  return executor;
+}
+
+for (const marked of [false, true]) {
+  test(`retains the legacy direct duplicate qualification with ${marked ? 'marked' : 'parameterless'} mutation`, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const executor = legacyDuplicateExecutor(source, marked);
+    assert.ok(!executor.includes('candidates.push({ preparation, keys, tag, fixedDeadlines });'));
+    const result = probe(t, { executor });
+    assert.equal(result.status, 0, result.stderr);
+  });
+}
 
 test('retains the legacy unmarked parameterless duplicate mutation reader', (t) => {
   const source = readFileSync(resolve(root, paths.executor), 'utf8');
@@ -851,21 +1068,34 @@ test('retains the legacy unmarked parameterless duplicate mutation reader', (t) 
       /beforeImmediateDeleteMutation: withMaxFinalAuthorityCheckpoint\(\s*beforeImmediateDeleteMutation,\s*\),/u,
       'beforeImmediateDeleteMutation,',
     );
+  assert.notEqual(executor, source);
   const result = probe(t, { executor });
   assert.equal(result.status, 0, result.stderr);
 });
 
-for (const change of ['missing', 'after final permit']) {
+for (const change of ['missing', 'unawaited', 'after final permit', 'duplicate']) {
   test(`rejects a marked duplicate mutation with checkpoint ${change}`, (t) => {
     const source = readFileSync(resolve(root, paths.executor), 'utf8');
     const checkpoint = source.match(checkpointBlock)?.[0];
     assert.ok(checkpoint);
-    let executor = source.replace(checkpoint, '');
-    if (change === 'after final permit') {
+    let executor = replaceChecked(source, checkpoint, '');
+    if (change === 'unawaited' || change === 'duplicate') {
+      executor = replaceChecked(
+        source,
+        checkpoint,
+        change === 'unawaited'
+          ? checkpoint.replace('await beforeFinalAuthority?.();', 'beforeFinalAuthority?.();')
+          : checkpoint.replace(
+              'await beforeFinalAuthority?.();',
+              'await beforeFinalAuthority?.();\n                  await beforeFinalAuthority?.();',
+            ),
+      );
+    } else if (change === 'after final permit') {
       const finalDeadline =
         '            const finalAuthorityAtMs = Math.max(Date.now(), verifiedReasonAuthorityAtMs);';
       assert.ok(executor.includes(finalDeadline));
-      executor = executor.replace(finalDeadline, checkpoint + finalDeadline);
+      const lateCheckpoint = '            await beforeFinalAuthority?.();\n';
+      executor = replaceChecked(executor, finalDeadline, lateCheckpoint + finalDeadline);
     }
     assert.notEqual(executor, source);
     assert.ok(executor.includes('authorityOnly: true'));
@@ -878,8 +1108,8 @@ for (const [name, method, before, after] of [
   [
     'qualification result',
     'private async authorizeGuardedUserDeleteReasons(',
-    /(messageDuplicateVerified\s*=\s*\(await check\([\s\S]*?\)\)) === 'allowed';/u,
-    "$1 === 'denied';",
+    /if \(candidate\.tag === 'duplicate'\) messageDuplicateVerified = true;/u,
+    "if (candidate.tag === 'duplicate') messageDuplicateVerified = false;",
   ],
   [
     'returned qualification',
@@ -906,7 +1136,7 @@ for (const [name, method, before, after] of [
     const end = source.indexOf('\n  private ', start + 1);
     assert.ok(start >= 0 && end > start);
     const body = source.slice(start, end);
-    const updated = body.replace(before, after);
+    const updated = replaceChecked(body, before, after);
     assert.notEqual(updated, body);
     const executor = source.slice(0, start) + updated + source.slice(end);
     assert.ok(
@@ -927,7 +1157,172 @@ test('rejects a last duplicate fence that still uses remote content guards', (t)
   const source = readFileSync(resolve(root, paths.executor), 'utf8');
   assert.ok(source.includes('authorityOnly: true'));
   const result = probe(t, {
-    executor: source.replace('authorityOnly: true', 'authorityOnly: false'),
+    executor: replaceChecked(source, 'authorityOnly: true', 'authorityOnly: false'),
   });
   assert.notEqual(result.status, 0);
 });
+
+for (const [name, before, after] of [
+  [
+    'preparation collection',
+    'candidates.push({ preparation, keys, tag, fixedDeadlines });',
+    'void preparation;',
+  ],
+  ['awaited preparation', 'const preparation = await run();', 'const preparation = run();'],
+  [
+    'candidate finalizer',
+    'await finalizeDeleteAuthority(candidate.preparation)',
+    'await finalizeDeleteAuthority(undefined)',
+  ],
+  [
+    'awaited finalizer',
+    'await finalizeDeleteAuthority(candidate.preparation)',
+    'finalizeDeleteAuthority(candidate.preparation)',
+  ],
+  [
+    'final result validation',
+    "if (result !== 'allowed' && (typeof result !== 'object' || result === null))",
+    'if (false)',
+  ],
+  [
+    'duplicate tag',
+    "        'duplicate',\n        receipts,",
+    "        'ordinary',\n        receipts,",
+  ],
+  ['duplicate reason keys', 'receipts.map((r) => r.reasonKey)', '[]'],
+  [
+    'duplicate original receipts',
+    "        'duplicate',\n        receipts,",
+    "        'duplicate',\n        [],",
+  ],
+]) {
+  test(`rejects disconnected prepared duplicate ${name}`, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const executor = changeExecutorMethod(
+      source,
+      'private async authorizeGuardedUserDeleteReasons(',
+      (body) => replaceChecked(body, before, after),
+    );
+    assert.ok(
+      executor.includes('this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params)'),
+    );
+    assert.notEqual(probe(t, { executor }).status, 0);
+  });
+}
+
+test('rejects a duplicate guard call retained only as an unused decoy outside the composer', (t) => {
+  const source = readFileSync(resolve(root, paths.executor), 'utf8');
+  const call = 'this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params)';
+  const executor =
+    changeExecutorMethod(source, 'private async authorizeGuardedUserDeleteReasons(', (body) =>
+      replaceChecked(body, call, 'unrelatedGuard(params)'),
+    ) + `\n// ${call}\n`;
+  assert.ok(executor.includes(call));
+  assert.notEqual(probe(t, { executor }).status, 0);
+});
+
+for (const [name, anchor] of [
+  ['collection', 'candidates.push({ preparation, keys, tag, fixedDeadlines });'],
+  ['finalizer', 'const result = await finalizeDeleteAuthority(candidate.preparation);'],
+]) {
+  test(`rejects a prepared duplicate ${name} retained only in a block comment`, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const executor = changeExecutorMethod(
+      source,
+      'private async authorizeGuardedUserDeleteReasons(',
+      (body) => replaceChecked(body, anchor, `/* ${anchor} */`),
+    );
+    const result = probe(t, { executor });
+    assert.equal(result.status, 1, result.stderr);
+  });
+}
+
+for (const comment of ['block', 'inline']) {
+  test(`rejects a prepared duplicate checkpoint retained only in a ${comment} comment`, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const anchor = 'await beforeFinalAuthority?.();';
+    const executor = changeExecutorMethod(
+      source,
+      'private async authorizeGuardedUserDeleteReasons(',
+      (body) => {
+        assert.equal(body.split(anchor).length, 2);
+        return replaceChecked(
+          body,
+          anchor,
+          comment === 'block' ? `/* ${anchor} */` : `void 0; // ${anchor}`,
+        );
+      },
+    );
+    const result = probe(t, { executor });
+    assert.equal(result.status, 1, result.stderr);
+  });
+}
+
+test('rejects an ambiguous duplicate composer method even when the first copy is safe', (t) => {
+  const source = readFileSync(resolve(root, paths.executor), 'utf8');
+  const marker = 'private async authorizeGuardedUserDeleteReasons(';
+  const start = source.indexOf(marker);
+  const end = source.indexOf('\n  private ', start + 1);
+  assert.ok(start >= 0 && end > start);
+  const executor = source + '\n' + source.slice(start, end);
+  assert.notEqual(executor, source);
+  assert.notEqual(probe(t, { executor }).status, 0);
+});
+
+test('rejects an ambiguous duplicate dispatch boundary even when the first copy is safe', (t) => {
+  const source = readFileSync(resolve(root, paths.executor), 'utf8');
+  const marker = 'private async runDeletePreDispatchGuards(';
+  const start = source.indexOf(marker);
+  const end = source.indexOf('\n  private ', start + 1);
+  assert.ok(start >= 0 && end > start);
+  const executor = source + '\n' + source.slice(start, end);
+  assert.notEqual(executor, source);
+  const result = probe(t, { executor });
+  assert.equal(result.status, 1, result.stderr);
+});
+
+test('rejects a checkpoint callback passed to an unawaited composer path', (t) => {
+  const source = readFileSync(resolve(root, paths.executor), 'utf8');
+  const executor = changeMutation(source, (body) =>
+    replaceChecked(
+      body,
+      'let textProof = await this.runDeletePreDispatchGuards(',
+      'let textProof = this.runDeletePreDispatchGuards(',
+    ),
+  );
+  assert.notEqual(probe(t, { executor }).status, 0);
+});
+
+test('rejects final duplicate authorization before the last suggestion and deadline proof', (t) => {
+  const source = readFileSync(resolve(root, paths.executor), 'utf8');
+  const executor = changeMutation(source, (body) => {
+    const permit = body.match(
+      / {12}if \(this\.messageDuplicateDeleteGuard && textProof\.messageDuplicateVerified\) \{[\s\S]*?\n {12}\}/u,
+    )?.[0];
+    assert.ok(permit);
+    const without = replaceChecked(body, permit, '');
+    const finalSuggestion = without.lastIndexOf('            if (suggestionProof)');
+    assert.ok(finalSuggestion >= 0);
+    return without.slice(0, finalSuggestion) + permit + '\n' + without.slice(finalSuggestion);
+  });
+  assert.notEqual(probe(t, { executor }).status, 0);
+});
+
+for (const [name, before, after] of [
+  [
+    'local fallback capsule',
+    'await finalizeDeleteAuthority(textProof.independentRecheck)',
+    'await finalizeDeleteAuthority(undefined)',
+  ],
+  [
+    'local fallback deadline',
+    'verifiedReasonAuthorityAtMs = await this.assertVerifiedReasonDeadlineFence(',
+    'verifiedReasonAuthorityAtMs = await removedDeadlineFence(',
+  ],
+]) {
+  test(`rejects a terminal duplicate refusal that drops its ${name}`, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const executor = changeMutation(source, (body) => replaceChecked(body, before, after));
+    assert.notEqual(probe(t, { executor }).status, 0);
+  });
+}

@@ -4,6 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from './photo-fingerprint-version';
+import { PHOTO_RECOMPRESSION_VERSION } from './photo-recompression-version';
 import { PhotoNativeContainmentError, runNativePhotoWorker } from './native-photo-runner';
 import {
   encodePhotoFrame,
@@ -41,7 +42,7 @@ type PhotoNativeRecycleReason =
 type PhotoNativeLifecycleEvent = Readonly<{
   event: 'native_photo_sandbox_recycle';
   reason: PhotoNativeRecycleReason;
-  operation: 'fingerprint';
+  operation: 'fingerprint' | 'verify_recompression';
 }>;
 
 export async function startNativePhotoSandbox(
@@ -106,12 +107,13 @@ export async function startNativePhotoSandbox(
   const sockets = new Set<Socket>();
   let active: AbortController | null = null;
   let activeWork: Promise<void> | null = null;
+  let activeOperation: PhotoNativeLifecycleEvent['operation'] = 'fingerprint';
   let poisoned = false;
   let closing = false;
   const poison = (reason: PhotoNativeRecycleReason) => {
     if (poisoned) return;
     poisoned = true;
-    recycle({ event: 'native_photo_sandbox_recycle', reason, operation: 'fingerprint' });
+    recycle({ event: 'native_photo_sandbox_recycle', reason, operation: activeOperation });
   };
   const server = createServer((socket) => {
     if (sockets.size >= 3 || poisoned || closing) {
@@ -136,6 +138,7 @@ export async function startNativePhotoSandbox(
           encodePhotoFrame({
             protocolVersion: PHOTO_NATIVE_PROTOCOL_VERSION,
             algorithmVersion: PHOTO_FINGERPRINT_ALGORITHM_VERSION,
+            recompressionVersion: PHOTO_RECOMPRESSION_VERSION,
             network: 'none',
             environment: 'allowlist',
             processGroupTeardown: 'verified_or_cgroup_recycle',
@@ -161,6 +164,7 @@ export async function startNativePhotoSandbox(
         return;
       }
       active = controller;
+      activeOperation = request.operation;
       activeWork = (async () => {
         try {
           const result = await runWorker(

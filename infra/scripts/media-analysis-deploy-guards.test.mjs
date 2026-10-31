@@ -28,6 +28,30 @@ function read(path) {
   return readFileSync(resolve(root, path), 'utf8');
 }
 
+function replaceExactlyOnce(source, anchor, replacement) {
+  const matches =
+    typeof anchor === 'string'
+      ? source.split(anchor).length - 1
+      : [...source.matchAll(new RegExp(anchor.source, `${anchor.flags.replaceAll('g', '')}g`))]
+          .length;
+  assert.equal(matches, 1, `mutation anchor must occur once: ${anchor}`);
+  const changed = source.replace(anchor, replacement);
+  assert.notEqual(changed, source, `mutation must change source: ${anchor}`);
+  return changed;
+}
+
+function mutateImageBoundary(source, mutate) {
+  const marker = '  private async runDeletePreDispatchGuards(';
+  assert.equal(source.split(marker).length - 1, 1);
+  const start = source.indexOf(marker);
+  const end = source.indexOf('\n  private ', start + marker.length);
+  assert.ok(end > start, 'image boundary must have a following method');
+  const boundary = source.slice(start, end);
+  const changed = mutate(boundary);
+  assert.notEqual(changed, boundary, 'image boundary mutation must change bytes');
+  return source.slice(0, start) + changed + source.slice(end);
+}
+
 function runTopologyProbe(probe, environment = {}) {
   return spawnSync('bash', ['-c', `source "$TOPOLOGY_PATH"\n${probe}`], {
     cwd: root,
@@ -165,94 +189,240 @@ if maxim_topology_require_image_text_stop_list_delete_guard target-sha; then exi
   assert.match(stale.stderr, /lacks the reviewed image-text stop-list pre-dispatch guard/u);
 });
 
-test('image-text rollback floor accepts the real executor and rejects lost absence guards', () => {
+test('image-text rollback floor accepts prepared and legacy authority and rejects broken flow', async (t) => {
   const executor = read('apps/api/src/moderation/moderation-delete-intent.service.ts');
   const binding = read('apps/api/src/moderation/commercial-ocr/image-text-stop-list-binding.ts');
   const directory = mkdtempSync(resolve(tmpdir(), 'maxim-image-guard-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
   const executorPath = resolve(directory, 'executor.ts');
   const bindingPath = resolve(directory, 'binding.ts');
-  const call =
-    /const imageTextStopListGuard = await this\.assertImageTextStopListDeleteIntentStillActionable\([\s\S]*?\);/u;
-  const absence = /if \(imageTextStopListGuard === 'absent'\) \{[\s\S]*?\n {6}\}/u;
-  assert.match(executor, call);
-  assert.match(executor, absence);
+  const statusPath = resolve(directory, 'parser.status');
+  const diagnosticsPath = resolve(directory, 'parser.stderr');
+  const preparation = `const imageTextPreparation = finalDispatchLeaseToken
+        ? await this.prepareImageTextStopListDeleteAuthority(intent, botId)
+        : await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);`;
+  const discriminator = `let imageTextStopListGuard = isPreparedDeleteAuthority(imageTextPreparation)
+        ? undefined
+        : imageTextPreparation;`;
+  const absence = `if (imageTextStopListGuard === 'absent') {
+        throw new ModerationDeleteGuardedMessageAbsentError(
+          'guarded_image_text_stop_list_predispatch_exact_absence',
+        );
+      }`;
+  const finalizer = 'imageTextStopListGuard = await finalizeDeleteAuthority(imageTextPreparation);';
+  const checkpointAndFinalizer = `await beforeFinalAuthority?.();
+            ${finalizer}`;
+  const boundaryCase = (label, anchor, replacement) => [
+    label,
+    mutateImageBoundary(executor, (boundary) => replaceExactlyOnce(boundary, anchor, replacement)),
+    1,
+  ];
+  // FLAG: Keep a bounded value-returning legacy route; CI must not require old Git objects.
+  const legacy = `import {} from './commercial-ocr/image-text-stop-list-binding';
+class LegacyImageGuard {
+  private async runDeletePreDispatchGuards(intent: IntentRow, botId: string, options?: Options) {
+    const imageTextStopListGuard = await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);
+    if (imageTextStopListGuard === 'absent') {
+      throw new ModerationDeleteGuardedMessageAbsentError(
+        'guarded_image_text_stop_list_predispatch_exact_absence',
+      );
+    }
+    await options?.beforeDeleteMutation?.();
+  }
+  private async assertImageTextStopListDeleteIntentStillActionable(
+    intent: IntentRow,
+    botId: string,
+  ): Promise<'not_applicable' | 'absent'> {
+    return 'not_applicable';
+  }
+}
+`;
+  const legacyCall =
+    'const imageTextStopListGuard = await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);';
+  const legacyAbsence = / {4}if \(imageTextStopListGuard === 'absent'\) \{[\s\S]*?\n {4}\}/u;
+  const outsideCallback = mutateImageBoundary(executor, (boundary) =>
+    replaceExactlyOnce(
+      replaceExactlyOnce(boundary, finalizer, ''),
+      'const proof = await this.authorizeGuardedUserDeleteReasons(',
+      `${finalizer}\n        const proof = await this.authorizeGuardedUserDeleteReasons(`,
+    ),
+  );
   const cases = [
-    ['real multiline executor', executor, 0],
+    ['current prepared executor', executor, 0],
+    ['legacy checked value', legacy, 0],
     [
-      'same guard on one line',
-      executor.replace(
-        call,
-        'const imageTextStopListGuard = await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);',
+      'prepared whitespace',
+      mutateImageBoundary(executor, (boundary) =>
+        replaceExactlyOnce(
+          boundary,
+          preparation,
+          `const imageTextPreparation = finalDispatchLeaseToken ? await this.prepareImageTextStopListDeleteAuthority( intent, botId, ) : await this.assertImageTextStopListDeleteIntentStillActionable( intent, botId, );`,
+        ),
       ),
       0,
     ],
     [
-      'discarded result',
-      executor
-        .replace(
-          call,
+      'legacy discarded absence',
+      replaceExactlyOnce(
+        replaceExactlyOnce(
+          legacy,
+          legacyCall,
           'await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);',
-        )
-        .replace(absence, ''),
-      1,
-    ],
-    ['missing absence check', executor.replace(absence, ''), 1],
-    [
-      'wrong error type',
-      executor.replace(absence, (value) =>
-        value.replace('ModerationDeleteGuardedMessageAbsentError', 'Error'),
+        ),
+        legacyAbsence,
+        '',
       ),
       1,
     ],
     [
+      'legacy callback before guard',
+      replaceExactlyOnce(
+        legacy,
+        legacyCall,
+        `await options?.beforeDeleteMutation?.('recheck');\n    ${legacyCall}`,
+      ),
+      1,
+    ],
+    boundaryCase('missing preparation', preparation, 'const imageTextPreparation = undefined;'),
+    boundaryCase(
+      'wrong preparation arguments',
+      preparation,
+      replaceExactlyOnce(
+        preparation,
+        'prepareImageTextStopListDeleteAuthority(intent, botId)',
+        'prepareImageTextStopListDeleteAuthority(botId, intent)',
+      ),
+    ),
+    boundaryCase(
+      'unawaited preparation',
+      preparation,
+      replaceExactlyOnce(
+        preparation,
+        '? await this.prepareImageTextStopListDeleteAuthority',
+        '? this.prepareImageTextStopListDeleteAuthority',
+      ),
+    ),
+    boundaryCase(
+      'wrong legacy branch',
+      preparation,
+      replaceExactlyOnce(
+        preparation,
+        'assertImageTextStopListDeleteIntentStillActionable(intent, botId)',
+        'assertImageTextStopListDeleteIntentStillActionable(botId, intent)',
+      ),
+    ),
+    boundaryCase(
+      'missing prepared discriminator',
+      discriminator,
+      'let imageTextStopListGuard = imageTextPreparation;',
+    ),
+    boundaryCase(
+      'discriminator examines another capsule',
+      discriminator,
+      replaceExactlyOnce(
+        discriminator,
+        'isPreparedDeleteAuthority(imageTextPreparation)',
+        'isPreparedDeleteAuthority(reportPreparation)',
+      ),
+    ),
+    boundaryCase('missing exact absence rejection', absence, ''),
+    boundaryCase(
+      'wrong absence error',
+      absence,
+      replaceExactlyOnce(absence, 'ModerationDeleteGuardedMessageAbsentError', 'Error'),
+    ),
+    boundaryCase(
       'absence branch does not throw',
-      executor.replace(absence, (value) => value.replace('throw new', 'return new')),
-      1,
-    ],
+      absence,
+      replaceExactlyOnce(absence, 'throw new', 'return new'),
+    ),
+    boundaryCase(
+      'caller callback precedes absence',
+      absence,
+      `await options?.beforeDeleteMutation?.('initial_unattempted');\n      ${absence}`,
+    ),
+    boundaryCase('duplicate preparation', preparation, `${preparation}\n      ${preparation}`),
+    boundaryCase('missing assigned finalizer', finalizer, 'imageTextStopListGuard = undefined;'),
+    boundaryCase(
+      'unawaited finalizer',
+      finalizer,
+      'imageTextStopListGuard = finalizeDeleteAuthority(imageTextPreparation);',
+    ),
+    boundaryCase(
+      'wrong finalizer capsule',
+      finalizer,
+      'imageTextStopListGuard = await finalizeDeleteAuthority(reportPreparation);',
+    ),
+    boundaryCase(
+      'discarded finalizer result',
+      finalizer,
+      'await finalizeDeleteAuthority(imageTextPreparation);',
+    ),
+    boundaryCase('duplicate finalizer', finalizer, `${finalizer}\n            ${finalizer}`),
+    boundaryCase(
+      'finalizer before checkpoint',
+      checkpointAndFinalizer,
+      `${finalizer}\n            await beforeFinalAuthority?.();`,
+    ),
+    boundaryCase(
+      'unawaited checkpoint',
+      checkpointAndFinalizer,
+      `beforeFinalAuthority?.();\n            ${finalizer}`,
+    ),
+    boundaryCase(
+      'unawaited composer callback',
+      'const proof = await this.authorizeGuardedUserDeleteReasons(',
+      'const proof = this.authorizeGuardedUserDeleteReasons(',
+    ),
+    ['finalizer outside callback', outsideCallback, 1],
+    boundaryCase(
+      'missing original deadline carry',
+      'verifiedReasonDeadlines.push(...imageTextStopListGuard.reasonDeadlines);',
+      'verifiedReasonDeadlines.push(...[]);',
+    ),
     [
-      'call follows dispatch',
-      executor.replace(call, (value) => `await options?.beforeDeleteMutation?.();\n      ${value}`),
-      1,
-    ],
-    [
-      'dispatch before absence check',
-      executor.replace(
-        absence,
-        (value) => `await options?.beforeDeleteMutation?.();\n      ${value}`,
+      'broken compatibility wrapper',
+      replaceExactlyOnce(
+        executor,
+        `return finalizeDeleteAuthority(\n      await this.prepareImageTextStopListDeleteAuthority(intent, botId),\n    );`,
+        `return this.prepareImageTextStopListDeleteAuthority(intent, botId);`,
       ),
       1,
     ],
     [
-      'phase callback before absence check',
-      executor.replace(
-        absence,
-        (value) => `await options?.beforeDeleteMutation?.('initial_unattempted');\n      ${value}`,
-      ),
+      'comment decoy cannot restore finalizer',
+      `${mutateImageBoundary(executor, (boundary) =>
+        replaceExactlyOnce(boundary, finalizer, 'imageTextStopListGuard = undefined;'),
+      )}\n// ${finalizer}\n`,
       1,
     ],
+    boundaryCase(
+      'inline comment cannot restore callback finalizer',
+      finalizer,
+      `void 0; // async () => { await beforeFinalAuthority?.(); ${finalizer}`,
+    ),
     [
-      'duplicate guard call',
-      executor.replace(
-        call,
-        (value) =>
-          `${value}\n      await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);`,
-      ),
-      1,
-    ],
-    [
-      'wrong argument order',
-      executor.replace(call, (value) =>
-        value.replace('intent,\n        botId,', 'botId,\n        intent,'),
-      ),
+      'method decoy cannot restore finalizer',
+      `${mutateImageBoundary(executor, (boundary) =>
+        replaceExactlyOnce(boundary, finalizer, 'imageTextStopListGuard = undefined;'),
+      )}\n  private async decoy() { ${finalizer} }\n`,
       1,
     ],
   ];
-  try {
-    writeFileSync(bindingPath, binding);
-    for (const [label, source, expected] of cases) {
+  writeFileSync(bindingPath, binding);
+  for (const [label, source, expected] of cases) {
+    await t.test(label, () => {
       writeFileSync(executorPath, source);
+      writeFileSync(statusPath, '');
+      writeFileSync(diagnosticsPath, '');
       const result = runTopologyProbe(
         `
+node() {
+  local status
+  if "$MAXIM_TEST_NODE" "$@" 2>>"$PARSER_DIAGNOSTICS"; then status=0; else status=$?; fi
+  printf '%s\\n' "$status" >>"$PARSER_STATUS"
+  return "$status"
+}
 git() {
   if [[ "$1" == "cat-file" ]]; then return 0; fi
   if [[ "$1" != "show" ]]; then return 2; fi
@@ -264,12 +434,25 @@ git() {
 }
 maxim_topology_require_image_text_stop_list_delete_guard target-sha
 `,
-        { BINDING_FIXTURE: bindingPath, EXECUTOR_FIXTURE: executorPath },
+        {
+          BINDING_FIXTURE: bindingPath,
+          EXECUTOR_FIXTURE: executorPath,
+          MAXIM_TEST_NODE: process.execPath,
+          PARSER_STATUS: statusPath,
+          PARSER_DIAGNOSTICS: diagnosticsPath,
+        },
       );
-      assert.equal(result.status, expected, `${label}: ${result.stderr}`);
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
+      const statuses = readFileSync(statusPath, 'utf8').trim().split('\n').filter(Boolean);
+      const diagnostics = `${label}: ${result.stderr}\n${readFileSync(diagnosticsPath, 'utf8')}`;
+      assert.ok(statuses.length > 0, diagnostics);
+      assert.ok(
+        statuses.every((status) => status === '0' || status === '1'),
+        diagnostics,
+      );
+      assert.equal(result.error, undefined, diagnostics);
+      assert.equal(result.signal, null, diagnostics);
+      assert.equal(result.status, expected, diagnostics);
+    });
   }
 });
 

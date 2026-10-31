@@ -25,6 +25,7 @@ import {
   type PhotoFingerprintCacheLookupResult,
 } from './photo-duplicate-history.store';
 import { PhotoDownloadTimeoutError, SecurePhotoDownloader } from './secure-photo-downloader';
+import type { PhotoRecompressionProof } from './photo-recompression-version';
 
 const PROOF_CACHE_WAIT_LIMIT_MS = 250;
 
@@ -65,6 +66,42 @@ export class PhotoDuplicateAnalysisService {
     private readonly historyStore: PhotoDuplicateHistoryStore,
     @Optional() private readonly metrics?: MessageDuplicateMetricsService,
   ) {}
+
+  async verifyRecompression(params: {
+    originalUrl: string;
+    currentUrl: string;
+    expectedOriginalHash: string;
+    expectedCurrentHash: string;
+    deadlineAtMs: number;
+  }): Promise<PhotoRecompressionProof | null> {
+    if (
+      !/^[a-f0-9]{64}$/.test(params.expectedOriginalHash) ||
+      !/^[a-f0-9]{64}$/.test(params.expectedCurrentHash)
+    )
+      return null;
+    // FLAG: Both independent downloads and the native pair share the original attempt deadline.
+    // A candidate hash/cache entry never substitutes for either current source or exact SHA.
+    const original = await this.downloader.download(params.originalUrl, {
+      deadlineAtMs: params.deadlineAtMs,
+    });
+    const current = await this.downloader.download(params.currentUrl, {
+      deadlineAtMs: params.deadlineAtMs,
+    });
+    const result = await this.fingerprintService.verifyRecompression(
+      original.bytes,
+      current.bytes,
+      {
+        deadlineAtMs: params.deadlineAtMs,
+      },
+    );
+    if (
+      !result.matched ||
+      result.proof.originalHash !== params.expectedOriginalHash ||
+      result.proof.currentHash !== params.expectedCurrentHash
+    )
+      return null;
+    return result.proof;
+  }
 
   async analyzeAlbum(params: {
     album: LogicalPhotoAlbum;
@@ -124,12 +161,17 @@ export class PhotoDuplicateAnalysisService {
     album: LogicalPhotoAlbum,
     ttlSeconds: number,
     deadlineAtMs = Number.MAX_SAFE_INTEGER,
+    requireRecompressionHash = false,
   ) {
     const params = { album, ttlSeconds };
     if (Date.now() >= deadlineAtMs) {
       return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
     }
-    const cachedFingerprints = await this.readCachedFingerprints(params.album, deadlineAtMs);
+    const cachedFingerprints = await this.readCachedFingerprints(
+      params.album,
+      deadlineAtMs,
+      requireRecompressionHash,
+    );
     if (Date.now() >= deadlineAtMs) {
       return { kind: 'incomplete' as const, reason: 'decode_deadline_exceeded' as const };
     }
@@ -238,6 +280,7 @@ export class PhotoDuplicateAnalysisService {
   private async readCachedFingerprints(
     album: LogicalPhotoAlbum,
     deadlineAtMs: number,
+    requireRecompressionHash = false,
   ): Promise<Array<PhotoFingerprint | null>> {
     const photoIds = album.images.map((image) => this.cacheIdentity(album, image));
     if (photoIds.length === 0) return [];
@@ -249,7 +292,9 @@ export class PhotoDuplicateAnalysisService {
     return album.images.map((_, index) => {
       const fingerprint = lookup.kind === 'available' ? lookup.fingerprints[index] : null;
       // Legacy proofs do not contain resource costs and cannot bypass the resumed budget.
-      return fingerprint?.decodeCost ? fingerprint : null;
+      return fingerprint?.decodeCost && (!requireRecompressionHash || fingerprint.recompressionHash)
+        ? fingerprint
+        : null;
     });
   }
 
