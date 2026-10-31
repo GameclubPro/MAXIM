@@ -4,6 +4,61 @@
 # Before installing flock-v1, separately prove that no incompatible legacy
 # operation is running. An absent legacy directory cannot prove that fact.
 # Never unlink this file, clean a legacy lock, or unlock an inherited descriptor.
+MAXIM_PAIR_RELEASE_HELPER="${BASH_SOURCE[0]%/*}/pair-release-admission.sh"
+
+maxim_pair_release_required() {
+  local item actual
+  # FLAG: Inherited root/source_dir/PWD values do not establish another product's scope.
+  actual="$(pwd -P)" || return 0
+  [[ "$actual" != /var/www/svyazka && "$actual" != /var/www/svyazka/* ]] || return 1
+  for item in "${BASH_SOURCE[@]}"; do
+    actual="$(readlink -e -- "$item" 2>/dev/null)" || continue
+    [[ "$actual" != /var/www/svyazka && "$actual" != /var/www/svyazka/* ]] || return 1
+  done
+  return 0
+}
+
+maxim_pair_release_load() {
+  maxim_pair_release_required || return 0
+  # shellcheck source=infra/scripts/lib/pair-release-admission.sh
+  source "$MAXIM_PAIR_RELEASE_HELPER"
+}
+
+maxim_pair_release_assert() {
+  maxim_pair_release_required || return 0
+  maxim_pair_release_load && pair_release_admission_assert || return 1
+}
+
+maxim_pair_release_release() {
+  maxim_pair_release_required || return 0
+  maxim_pair_release_load && pair_release_admission_release
+}
+
+maxim_pair_release_mode() {
+  local caller
+  if [[ "${DEPLOY_MODE:-}" == plan ]]; then
+    for caller in "${BASH_SOURCE[@]}"; do
+      [[ "${caller##*/}" != vps-pull-build-up.sh ]] || { printf '%s\n' tooling; return; }
+    done
+  fi
+  printf '%s\n' runtime
+}
+
+require_pair_release_admission_dispatch() {
+  maxim_pair_release_required || return 0
+  maxim_pair_release_load || return 1
+  local target="$1" candidate entry
+  pair_release_admission_candidate "$target" infra/scripts/lib/pair-release-admission.sh || return 1
+  candidate="$(git show "${target}:infra/scripts/lib/deploy-lock.sh")" || return 1
+  grep -Eq '^maxim_pair_release_assert\(\)' <<<"$candidate" \
+    && grep -Eq '^[[:space:]]*pair_release_admission_acquire major .*\|\| return 1$' <<<"$candidate" \
+    && grep -Eq '^[[:space:]]*maxim_pair_release_assert && validate_deploy_lock_path && validate_deploy_lock_descriptor$' <<<"$candidate" || return 1
+  for entry in infra/scripts/vps-pull-build-up.sh infra/scripts/vps-runtime-rollback.sh infra/scripts/vps-connect.sh; do
+    candidate="$(git show "${target}:${entry}")" || return 1
+    grep -Eq '^[[:space:]]*require_pair_release_admission_dispatch "' <<<"$candidate" || return 1
+  done
+}
+
 deploy_lock_file() {
   printf '%s\n' /var/lib/maxim-deploy/deploy.lock
 }
@@ -87,7 +142,7 @@ validate_deploy_lock_descriptor() {
 }
 
 require_deploy_lock() {
-  validate_deploy_lock_path && validate_deploy_lock_descriptor
+  maxim_pair_release_assert && validate_deploy_lock_path && validate_deploy_lock_descriptor
 }
 
 validate_market_statistics_deploy_admission() {
@@ -169,6 +224,7 @@ acquire_deploy_lock() {
     return 1
   fi
   if [[ -n "${MAXIM_DEPLOY_LOCK_VERSION:-}${MAXIM_DEPLOY_LOCK_OWNER_PID:-}${MAXIM_DEPLOY_LOCK_FD:-}${MAXIM_DEPLOY_LOCK_IDENTITY:-}" ]]; then
+    maxim_pair_release_assert || return 1
     validate_deploy_lock_path || return 1
     validate_deploy_lock_descriptor || return 1
     trap release_deploy_lock EXIT
@@ -176,13 +232,20 @@ acquire_deploy_lock() {
     return 0
   fi
 
-  validate_deploy_lock_path 1 || return 1
+  if maxim_pair_release_required; then
+    maxim_pair_release_load || return 1
+    # FLAG: Acquire the host pair admission before the existing MAXIM product lock.
+    pair_release_admission_acquire major '' "$(maxim_pair_release_mode)" || return 1
+  fi
+  trap release_deploy_lock EXIT
+  validate_deploy_lock_path 1 || { maxim_pair_release_release || true; return 1; }
   lock_file="$(deploy_lock_file)"
   identity="$(stat -c '%d:%i' -- "$lock_file")" || return 1
   exec {MAXIM_DEPLOY_LOCK_FD}<>"$lock_file" || return 1
   if ! flock -n "$MAXIM_DEPLOY_LOCK_FD"; then
     exec {MAXIM_DEPLOY_LOCK_FD}>&-
     unset MAXIM_DEPLOY_LOCK_FD
+    maxim_pair_release_release || true
     echo 'Another supported deploy, rollback or runtime operation holds the deploy lock.' >&2
     return 1
   fi
@@ -203,11 +266,71 @@ acquire_deploy_lock() {
 
 release_deploy_lock() {
   if [[ -z "${MAXIM_DEPLOY_LOCK_VERSION:-}${MAXIM_DEPLOY_LOCK_OWNER_PID:-}${MAXIM_DEPLOY_LOCK_FD:-}${MAXIM_DEPLOY_LOCK_IDENTITY:-}" ]]; then
-    return 0
+    maxim_pair_release_release
+    return
   fi
   validate_deploy_lock_descriptor || return 1
   # Closing only this process's FD keeps inherited child work fenced. flock -u
   # would release the shared open description while that work is still alive.
   exec {MAXIM_DEPLOY_LOCK_FD}>&-
   unset MAXIM_DEPLOY_LOCK_VERSION MAXIM_DEPLOY_LOCK_OWNER_PID MAXIM_DEPLOY_LOCK_IDENTITY MAXIM_DEPLOY_LOCK_FD
+  maxim_pair_release_release
+}
+
+_maxim_deploy_controller_start() {
+  local raw fields
+  IFS= read -r raw <"/proc/$1/stat" || return 1
+  read -r -a fields <<<"${raw##*) }"
+  [[ "${fields[1]:-}" == "$2" && "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${fields[19]}"
+}
+
+_maxim_deploy_signal_controller() {
+  local signal="$1" status="$2" observed
+  command_signal_count=$((command_signal_count + 1))
+  command_signal_status="$status"
+  command_pending_signal="$signal"
+  [[ -n "$command_pid" && -n "$command_start" ]] || return 0
+  observed="$(_maxim_deploy_controller_start "$command_pid" "$command_owner")" || return 0
+  if [[ "$observed" == "$command_start" ]]; then
+    kill -s "$signal" "$command_pid" 2>/dev/null || true
+  fi
+}
+
+supervise_deploy_lock_command() {
+  local command_pid='' command_start='' command_owner="$BASHPID" command_status=70
+  local command_signal_count=0 command_signal_status=0 command_pending_signal='' signal_count_before
+  (($# > 0)) || return 2
+  require_deploy_lock || return 1
+  # FLAG: This terminal supervisor keeps the original admission owner alive. Only
+  # an observed normal success may release it; interruption/failure keeps its evidence.
+  trap - EXIT
+  trap '_maxim_deploy_signal_controller INT 130' INT
+  trap '_maxim_deploy_signal_controller TERM 143' TERM
+  trap '_maxim_deploy_signal_controller HUP 129' HUP
+  "$@" <&0 &
+  command_pid=$!
+  command_start="$(_maxim_deploy_controller_start "$command_pid" "$command_owner")" || command_start=''
+  if [[ -n "$command_pending_signal" ]]; then
+    _maxim_deploy_signal_controller "$command_pending_signal" "$command_signal_status"
+  fi
+  while :; do
+    signal_count_before="$command_signal_count"
+    if wait "$command_pid"; then
+      command_status=0
+      break
+    else
+      command_status=$?
+    fi
+    # FLAG: A trapped signal can interrupt wait before the child has finished.
+    ((command_signal_count > signal_count_before)) || break
+  done
+  if ((command_signal_count > 0)); then
+    ((command_status != 0)) || command_status="$command_signal_status"
+  elif ((command_status == 0)); then
+    # FLAG: The controller ended normally; finish the exact owner's cleanup.
+    trap '' INT TERM HUP
+    release_deploy_lock || command_status=70
+  fi
+  exit "$command_status"
 }

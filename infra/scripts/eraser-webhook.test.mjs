@@ -70,6 +70,8 @@ function fixture(t, mode = 'success') {
   writeFileSync(
     join(bin, 'git'),
     [
+      '#!/usr/bin/env bash',
+      'if [[ "$1" == -C && ( "$2" == "$FIXTURE_PAIR_MAJOR_ROOT" || "$2" == "$FIXTURE_PAIR_KARAVAN_ROOT" ) ]]; then exec "$REAL_GIT" "$@"; fi',
       ...prefix,
       'case "$*" in',
       '  "rev-parse HEAD") if [[ "$FIXTURE_MODE" == wrong-source ]]; then printf "%s\\n" "$FIXTURE_RUNTIME_SHA"; else printf "%s\\n" "$FIXTURE_TOOLING_SHA"; fi ;;',
@@ -91,6 +93,8 @@ assertEraserHealth({ status: 'ok', service: 'eraser', enabled: true,
   writeFileSync(
     join(bin, 'node'),
     [
+      '#!/usr/bin/env bash',
+      'if [[ "$1" == -e || "$1" == "$FIXTURE_PAIR_REPORTER" ]]; then exec "$REAL_NODE" "$@"; fi',
       ...prefix,
       'if [[ "$1" == infra/scripts/eraser-smoke.mjs ]]; then shift; exec "$REAL_NODE" "$FIXTURE_HEALTH_PROBE" "$@"; fi',
       'exec "$REAL_NODE" "$@"',
@@ -112,6 +116,10 @@ assertEraserHealth({ status: 'ok', service: 'eraser', enabled: true,
   const env = deployLockEnvironment({
     PATH: `${bin}:${process.env.PATH}`,
     REAL_NODE: process.execPath,
+    REAL_GIT: spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim(),
+    FIXTURE_PAIR_REPORTER: lock.pair.reporter,
+    FIXTURE_PAIR_MAJOR_ROOT: lock.pair.majorRoot,
+    FIXTURE_PAIR_KARAVAN_ROOT: lock.pair.karavanRoot,
     FIXTURE_REPO: repo,
     FIXTURE_TOOLING_SHA: TOOLING_SHA,
     FIXTURE_RUNTIME_SHA: RUNTIME_SHA,

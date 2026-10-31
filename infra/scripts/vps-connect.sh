@@ -25,6 +25,7 @@ DATABASE_BREAK_GLASS_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS:-}"
 DATABASE_BREAK_GLASS_REASON_FROM_CALLER="${MAXIM_VPS_DATABASE_BREAK_GLASS_REASON:-}"
 DEPLOY_DISK_MIN_FREE_BYTES_FROM_CALLER="${MAXIM_DEPLOY_DISK_MIN_FREE_BYTES:-}"
 DEPLOY_API_READY_TIMEOUT_SEC_FROM_CALLER="${MAXIM_DEPLOY_API_READY_TIMEOUT_SEC:-}"
+PAIR_RELEASE_EXPECTED_STATE_FROM_CALLER="${PAIR_RELEASE_EXPECTED_STATE_SHA256:-}"
 readonly MESSAGE_RETENTION_MODE_FROM_CALLER="${MAXIM_MESSAGE_RETENTION_MODE:-}"
 readonly COMMERCIAL_AI_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_ENFORCEMENT:-}"
 readonly COMMERCIAL_AI_POOL_WORKERS_FROM_CALLER="${MAXIM_COMMERCIAL_LLM_POOL_WORKERS_ENABLED:-}"
@@ -49,6 +50,7 @@ MAXIM_COMMERCIAL_LLM_POOL_4B_POLICY="$COMMERCIAL_AI_POOL_4B_POLICY_FROM_CALLER"
 MAXIM_MESSAGE_RETENTION_MODE="$MESSAGE_RETENTION_MODE_FROM_CALLER"
 STATISTICS_EXCHANGE_V3_ENABLED="$STATISTICS_EXCHANGE_V3_FROM_CALLER"
 MAXIM_STATISTICS_CENTRAL_EPOCH="$STATISTICS_CENTRAL_EPOCH_FROM_CALLER"
+PAIR_RELEASE_EXPECTED_STATE_SHA256="$PAIR_RELEASE_EXPECTED_STATE_FROM_CALLER"
 
 MAXIM_VPS_SSH_TARGET="${MAXIM_VPS_SSH_TARGET:-maxim-vps}"
 MAXIM_VPS_REPO_DIR="${MAXIM_VPS_REPO_DIR:-/var/www/Chat_bot}"
@@ -68,6 +70,13 @@ Commands:
   finalize-release-recovery [branch] [--runtime-sha <sha>] [--api-only]
                               Prove an exact runtime and finalize its interrupted manifest
   install-deploy-flock <old-sha>  Install reviewed lock tooling under both protocols
+  pair-release-state            Read bounded Major/Karavan release identities and fingerprint
+  install-pair-release-admission <major-sha> <karavan-local-repo> <karavan-sha> [operator-user]
+                                Provision the shared admission during its reviewed upgrade window
+  verify-pair-release-admission [operator-user]
+                                Verify installed admission and both synchronized sources
+  reconcile-pair-release-admission <owner-hash> <state-hash> <major|karavan> <target-sha> <runtime|tooling> [components]
+                                Archive one proved completed, interrupted admission
   legacy-cold-recovery <private-request.json>
                               Inspect or apply an exact journal-bound legacy recovery
   source-abandonment <private-request.json>
@@ -343,9 +352,15 @@ remote_exec() {
   local remote_command
   local args=()
 
+  if [[ -n "$PAIR_RELEASE_EXPECTED_STATE_SHA256" && ! "$PAIR_RELEASE_EXPECTED_STATE_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+    echo 'Invalid pair release state fingerprint.' >&2; return 2
+  fi
   maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
   printf -v remote_command 'cd %q && %s' "$MAXIM_VPS_REPO_DIR" "$command"
+  if [[ -n "$PAIR_RELEASE_EXPECTED_STATE_SHA256" ]]; then
+    remote_command="export PAIR_RELEASE_EXPECTED_STATE_SHA256=$(printf '%q' "$PAIR_RELEASE_EXPECTED_STATE_SHA256"); $remote_command"
+  fi
   # The command is composed and shell-escaped locally before the remote shell parses it.
   # shellcheck disable=SC2029
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
@@ -365,6 +380,43 @@ install_deploy_flock() {
   esac
   remote_exec "$(shell_quote_args bash -s -- "$1" "$target_sha")" <"$ROOT_DIR/infra/scripts/vps-install-deploy-flock.sh"
 }
+
+install_pair_release_admission() (
+  set -euo pipefail
+  export GIT_NO_REPLACE_OBJECTS=1
+  local major_sha="${1:-}" karavan_root="${2:-}" karavan_sha="${3:-}" operator="${4:-maximadmin}"
+  local local_stage remote_stage="" remote_heads major_before karavan_before
+  local -a heads
+  [[ "$#" == 3 || "$#" == 4 ]] && [[ "$major_sha" =~ ^[a-f0-9]{40}$ && "$karavan_sha" =~ ^[a-f0-9]{40}$ && "$operator" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || return 2
+  [[ "$MAXIM_VPS_REPO_DIR" == /var/www/Chat_bot && "$karavan_root" == /* && -d "$karavan_root" ]] || return 2
+  [[ "$(git rev-parse refs/heads/main)" == "$major_sha" && "$(git -C "$karavan_root" rev-parse refs/heads/main)" == "$karavan_sha" ]] || return 2
+  [[ "$(git rev-parse HEAD)" == "$major_sha" && -z "$(git status --porcelain)" \
+    && "$(git -C "$karavan_root" rev-parse HEAD)" == "$karavan_sha" && -z "$(git -C "$karavan_root" status --porcelain)" ]] || { echo 'Bootstrap requires clean exact selected local source in both repositories.' >&2; return 2; }
+  node scripts/ci/assert-green.mjs "$major_sha"
+  (cd "$karavan_root"; node tools/attest-karavan-release.mjs verify --ref "$karavan_sha")
+  remote_heads="$(remote_exec 'timeout 10 bash -c '\''git -C /var/www/Chat_bot rev-parse HEAD && git -C /var/www/max-delivery-platform rev-parse HEAD'\''')"
+  mapfile -t heads <<<"$remote_heads"
+  [[ "${#heads[@]}" == 2 && "${heads[0]}" =~ ^[a-f0-9]{40}$ && "${heads[1]}" =~ ^[a-f0-9]{40}$ ]] || return 1
+  major_before="${heads[0]}"; karavan_before="${heads[1]}"
+  git merge-base --is-ancestor "$major_before" "$major_sha"
+  git -C "$karavan_root" merge-base --is-ancestor "$karavan_before" "$karavan_sha"
+  local_stage="$(mktemp -d)"
+  git show "$major_sha:infra/scripts/install-pair-release-admission.sh" >"$local_stage/installer.sh"
+  # shellcheck disable=SC2317
+  cleanup_pair_install() {
+    rm -rf -- "$local_stage"
+    if [[ "$remote_stage" =~ ^/tmp/major-karavan-admission\.[A-Za-z0-9]{8}$ ]]; then
+      remote_exec "$(shell_quote_args timeout 10 rm -rf -- "$remote_stage")" >/dev/null 2>&1 || true
+    fi
+  }
+  trap cleanup_pair_install EXIT
+  if [[ "$major_sha" != "$major_before" ]]; then git bundle create "$local_stage/major.bundle" refs/heads/main "^$major_before"; fi
+  if [[ "$karavan_sha" != "$karavan_before" ]]; then git -C "$karavan_root" bundle create "$local_stage/karavan.bundle" refs/heads/main "^$karavan_before"; fi
+  remote_stage="$(remote_exec 'umask 077; mktemp -d /tmp/major-karavan-admission.XXXXXXXX')"
+  [[ "$remote_stage" =~ ^/tmp/major-karavan-admission\.[A-Za-z0-9]{8}$ ]] || return 1
+  tar -C "$local_stage" -cf - . | remote_exec "$(shell_quote_args timeout 60 tar -C "$remote_stage" -xf -)"
+  remote_exec "$(shell_quote_args timeout --signal=TERM --kill-after=5 90 sudo -n bash -s -- install "$operator" "$major_sha" "$karavan_sha" "$remote_stage")" <"$local_stage/installer.sh"
+)
 
 validate_backlog_request() {
   node --input-type=module - "$ROOT_DIR" "$1" "$2" "$3" <<'NODE'
@@ -1002,6 +1054,7 @@ if [[ "$(git rev-parse --verify refs/heads/main 2>/dev/null || true)" != "$expec
   exit 1
 fi
 require_market_statistics_lock_dispatch "$expected_tooling_sha" || exit 1
+require_pair_release_admission_dispatch "$expected_tooling_sha" || exit 1
 if [[ -e /var/lib/maxim-deploy/eraser-rate-limit-reader-version || -L /var/lib/maxim-deploy/eraser-rate-limit-reader-version ]]; then
   source infra/scripts/lib/deploy-topology.sh
   maxim_topology_require_eraser_rate_limit_reader "$expected_tooling_sha" tooling || exit 1
@@ -1973,6 +2026,22 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command" in
+  pair-release-state)
+    [[ "$#" == 0 ]] || exit 2
+    remote_exec 'timeout 12 bash /var/lib/major-karavan-release/admission.sh state'
+    ;;
+  reconcile-pair-release-admission)
+    [[ "$#" == 5 || "$#" == 6 ]] || exit 2
+    remote_exec "$(shell_quote_args timeout 20 bash /var/lib/major-karavan-release/admission.sh reconcile "$@")"
+    ;;
+  install-pair-release-admission)
+    install_pair_release_admission "$@"
+    ;;
+  verify-pair-release-admission)
+    [[ "$#" == 0 || "$#" == 1 ]] && [[ "${1:-maximadmin}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || exit 2
+    # shellcheck disable=SC2016
+    remote_exec "$(shell_quote_args timeout 20 bash -c 'set -euo pipefail; [[ "$(id -un)" == "$1" ]]; bash /var/lib/major-karavan-release/admission.sh verify; cmp -s /var/www/Chat_bot/infra/scripts/lib/pair-release-admission.sh /var/lib/major-karavan-release/admission.sh; cmp -s /var/www/max-delivery-platform/infra/scripts/pair-release-admission.sh /var/lib/major-karavan-release/admission.sh; cmp -s /var/www/Chat_bot/infra/scripts/pair-release-state.mjs /var/lib/major-karavan-release/state.mjs; cmp -s /var/www/max-delivery-platform/infra/scripts/pair-release-state.mjs /var/lib/major-karavan-release/state.mjs; bash /var/lib/major-karavan-release/admission.sh state' verify "${1:-maximadmin}")"
+    ;;
   doctor)
     doctor
     ;;

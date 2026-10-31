@@ -18,6 +18,19 @@ import test from 'node:test';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const connector = readFileSync(new URL('./vps-connect.sh', import.meta.url), 'utf8');
+const lockHelper = readFileSync(new URL('./lib/deploy-lock.sh', import.meta.url), 'utf8');
+const commandSupervisor = [
+  '_maxim_deploy_controller_start',
+  '_maxim_deploy_signal_controller',
+  'supervise_deploy_lock_command',
+]
+  .map((name) => {
+    const start = lockHelper.indexOf(`${name}() {`);
+    const end = lockHelper.indexOf('\n}\n', start);
+    assert.ok(start >= 0 && end > start, `Missing command supervisor function: ${name}`);
+    return lockHelper.slice(start, end + 2);
+  })
+  .join('\n');
 const start = connector.indexOf('source_abandonment_corrective() {');
 const end = connector.indexOf('\nremote_from_args() {', start);
 assert.ok(start > 0 && end > start);
@@ -188,6 +201,9 @@ function remoteCall(t, overrides = {}, args = []) {
   [[ "$FIXTURE_LOCK_STATUS" == 0 ]] || return "$FIXTURE_LOCK_STATUS"
   export FIXTURE_LOCK_HELD=1
 }
+require_deploy_lock() { [[ "\${FIXTURE_LOCK_HELD:-}" == 1 ]]; }
+release_deploy_lock() { :; }
+${commandSupervisor}
 `,
   );
   writeFileSync(
@@ -215,7 +231,7 @@ esac
     `#!/usr/bin/env bash
 set -euo pipefail
 [[ "\${FIXTURE_LOCK_HELD:-}" == 1 ]] || exit 91
-[[ "$1" == "$FIXTURE_ROOT/infra/scripts/source-abandonment-corrective-host.mjs" ]] || exit 92
+[[ $# == 1 && "$1" == "$FIXTURE_ROOT/infra/scripts/source-abandonment-corrective-host.mjs" ]] || exit 92
 printf 'EXEC\\n' >> "$FIXTURE_TRACE"
 cat > "$FIXTURE_FORWARDED"
 `,

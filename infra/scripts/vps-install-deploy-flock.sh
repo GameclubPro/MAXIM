@@ -17,6 +17,18 @@ if [[ -n "${MAXIM_DEPLOY_LOCK_DIR:-}${MAXIM_DEPLOY_LOCK_FD:-}${MAXIM_DEPLOY_LOCK
   echo 'Lock overrides or inherited operations are refused.' >&2
   exit 1
 fi
+transition_pair_acquired=0
+release_transition_pair() {
+  if [[ "$transition_pair_acquired" == 1 ]]; then pair_release_admission_release; fi
+}
+if [[ -e /var/lib/major-karavan-release || -L /var/lib/major-karavan-release ]]; then
+  # FLAG: Even the old one-time installer must enter common admission before product locks.
+  # shellcheck source=infra/scripts/lib/pair-release-admission.sh
+  source /var/lib/major-karavan-release/admission.sh
+  pair_release_admission_acquire major '' tooling "$new_sha"
+  transition_pair_acquired=1
+  trap release_transition_pair EXIT
+fi
 legacy=/tmp/maxim-main-deploy.lock
 protected=/var/lib/maxim-deploy
 if [[ -e "$legacy" || -L "$legacy" ]] || ! mkdir -m 700 "$legacy"; then
@@ -31,7 +43,7 @@ cleanup() {
     rmdir -- "$legacy"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup; release_transition_pair' EXIT
 for path in /var /var/lib "$protected"; do
   [[ -d "$path" && ! -L "$path" ]] || exit 1
   read -r owner mode <<<"$(stat -c '%u %a' "$path")"
@@ -72,6 +84,10 @@ assert_no_legacy_actors
 git fetch origin main
 [[ "$(git rev-parse origin/main)" == "$new_sha" ]] || exit 1
 git merge-base --is-ancestor "$old_sha" "$new_sha"
+if git cat-file -e "$new_sha:infra/scripts/lib/pair-release-admission.sh" 2>/dev/null && [[ "$transition_pair_acquired" != 1 ]]; then
+  echo 'Pair-aware source requires the guarded install-pair-release-admission bootstrap first.' >&2
+  exit 1
+fi
 git show "$new_sha:infra/scripts/lib/deploy-lock.sh" | grep -Fq 'export MAXIM_DEPLOY_LOCK_VERSION=flock-v1'
 git show "$new_sha:infra/scripts/legacy-cold-journal.mjs" >/dev/null
 assert_no_legacy_actors

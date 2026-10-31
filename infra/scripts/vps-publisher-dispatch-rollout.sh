@@ -448,7 +448,7 @@ record_mode_audit_start() {
       retained_mode="$CURRENT_ROLLUP_MODE"; retained_configured="$CURRENT_ROLLUP_CONFIGURED"
       ;;
     rollup-noop)
-      command=start-rollup
+      command='start-rollup'
       current_mode="$CURRENT_ROLLUP_MODE"; current_configured="$CURRENT_ROLLUP_CONFIGURED"
       retained_mode="$CURRENT_SELECTION_MODE"; retained_configured="$CURRENT_SELECTION_CONFIGURED"
       ;;

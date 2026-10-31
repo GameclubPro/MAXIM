@@ -87,6 +87,44 @@ test('range mode resolves refs and includes deleted, added, and both rename path
   assert.match(result.source.head, /^[0-9a-f]{40}$/u);
 });
 
+test('since scope includes committed and dirty changes, rename chains, and unique paths', async (t) => {
+  const repo = await createRepo(t);
+  const base = git(repo.path, ['rev-parse', 'HEAD']).trim();
+  git(repo.path, ['mv', 'apps/api/src/old.ts', 'apps/api/src/committed.ts']);
+  await writeFile(join(repo.path, 'README.md'), 'committed\n');
+  git(repo.path, ['add', '-A']);
+  git(repo.path, ['commit', '-qm', 'committed changes']);
+  git(repo.path, ['mv', 'apps/api/src/committed.ts', 'apps/api/src/dirty.ts']);
+  await writeFile(join(repo.path, 'README.md'), 'dirty overlap\n');
+  await writeFile(join(repo.path, 'untracked.ts'), 'new\n');
+  await unlink(join(repo.path, 'docs/remove.md'));
+
+  const result = collectGitChanges({ cwd: repo.path, mode: 'since', since: base });
+  assert.deepEqual(result.source, {
+    mode: 'since',
+    base,
+    head: git(repo.path, ['rev-parse', 'HEAD']).trim(),
+  });
+  assert.deepEqual(result.changedPaths, [
+    'README.md',
+    'apps/api/src/committed.ts',
+    'apps/api/src/dirty.ts',
+    'apps/api/src/old.ts',
+    'docs/remove.md',
+    'untracked.ts',
+  ]);
+  assert.equal(result.changes.filter(({ path }) => path === 'README.md').length, 1);
+  assert.equal(result.changes.filter(({ oldPath }) => oldPath).length, 2);
+  assert.equal(
+    result.changes.find(({ newPath }) => newPath === 'apps/api/src/committed.ts').status,
+    'D',
+  );
+  assert.throws(
+    () => collectGitChanges({ cwd: repo.path, mode: 'since', since: base, head: 'HEAD' }),
+    /requires --since only/u,
+  );
+});
+
 async function createRepo(t) {
   const path = await mkdtemp(join(tmpdir(), 'maxim-agent-plan-'));
   t.after(() => rm(path, { recursive: true, force: true }));

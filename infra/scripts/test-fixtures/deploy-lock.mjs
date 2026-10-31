@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { pairReleaseFixture } from './pair-release.mjs';
 
 const source = readFileSync(new URL('../lib/deploy-lock.sh', import.meta.url), 'utf8');
 
@@ -10,6 +11,7 @@ export function deployLockFixture(directory, helper = resolve(directory, 'deploy
   const legacyDirectory = resolve(directory, 'legacy-lock');
   mkdirSync(protectedDirectory, { mode: 0o700 });
   mkdirSync(dirname(helper), { recursive: true });
+  const pair = pairReleaseFixture(directory, resolve(dirname(helper), 'pair-release-admission.sh'));
   writeFileSync(
     helper,
     source
@@ -21,13 +23,14 @@ export function deployLockFixture(directory, helper = resolve(directory, 'deploy
     protectedDirectory,
     legacyDirectory,
     file: resolve(protectedDirectory, 'deploy.lock'),
+    pair,
   };
 }
 
 export function deployLockEnvironment(extra = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith('MAXIM_DEPLOY_LOCK_')) delete env[key];
+    if (key.startsWith('MAXIM_DEPLOY_LOCK_') || key.startsWith('PAIR_RELEASE_')) delete env[key];
   }
   return { ...env, ...extra };
 }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { deployLockEnvironment } from './test-fixtures/deploy-lock.mjs';
+import { pairReleaseFixture } from './test-fixtures/pair-release.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'maxim-lock-transition-'));
@@ -34,14 +35,20 @@ function fixture(t) {
   git('add', '.');
   git('commit', '-m', 'old');
   const old = git('rev-parse', 'HEAD');
+  let pair;
   const relocate = (text) =>
     text
       .replaceAll('/var/lib/maxim-deploy', protectedDir)
+      .replaceAll(
+        '/var/lib/major-karavan-release',
+        pair?.protectedDirectory ?? '/var/lib/major-karavan-release',
+      )
       .replaceAll('/tmp/maxim-main-deploy.lock', legacy);
   writeFileSync(
     join(repo, 'infra/scripts/lib/deploy-lock.sh'),
     relocate(readFileSync(new URL('./lib/deploy-lock.sh', import.meta.url), 'utf8')),
   );
+  pair = pairReleaseFixture(root, join(repo, 'infra/scripts/lib/pair-release-admission.sh'));
   writeFileSync(join(repo, 'infra/scripts/legacy-cold-journal.mjs'), '// reviewed fixture\n');
   git('add', '.');
   git('commit', '-m', 'new');
@@ -67,7 +74,17 @@ function fixture(t) {
       encoding: 'utf8',
       timeout: 15000,
     });
-  return { repo, legacy, protectedDir, old, target, run, git, env };
+  return {
+    repo,
+    legacy,
+    protectedDir,
+    admission: pair.protectedDirectory,
+    old,
+    target,
+    run,
+    git,
+    env,
+  };
 }
 
 test('one-time transition advances exact source under both locks and retains the protected inode', (t) => {
@@ -100,6 +117,16 @@ test('dirty source refuses before any lock ownership', (t) => {
   const h = fixture(t);
   writeFileSync(join(h.repo, 'infra/scripts/lib/deploy-lock.sh'), '# unrelated work\n');
   assert.notEqual(h.run().status, 0);
+  assert.equal(h.git('rev-parse', 'HEAD'), h.old);
+  assert.equal(existsSync(h.legacy), false);
+});
+
+test('pair-aware target without installed common admission refuses before source advance', (t) => {
+  const h = fixture(t);
+  rmSync(h.admission, { recursive: true });
+  const result = h.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /guarded install-pair-release-admission bootstrap/u);
   assert.equal(h.git('rev-parse', 'HEAD'), h.old);
   assert.equal(existsSync(h.legacy), false);
 });

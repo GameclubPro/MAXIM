@@ -1,9 +1,44 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-export function collectGitChanges({ cwd = process.cwd(), mode = 'worktree', base, head } = {}) {
+export function collectGitChanges({
+  cwd = process.cwd(),
+  mode = 'worktree',
+  base,
+  head,
+  since,
+} = {}) {
   const repoRoot = runGitText(cwd, ['rev-parse', '--show-toplevel']).trim();
+
+  if (mode === 'since') {
+    if (!since || base || head) throw new Error('Since mode requires --since only.');
+    const committed = collectGitChanges({
+      cwd: repoRoot,
+      mode: 'range',
+      base: since,
+      head: 'HEAD',
+    });
+    const worktree = collectGitChanges({ cwd: repoRoot, mode: 'worktree' });
+    const changes = new Map();
+    for (const change of [...committed.changes, ...worktree.changes]) {
+      const target = change.newPath ?? change.path;
+      // FLAG: Keep every touched scope, but never count a deleted committed migration as present.
+      const status = existsSync(resolve(repoRoot, target)) ? change.status : 'D';
+      const key = JSON.stringify([change.oldPath ?? null, target]);
+      changes.set(key, { ...change, status });
+    }
+    return buildChangeSet(
+      repoRoot,
+      mode,
+      sortChanges([...changes.values()]),
+      committed.source.base,
+      committed.source.head,
+    );
+  }
+  if (since) throw new Error('--since requires since mode.');
 
   if (mode === 'worktree') {
     assertMissingRefOptions(mode, base, head);

@@ -16,6 +16,13 @@ const minuteReaderMarker = 'maxim_topology_require_max_api_metrics_minute_reader
 const apiAuthorityMarker = 'maxim_topology_require_statistics_and_night_mode_recovery';
 const previousReleaseMarker = 'select_release_recovery_base';
 const connect = readFileSync(resolve(root, 'infra/scripts/vps-connect.sh'), 'utf8');
+const pairAdmissionSources = [
+  'infra/scripts/lib/pair-release-admission.sh',
+  'infra/scripts/lib/deploy-lock.sh',
+  'infra/scripts/vps-pull-build-up.sh',
+  'infra/scripts/vps-runtime-rollback.sh',
+  'infra/scripts/vps-connect.sh',
+];
 
 function functionBlock(name, source = connect) {
   const start = source.indexOf(`${name}() {`);
@@ -117,6 +124,13 @@ function bootstrapProbe(t, { name, args, current = false, previousMarker, gitMod
         'rev-parse --verify refs/heads/main')
           if [[ "$MAXIM_TEST_GIT_MODE" == wrong-main ]]; then printf 'different\\n'; else printf 'reviewed\\n'; fi
           ;;
+        ${pairAdmissionSources.map((path) => `'show reviewed:${path}'`).join('|')})
+          if [[ "$MAXIM_TEST_GIT_MODE" == missing-pair-admission && "$2" == reviewed:infra/scripts/lib/pair-release-admission.sh ]]; then
+            printf '# target predates pair admission\\n'
+          else
+            cat "$MAXIM_TEST_SOURCE_ROOT/\${2#*:}"
+          fi
+          ;;
         'checkout main') cp "$MAXIM_TEST_CURRENT_ENTRYPOINT" "$MAXIM_TEST_ENTRYPOINT" ;;
         'rev-parse HEAD') printf 'reviewed\\n' ;;
         *) echo "Unexpected bootstrap Git operation" >&2; return 99 ;;
@@ -138,6 +152,7 @@ function bootstrapProbe(t, { name, args, current = false, previousMarker, gitMod
         MAXIM_TEST_GIT_LOG: gitLog,
         MAXIM_TEST_ARGUMENT_LOG: argumentLog,
         MAXIM_TEST_GIT_MODE: gitMode,
+        MAXIM_TEST_SOURCE_ROOT: root,
       }),
       encoding: 'utf8',
     },
@@ -377,6 +392,7 @@ for (const [name, args] of [
       'status --porcelain --untracked-files=no',
       'cat-file -e reviewed^{commit}',
       'rev-parse --verify refs/heads/main',
+      ...pairAdmissionSources.map((path) => `show reviewed:${path}`),
       'checkout main',
       'rev-parse HEAD',
     ]);
@@ -473,3 +489,15 @@ for (const [gitMode, error] of [
     assert.ok(!probe.gitCalls.includes('checkout main'));
   });
 }
+
+test('reviewed tooling without pair admission refuses before source checkout or entrypoint', (t) => {
+  const probe = bootstrapProbe(t, {
+    name: 'rollback_release',
+    args: ['release-id'],
+    gitMode: 'missing-pair-admission',
+  });
+  assert.notEqual(probe.result.status, 0);
+  assert.equal(probe.arguments, null);
+  assert.ok(probe.gitCalls.includes('show reviewed:infra/scripts/lib/pair-release-admission.sh'));
+  assert.ok(!probe.gitCalls.includes('checkout main'));
+});

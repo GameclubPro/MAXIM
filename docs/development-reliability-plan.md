@@ -287,6 +287,10 @@ which the root `check` script does not include. Focused local selection changes 
 `Required` and `Analyze JavaScript and TypeScript` nor guarded deploy, strict smokes and manifest
 verification. Tests pin these aggregate-command assumptions.
 
+The [machine interface](development/agent-machine-contract.md) exposes repo-owned JSON planning,
+execution results, task-baseline scope and exact focused test paths. Coordinators use these
+interfaces without duplicating impact rules; the commit helper remains the final aggregate owner.
+
 No verification cache is introduced: a green result from different inputs is not reusable release
 evidence. The preflight and staged checks shorten feedback and catch mismatches; the exact committed
 SHA is still validated by CI after commit hooks. Ignored local configuration and other non-Git inputs

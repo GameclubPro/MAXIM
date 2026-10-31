@@ -82,6 +82,11 @@ Detailed constraints selected by the routing table in [infrastructure agent note
 
 ## Deploy And Rollback
 
+- Major and Karavan use the fixed shared VPS admission before their product locks. Bootstrap
+  with the exact-target bundle installer and verify both checkouts; do not bootstrap through
+  ordinary deploy. Planning uses a bounded private-state fingerprint, rechecked after admission.
+  See [pair release admission](../operations/runbooks/pair-release-admission.md).
+
 - Host-side deploy, release, reclaim, rollback, and monitor tooling requires Node 24 on the backend VPS. Before the first manifest-aware deploy, provision `/var/lib/maxim-deploy` as a writable `0750` directory owned by the deploy user.
 - Local submit: stage the intended paths, then run `./infra/scripts/local-commit-push.sh "<message>" main`. The helper is staged-only by default, runs `agent:verify --staged`, commits, and pushes the exact resulting `HEAD`; `--all` is an explicit broad-staging opt-in.
 - `--all` excludes every `AGENTS.md` unless `--include-agents` is present, and already-staged agent notes are rejected without that flag.

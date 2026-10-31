@@ -10,5 +10,6 @@ fi
 # shellcheck source=infra/scripts/lib/deploy-lock.sh
 source "$ROOT_DIR/infra/scripts/lib/deploy-lock.sh"
 acquire_deploy_lock
-# FLAG: The shared inherited lock remains held through stop, seal, readback and restart.
-exec node "$ROOT_DIR/infra/scripts/source-abandonment-host.mjs"
+# FLAG: The original admission owner and inherited locks remain through stop,
+# seal, readback, restart and observed controller completion.
+supervise_deploy_lock_command node "$ROOT_DIR/infra/scripts/source-abandonment-host.mjs"
