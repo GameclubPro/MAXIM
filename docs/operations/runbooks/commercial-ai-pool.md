@@ -93,9 +93,20 @@ dispatcher, then the exact model generation. Only positive readback of both stop
 generations permits an exact-token lease CAS. The CAS atomically records its own
 release receipt; a missing lease alone never establishes completion. The original
 model container restarts, passes pinned readiness and the closed synthetic smoke,
-then the same dispatcher restarts and passes readiness. Other roles, stores,
+then the same dispatcher restarts and passes readiness. This background role is
+headless: it has neither HTTP readiness nor a Docker healthcheck. Its role check
+requires the same attested running process generation across a five-second
+stability interval, within the existing three-minute deadline. Useful model work
+remains a separate acceptance check. Other roles, stores,
 cooldowns, source proofs and uncertain moderation effects retain their identities.
 The temporary dispatcher pause reduces AI coverage during this operation.
+
+The streamed lease helper must be a single regular file owned by the deploy user
+and must not permit group or other writes. If Git transport creates it with mode
+`664`, preview refuses before any process or lease mutation. Verify the exact
+committed bytes and ownership, then normalize only that helper to `644` under the
+existing protected and shared-project locks; preserve the failed preview. Do not
+weaken its reader or change model, journal or lease data to pass that check.
 
 After interruption, resume the same operation UUID, controller source and reviewed
 digest. A later preview of an existing journal reports its original plan and phase;
@@ -106,6 +117,16 @@ operation is terminal: repeating it never stops processes or removes a lease
 acquired by later natural work. Journals and release receipts remain as evidence.
 This operation never replays old sources or turns a prior uncertain answer into a
 moderation decision.
+
+The controller at `895cc0cbe10bae80a3379348fc98a355699d20d2` incorrectly waited
+for a Docker healthcheck on the headless dispatcher. Its interrupted
+`starting_dispatcher`, `dispatcher_ready` or `complete` journal can be finished
+by a corrected exact-green controller descended from that source, with only the
+finite reviewed controller changes. This compatibility path preserves the
+original plan source, UUID and digest. It refuses every process start/stop and
+lease CAS; an already restored generation must pass the readiness check. Earlier
+phases and other old sources have no such allowance. The terminal result reports
+both the immutable plan source and the controller that completed it.
 
 After recovery, verify actual CPU pool attempts and completed consultations,
 classification outcomes and admission losses in a fresh window. Healthy containers
