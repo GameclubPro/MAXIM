@@ -5,6 +5,7 @@ import { MaxApiInternalRateLimitError, type MaxClientService } from '../max/max-
 import {
   markMaxPreDispatchGuardRejected,
   MAX_EDIT_PRE_DISPATCH_GUARD_REJECTED_CODE,
+  usesMaxFinalAuthorityCheckpoint,
 } from '../max/max-action-pre-dispatch-guard';
 import { ModerationService } from './moderation.service';
 import { ChannelPostDemandRuntime } from './channel-post-demand-runtime';
@@ -355,21 +356,19 @@ describe('ModerationService channel auto post buttons', () => {
       const prisma = {
         ...createChannelMutationGuardPrismaMock(),
         chat: {
-          findUnique: jest
-            .fn()
-            .mockResolvedValue({
-              id: 'channel-1',
-              title: 'Channel',
-              entityType: 'CHANNEL',
-              channelSettings: {
-                commentsEnabled: false,
-                postSuggestionsEnabled: false,
-                postSignatureEnabled: false,
-                quickButtonsEnabled: false,
-                updatedAt: new Date('2026-03-06T15:00:00Z'),
-              },
-              admins: [],
-            }),
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            title: 'Channel',
+            entityType: 'CHANNEL',
+            channelSettings: {
+              commentsEnabled: false,
+              postSuggestionsEnabled: false,
+              postSignatureEnabled: false,
+              quickButtonsEnabled: false,
+              updatedAt: new Date('2026-03-06T15:00:00Z'),
+            },
+            admins: [],
+          }),
         },
         channelAutoPostAttachMarker: marker.delegate,
         auditLog: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
@@ -654,6 +653,13 @@ describe('ModerationService channel auto post buttons', () => {
     );
     const options = (maxClient.editMessageInlineKeyboard.mock.calls as any)[0][3];
     await expect(options.beforeEditMutation()).resolves.toBeUndefined();
+    expect(usesMaxFinalAuthorityCheckpoint(options.beforeEditMutation)).toBe(true);
+    const beforeFinalAuthority = jest.fn(async () => {
+      settings.quickButtonsEnabled = false;
+    });
+    await expect(options.beforeEditMutation(beforeFinalAuthority)).rejects.toThrow('disabled');
+    expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
+    settings.quickButtonsEnabled = true;
     await (service as any).handleChannelUpdate(update, context);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
     settings.quickButtonsEnabled = false;

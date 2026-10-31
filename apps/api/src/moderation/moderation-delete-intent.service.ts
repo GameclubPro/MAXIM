@@ -52,7 +52,10 @@ import { MaxBotLinkService, type MaxDeleteMessageBotRoute } from '../max/max-bot
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { resolveExplicitMembershipAccessDenial } from '../max/max-membership-access-error';
-import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import {
+  wasMaxPreDispatchGuardRejected,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 import { readMaxRetryAfterMs } from '../max/max-retry-after';
 import { MaxModerationApiBudgetError } from '../max/max-moderation-api-budget';
 import {
@@ -2750,7 +2753,9 @@ export class ModerationDeleteIntentService {
           ) {
             throw new Error('Suggestion subscription intent identity changed');
           }
-          const beforeImmediateDeleteMutation = async () => {
+          const beforeImmediateDeleteMutation = async (
+            beforeFinalAuthority?: () => Promise<void>,
+          ) => {
             await this.assertLeaseForExternalCall(heartbeat);
             if (suggestionProof)
               await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
@@ -2784,6 +2789,13 @@ export class ModerationDeleteIntentService {
             verifiedReasonKeys = textProof.verifiedReasonKeys ?? [];
             if (suggestionProof)
               await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
+            // FLAG: Complete both normal evidence passes before reserving the DELETE slot.
+            // Keep the database deadline fence and duplicate's final permit after admission.
+            try {
+              await beforeFinalAuthority?.();
+            } catch (error) {
+              throw new ModerationDeletePreDispatchGuardError(error);
+            }
             let verifiedReasonAuthorityAtMs = await this.assertVerifiedReasonDeadlineFence(
               intent,
               leaseToken,
@@ -2884,7 +2896,9 @@ export class ModerationDeleteIntentService {
             () =>
               this.maxClient.deleteMessage(intent.chatId, intent.messageId, {
                 immediate: true,
-                beforeImmediateDeleteMutation,
+                beforeImmediateDeleteMutation: withMaxFinalAuthorityCheckpoint(
+                  beforeImmediateDeleteMutation,
+                ),
                 botId,
                 timeoutMs: this.deleteTimeoutMs,
                 trafficClass:

@@ -5,6 +5,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import { withMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 import {
   ModerationSanctionStateChangedError,
   type ModerationSanctionStateLeaseGuard,
@@ -70,20 +71,20 @@ export async function attemptManualMemberUnban(
       sanctionEventId: expectedSanctionEventId,
       actorUserId,
     },
-    beforeImmediateMemberMutation: async (revalidateRoute) => {
+    beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
       await leaseGuard.assertOwned();
+      if (await readTargetAccess()) throw new ModerationSanctionStateChangedError();
+      // FLAG: Complete the target MAX read before quota and route admission. Its wait
+      // must precede the final sanction and lease checks; no MAX calls may follow them.
+      await beforeFinalAuthority?.();
       await assertSanctionState({
         chatId,
         targetUserId,
         releaseAction: 'UNBAN',
         expectedSanctionEventId,
       });
-      if (await readTargetAccess()) throw new ModerationSanctionStateChangedError();
       await leaseGuard.assertOwned();
-      // FLAG: Both the target lookup and Redis lease renewal can outlive this bot's
-      // route proof. Recheck that proof last; no feature guard may await after it.
-      await revalidateRoute?.();
-    },
+    }),
     ...(botId ? { botId } : {}),
   });
   return manualModerationActionResultSchema.parse({

@@ -1910,6 +1910,22 @@ describe('queued duplicate explanation authority', () => {
     expect(s.authorization.isAllowed).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects a queued explanation whose history resets at the final checkpoint without more MAX reads', async () => {
+    const s = noticeFixture();
+    let remoteReadsAtCheckpoint = 0;
+    const beforeFinalAuthority = jest.fn(async () => {
+      remoteReadsAtCheckpoint = s.max.getExactMessageRow.mock.calls.length;
+      s.history.stillMatches.mockResolvedValue(false);
+    });
+    await expect(
+      s.service.assertMessageStillActionable({ ...s.request, beforeFinalAuthority }),
+    ).rejects.toMatchObject({ code: 'message_duplicate_history_changed' });
+    expect(beforeFinalAuthority).toHaveBeenCalledTimes(1);
+    expect(s.history.stillMatches).toHaveBeenLastCalledWith(s.request.chatId, s.binding, true);
+    expect(s.authorization.isAllowed).toHaveBeenCalledTimes(1);
+    expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(remoteReadsAtCheckpoint);
+  });
+
   it('expires a queued explanation when its final Redis grant read crosses the original deadline', async () => {
     const s = noticeFixture();
     const clock = jest.spyOn(Date, 'now').mockReturnValue(s.binding.eventTimestampMs);

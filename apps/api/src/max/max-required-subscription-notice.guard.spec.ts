@@ -402,7 +402,7 @@ describe('required-subscription queued SEND boundary', () => {
   );
 
   it.each([false, true])(
-    'checks selected author/source and target read routes after quota with optional profile preparation: %s',
+    'checks selected author/source and target read routes before quota with optional profile preparation: %s',
     async (withProfile) => {
       const s = transportFixture();
       const action: MaxActionJob = {
@@ -414,12 +414,12 @@ describe('required-subscription queued SEND boundary', () => {
       try {
         await s.client.executeActionJob(JSON.parse(JSON.stringify(action)));
         expect(s.order).toEqual([
-          'quota',
           ...(withProfile ? ['prepare'] : []),
           'author',
           'source',
           'membership',
           'membership',
+          'quota',
           ...(withProfile ? ['prepare'] : []),
           'http',
         ]);

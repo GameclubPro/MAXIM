@@ -4,7 +4,10 @@ import { withMarketplaceModerationMessage } from '../max/marketplace-publication
 import { buildMaxActionIdempotencyKey } from '../max/max-action-idempotency';
 import { MAX_MEMBER_ACTION_PRE_DISPATCH_RETRY_ERROR_CODES } from '../max/max-action-ledger.service';
 import { isMaxMembershipLookupLocalQuotaResolution } from '../max/max-membership-lookup.service';
-import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import {
+  wasMaxPreDispatchGuardRejected,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 import type { ModerationService } from './moderation.service';
 import type { RequiredSubscriptionCandidateAttempt } from './required-subscription-candidate.contract';
 import type { RequiredSubscriptionCandidateFreezeContext } from './required-subscription-candidate.store';
@@ -38,6 +41,7 @@ import {
   RequiredSubscriptionMembershipUnavailableError,
   RequiredSubscriptionInitialSourceUnavailableError,
   RequiredSubscriptionDeleteSourceUnavailableError,
+  readRequiredSubscriptionInitialSourceReadWait,
 } from './required-subscription-execution-guard.service';
 import { createRequiredSubscriptionNoticeHandoff } from './moderation-execution-guard-callbacks';
 import { fingerprintModerationSettings } from './moderation-settings-fingerprint';
@@ -80,17 +84,27 @@ export async function nominateRequiredSubscriptionCandidate(
     suppressEscalation?: boolean;
     mediaNoticeScope?: RequiredSubscriptionMediaNoticeScope | null;
     localQuotaResolution?: unknown;
+    sourceReadFailure?: unknown;
+    assertLeaseOwned?: () => Promise<void>;
   },
 ): Promise<boolean> {
   // FLAG: A candidate is only an obligation to recheck this exact GET's uncertainty.
   // Active-mute suppression needs its own SQL receipt and is outside this admission path.
-  if (
-    !host.store ||
-    params.suppressEscalation ||
-    !isMaxMembershipLookupLocalQuotaResolution(params.localQuotaResolution)
-  )
-    return false;
+  if (params.suppressEscalation) return false;
   const sourceAtMs = Date.parse(params.createdAt);
+  const policySha256 = fingerprintModerationSettings(params.settings, 'REQUIRED_SUBSCRIPTION');
+  const originBotId = host.botContext?.getActiveBotId() ?? null;
+  const initialReadWait = readRequiredSubscriptionInitialSourceReadWait(params.sourceReadFailure, {
+    chatId: params.chatId,
+    userId: params.userId,
+    messageId: params.messageId,
+    sourceAtMs,
+    deadlineAtMs: sourceAtMs + 300_000,
+    policySha256,
+    botId: originBotId ?? '',
+  });
+  if (!initialReadWait && !isMaxMembershipLookupLocalQuotaResolution(params.localQuotaResolution))
+    return false;
   const source = readRequiredSubscriptionCandidateSource({
     version: 1,
     chatId: params.chatId,
@@ -98,8 +112,8 @@ export async function nominateRequiredSubscriptionCandidate(
     messageId: params.messageId,
     sourceAtMs,
     deadlineAtMs: sourceAtMs + 300_000,
-    policySha256: fingerprintModerationSettings(params.settings, 'REQUIRED_SUBSCRIPTION'),
-    originBotId: host.botContext?.getActiveBotId() ?? null,
+    policySha256,
+    originBotId,
     updateType: params.sourceUpdateType,
     mediaScope: params.mediaNoticeScope ?? null,
     userLabel: params.userLabel,
@@ -108,7 +122,15 @@ export async function nominateRequiredSubscriptionCandidate(
     rulesPublishedMessageId: params.rulesPublishedMessageId,
   });
   if (!source || source.sourceAtMs > Date.now() || Date.now() >= source.deadlineAtMs) return false;
+  // FLAG: A certified live initial read cannot become handled without its durable owner.
+  // The coordinator lease fences only this registration; it never grants an external effect.
+  if (!host.store) {
+    if (initialReadWait) throw new Error('Required subscription candidate store unavailable');
+    return false;
+  }
+  await params.assertLeaseOwned?.();
   await host.store.register(source);
+  await params.assertLeaseOwned?.();
   return true;
 }
 
@@ -616,11 +638,20 @@ export async function executeRequiredSubscriptionCandidate(
                 source.userId,
                 {
                   idempotencyKey: actionKey,
-                  beforeImmediateMemberMutation: async (beforeFinalAuthority) => {
-                    await beforeMutation();
-                    await authorize(false, false, beforeFinalAuthority, true);
-                    await assertOwned();
-                  },
+                  beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint(
+                    async (beforeFinalAuthority) => {
+                      await beforeMutation();
+                      await authorize(
+                        false,
+                        false,
+                        async () => {
+                          await assertOwned();
+                          await beforeFinalAuthority?.();
+                        },
+                        true,
+                      );
+                    },
+                  ),
                 },
                 { assertOwned },
               );

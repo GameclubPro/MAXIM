@@ -25,7 +25,7 @@ const protectedSources = [
     'apps/api/src/system/max-action-ledger-watchdog.service.ts',
     'mayHaveStarted && AMBIGUOUS_CAPABLE_ACTION_TYPES.has(row.actionType)',
   ],
-  ['apps/api/src/admin/manual-member-unban-attempt.ts', 'await revalidateRoute?.()'],
+  ['apps/api/src/admin/manual-member-unban-attempt.ts', 'await beforeFinalAuthority?.()'],
   [
     'apps/api/src/moderation/moderation-delete-intent.service.ts',
     'closedChatDeleteGuard!.authorize',
@@ -254,22 +254,49 @@ const unbanAttemptMutations = [
   },
   {
     path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
-    name: 'live route proof runs before the final target lookup',
+    name: 'transport checkpoint runs before the final target lookup',
     mutate: (source) =>
       source
-        .replace('      await revalidateRoute?.();', '')
+        .replace('      await beforeFinalAuthority?.();', '')
         .replace(
           '      if (await readTargetAccess())',
-          '      await revalidateRoute?.();\n      if (await readTargetAccess())',
+          '      await beforeFinalAuthority?.();\n      if (await readTargetAccess())',
         ),
   },
   {
     path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
-    name: 'target lookup can outlive the final live route proof',
+    name: 'target lookup can outlive the transport checkpoint',
     mutate: (source) =>
       source.replace(
-        '      await revalidateRoute?.();',
-        '      await revalidateRoute?.();\n      await readTargetAccess();',
+        '      await beforeFinalAuthority?.();',
+        '      await beforeFinalAuthority?.();\n      await readTargetAccess();',
+      ),
+  },
+  {
+    path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
+    name: 'sanction state is checked before the transport wait',
+    mutate: (source) =>
+      source.replace(
+        /( {6}await beforeFinalAuthority\?\.\(\);\n)( {6}await assertSanctionState\(\{[\s\S]*?\n {6}\}\);\n)/u,
+        '$2$1',
+      ),
+  },
+  {
+    path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
+    name: 'final lease is checked before the transport wait',
+    mutate: (source) =>
+      source.replace(
+        /( {6}await beforeFinalAuthority\?\.\(\);\n)( {6}await assertSanctionState\(\{[\s\S]*?\n {6}\}\);\n)( {6}await leaseGuard\.assertOwned\(\);\n)/u,
+        '$3$1$2',
+      ),
+  },
+  {
+    path: 'apps/api/src/admin/manual-member-unban-attempt.ts',
+    name: 'remote read follows the final sanction and lease permit',
+    mutate: (source) =>
+      source.replace(
+        '      await leaseGuard.assertOwned();\n    }),',
+        '      await leaseGuard.assertOwned();\n      await readTargetAccess();\n    }),',
       ),
   },
 ];
@@ -315,6 +342,38 @@ test('both API rollback paths retain shared member and immutable Publisher effec
     }
     const positive = check(commit());
     assert.equal(positive.status, 0, positive.stderr);
+    const unbanPath = 'apps/api/src/admin/manual-member-unban-attempt.ts';
+    const unban = readFileSync(resolve(root, unbanPath), 'utf8');
+    const markedUnban =
+      /beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint\(async \(beforeFinalAuthority\) => \{[\s\S]*?\n {4}\}\),/u;
+    assert.match(unban, markedUnban);
+    const legacyUnban = unban.replace(
+      markedUnban,
+      `beforeImmediateMemberMutation: async (revalidateRoute) => {
+      await leaseGuard.assertOwned();
+      await assertSanctionState({
+        chatId,
+        targetUserId,
+        releaseAction: 'UNBAN',
+        expectedSanctionEventId,
+      });
+      if (await readTargetAccess()) throw new ModerationSanctionStateChangedError();
+      await leaseGuard.assertOwned();
+      await revalidateRoute?.();
+    },`,
+    );
+    writeFileSync(resolve(fixture, unbanPath), legacyUnban);
+    const legacy = check(commit());
+    assert.equal(legacy.status, 0, legacy.stderr);
+    writeFileSync(
+      resolve(fixture, unbanPath),
+      legacyUnban.replace(
+        '      await revalidateRoute?.();',
+        '      await revalidateRoute?.();\n      await readTargetAccess();',
+      ),
+    );
+    assert.equal(check(commit()).status, 1, 'Legacy routing must remain the last awaited proof');
+    writeFileSync(resolve(fixture, unbanPath), unban);
     for (const [path, guard] of protectedSources) {
       const source = readFileSync(resolve(root, path), 'utf8');
       assert.ok(source.includes(guard), `Fixture guard missing: ${guard}`);

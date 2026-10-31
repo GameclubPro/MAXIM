@@ -108,7 +108,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ReportSubmissionService } from './reports/report-submission.service';
 import { isTrafficProtectionViolation } from './traffic-protection';
-import { executeGuardedModerationDelete } from './moderation-delete-execution';
+import {
+  executeGuardedModerationDelete,
+  prepareModerationDeleteIntentInput,
+  type ModerationDeleteExecutionOptions,
+} from './moderation-delete-execution';
 import { isCommercialMessageDeleteEligible } from './commercial';
 import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
@@ -166,7 +170,10 @@ import {
 } from '../max/max-send-ambiguity.util';
 import { MaxBotContextService } from '../max/max-bot-context.service';
 import { MaxActionLedgerService } from '../max/max-action-ledger.service';
-import { wasMaxPreDispatchGuardRejected } from '../max/max-action-pre-dispatch-guard';
+import {
+  wasMaxPreDispatchGuardRejected,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 import { wasMaxMemberMutationAttempted } from '../max/max-member-error.util';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import {
@@ -5038,7 +5045,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async executeModerationDelete(
     input: EnsureModerationDeleteIntentInput,
-    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+    options?: ModerationDeleteExecutionOptions,
   ): Promise<ModerationDeleteExecutionResult> {
     return executeGuardedModerationDelete({
       input: this.prepareModerationDeleteIntentInput(input, options),
@@ -5047,8 +5054,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       logger: this.logger,
       profanityGuard: this.profanityDeleteGuard,
       commercialGuard: this.commercialDeleteGuard,
-      legacyExecute: (hooks) =>
-        this.deleteMessageImmediatelyLegacy(input.chatId, input.messageId, options, hooks),
+      legacyExecute: (hooks, legacyOptions) =>
+        this.deleteMessageImmediatelyLegacy(input.chatId, input.messageId, legacyOptions, hooks),
     });
   }
 
@@ -5082,18 +5089,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private prepareModerationDeleteIntentInput(
     input: EnsureModerationDeleteIntentInput,
-    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+    options?: Pick<MaxActionDispatchOptions, 'delayMs'>,
   ): EnsureModerationDeleteIntentInput {
-    const delayMs = options?.delayMs && options.delayMs > 0 ? options.delayMs : 0;
     const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
-    return {
-      ...input,
-      entityType: input.entityType ?? 'CHAT',
-      messageAuthorKind: input.messageAuthorKind ?? 'user',
-      originBotId: input.originBotId ?? activeBotId,
-      routingPolicy: input.routingPolicy ?? 'origin_first',
-      ...(input.executeAt || delayMs === 0 ? {} : { executeAt: new Date(Date.now() + delayMs) }),
-    };
+    return prepareModerationDeleteIntentInput(input, activeBotId, options);
   }
 
   private async deleteMessageImmediatelyLegacy(
@@ -5118,10 +5117,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ...(options ?? {}),
           ...(profanityHooks
             ? {
-                beforeImmediateDeleteMutation: async () => {
-                  await options?.beforeImmediateDeleteMutation?.();
-                  await profanityHooks.beforeDeleteMutation(botId);
-                },
+                beforeImmediateDeleteMutation: withMaxFinalAuthorityCheckpoint(
+                  async (beforeFinalAuthority) => {
+                    await options?.beforeImmediateDeleteMutation?.();
+                    await profanityHooks.beforeDeleteMutation(botId, beforeFinalAuthority);
+                  },
+                ),
               }
             : {}),
           ignoreFailureMetricStatuses: MODERATION_CHAT_ACTION_TERMINAL_FAILURE_METRIC_STATUSES,
@@ -6177,28 +6178,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 row.userId,
                 {
                   idempotencyKey: actionKey,
-                  beforeImmediateMemberMutation: async (beforeFinalAuthority) => {
-                    await beforeMutation();
-                    await this.moderationRuleSanctionGuard!.assertAllowed(
-                      {
-                        chatId: row.chatId,
-                        messageId: row.messageId,
-                        userId: row.userId,
-                        ruleCode: row.ruleCode,
-                        reasonKey: row.reasonKey,
-                        policySha256: row.policySha256,
-                        deadlineAtMs: row.deadlineAt.getTime(),
-                        botId: this.maxBotContextService?.getActiveBotId() ?? undefined,
-                      },
-                      {
-                        beforeFinalAuthority,
-                        assertFinalOwnership: async () => {
-                          await lock.assertOwned();
-                          await journal.assertLease();
+                  beforeImmediateMemberMutation: withMaxFinalAuthorityCheckpoint(
+                    async (beforeFinalAuthority) => {
+                      await beforeMutation();
+                      await this.moderationRuleSanctionGuard!.assertAllowed(
+                        {
+                          chatId: row.chatId,
+                          messageId: row.messageId,
+                          userId: row.userId,
+                          ruleCode: row.ruleCode,
+                          reasonKey: row.reasonKey,
+                          policySha256: row.policySha256,
+                          deadlineAtMs: row.deadlineAt.getTime(),
+                          botId: this.maxBotContextService?.getActiveBotId() ?? undefined,
                         },
-                      },
-                    );
-                  },
+                        {
+                          beforeFinalAuthority,
+                          assertFinalOwnership: async () => {
+                            await lock.assertOwned();
+                            await journal.assertLease();
+                          },
+                        },
+                      );
+                    },
+                  ),
                 },
                 { assertOwned: active.assertLease },
               );
@@ -10431,8 +10434,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }) => {
         await assertNoticeLeaseOwned();
         // FLAG: This fresh leader has not claimed a violation or begun any sanction.
-        // Unavailable subscription evidence skips this source without punishment; it never
-        // waives later/unknown effects. Return handled to prevent active-mute fallthrough.
+        // A certified initial GET refusal keeps a durable no-effect read obligation;
+        // other unavailable evidence never waives later or unknown effects.
         this.markWebhookHotPathStage(
           params.hotPathProfile,
           'required-subscription.initial-authority',
@@ -10445,10 +10448,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             error instanceof RequiredSubscriptionInitialSourceUnavailableError ||
             error instanceof RequiredSubscriptionMembershipUnavailableError
           ) {
+            const retained = await nominateRequiredSubscriptionCandidate(
+              this.getRequiredSubscriptionCandidateHost(),
+              {
+                ...params,
+                mediaNoticeScope,
+                sourceReadFailure: error,
+                assertLeaseOwned: assertNoticeLeaseOwned,
+              },
+            );
             void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
               stage: 'required-subscription.initial-authority',
               outcome: 'skip',
-              failOpen: !(error instanceof RequiredSubscriptionExecutionRejectedError),
+              failOpen: !retained && !(error instanceof RequiredSubscriptionExecutionRejectedError),
             });
             return true;
           }
@@ -15495,9 +15507,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 !quickButtons,
             }
           : undefined;
-      const beforeEditMutation = async () => {
-        if (quickButtons) await this.assertChannelQuickButtonsEnabled(chatId);
+      const beforeEditMutation = withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
         await this.channelAutoPostMutationGuard.assertEditAuthorized(chatId, autoAttachBotId);
+        // FLAG: Finish remote authorization before admission; settings and the owned
+        // marker must still authorize the edit after any quota or route wait.
+        await beforeFinalAuthority?.();
+        if (quickButtons) await this.assertChannelQuickButtonsEnabled(chatId);
         if (linkType !== 'forward' && !quickButtons) {
           await this.replacementAttachMarkerStore.assertChannelEditClaimCurrent({
             chatId,
@@ -15505,7 +15520,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             lockToken: claim.lockToken,
           });
         }
-      };
+      });
 
       if (replaceForward) {
         maxMutationAttemptStartedAt = new Date();

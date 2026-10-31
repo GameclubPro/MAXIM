@@ -24,6 +24,7 @@ import { PublisherDispatchHealthService } from './publisher-dispatch-health.serv
 import { PublisherReadinessService } from './publisher-readiness.service';
 import type { PublisherAutoReplyJob } from './publisher-auto-reply.queue';
 import { PublisherAutoReplySourceFenceService } from './publisher-auto-reply-source-fence.service';
+import { withMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 
 const DELIVERY_LEASE_MS = 2 * 60_000;
 const UPLOAD_LEASE_MS = 2 * 60_000;
@@ -249,7 +250,7 @@ export class PublisherAutoReplyDeliveryService {
             ...this.buildMediaOptions(payloads),
             ...(buttonRows.length > 0 ? { buttons: buttonRows } : {}),
             messageLink: { type: 'reply', mid: delivery.sourceMessageId },
-            beforeSend: async () => {
+            beforeSend: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
               await this.dispatchHealth.assertDispatchAllowed();
               const immediateRoute = await this.readiness.assertEntityReady(
                 delivery.chatId,
@@ -262,10 +263,11 @@ export class PublisherAutoReplyDeliveryService {
               ) {
                 throw new PublisherAutoReplyEpochChangedError('Publisher route changed');
               }
+              await beforeFinalAuthority?.();
               await this.assertCurrentSource(delivery);
               dispatchStartedAt = await this.recordSendFence(delivery, lockToken);
               fenceActive = true;
-            },
+            }),
             debugContext: {
               screen: 'publisher-auto-replies',
               action: 'deliver-auto-reply',

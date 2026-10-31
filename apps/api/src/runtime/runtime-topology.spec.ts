@@ -148,7 +148,7 @@ describe('runtime-topology', () => {
 
         const environment = service?.environment ?? {};
         expect(environment.APP_SERVICE_NAME).toBe(serviceName);
-        expect(environment.MAX_API_GLOBAL_RPS).toBe(30);
+        expect(environment.MAX_API_GLOBAL_RPS).toBe(25);
         expect(environment.MAX_API_GLOBAL_BURST).toBe(0);
 
         const profile = RUNTIME_SERVICE_PROFILES[serviceName];

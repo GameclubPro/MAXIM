@@ -30,6 +30,7 @@ import { PublisherDialogLinkService } from './publisher-dialog-link.service';
 import { PublisherReadinessService } from './publisher-readiness.service';
 import { PublisherRuntimeBoundaryService } from './publisher-runtime-boundary.service';
 import { PublisherDispatchHealthService } from './publisher-dispatch-health.service';
+import { withMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 
 @Injectable()
 export class PublisherChannelCommentDeliveryService {
@@ -199,7 +200,7 @@ export class PublisherChannelCommentDeliveryService {
               ctaButton: missingCta ? ctaButton : null,
             });
           },
-          beforeEditMutation: async () => {
+          beforeEditMutation: withMaxFinalAuthorityCheckpoint(async (beforeFinalAuthority) => {
             await this.assertReady(job);
             const snapshot = await this.maxClient.getChatSnapshot(job.chatId, {
               ...requestOptions,
@@ -217,21 +218,24 @@ export class PublisherChannelCommentDeliveryService {
             ) {
               throw new UnrecoverableError('Publisher cannot edit this channel post');
             }
-            if (!(await this.readCurrentSettings(job))) {
+            const currentCtaButton = ctaButton
+              ? await this.postSignature.buildPostButton(job.chatId, postButtonOptions)
+              : null;
+            await beforeFinalAuthority?.();
+            const currentSettings = await this.readCurrentSettings(job);
+            if (!currentSettings) {
               throw new UnrecoverableError(
                 'Publisher channel settings changed before keyboard edit',
               );
             }
             if (
               ctaButton &&
-              !isDeepStrictEqual(
-                ctaButton,
-                await this.postSignature.buildPostButton(job.chatId, postButtonOptions),
-              )
+              (!isDeepStrictEqual(ctaButton, currentCtaButton) ||
+                currentSettings.postSignatureUpdatedAtMs !== settings.postSignatureUpdatedAtMs)
             ) {
               throw new UnrecoverableError('Channel post button changed before keyboard edit');
             }
-          },
+          }),
         },
         requestOptions,
       );
@@ -290,11 +294,16 @@ export class PublisherChannelCommentDeliveryService {
       (settings?.revision ?? 0) === job.publisherSettingsRevision &&
       entity.publicationPolicy?.publikEnabled !== false &&
       (entity.publicationPolicy?.revision ?? 0) === job.publicationPolicyRevision
-      ? (settings ?? {
-          channelCommentsEnabled: false,
-          channelSuggestionsEnabled: false,
-          revision: 0,
-        })
+      ? {
+          ...(settings ?? {
+            channelCommentsEnabled: false,
+            channelSuggestionsEnabled: false,
+            revision: 0,
+          }),
+          // FLAG: Bind prepared signature/link evidence across transport admission without
+          // repeating a MAX link lookup after its final local policy check.
+          postSignatureUpdatedAtMs: entity.channelSettings?.updatedAt.getTime() ?? null,
+        }
       : null;
   }
 }

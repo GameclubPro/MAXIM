@@ -1,4 +1,5 @@
 import type { Logger } from '@nestjs/common';
+import type { MaxActionDispatchOptions } from '../max/max-client.service';
 import type { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import type {
   EnsureModerationDeleteIntentInput,
@@ -17,6 +18,29 @@ import { MODERATION_STATE_DELETE_RULES } from './moderation-state-delete-guard.s
 import { MESSAGE_LIMITS_STATEFUL_RULES } from './message-limits-delete-guard.service';
 import { REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE } from './required-subscription-execution-guard.service';
 import { TRAFFIC_PROTECTION_DELETE_RULE_CODES } from './traffic-protection';
+
+export type ModerationDeleteExecutionOptions = Omit<
+  MaxActionDispatchOptions,
+  'immediate' | 'beforeImmediateDeleteMutation'
+> & {
+  beforeImmediateDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
+};
+
+export function prepareModerationDeleteIntentInput(
+  input: EnsureModerationDeleteIntentInput,
+  activeBotId: string | null,
+  options?: Pick<MaxActionDispatchOptions, 'delayMs'>,
+): EnsureModerationDeleteIntentInput {
+  const delayMs = options?.delayMs && options.delayMs > 0 ? options.delayMs : 0;
+  return {
+    ...input,
+    entityType: input.entityType ?? 'CHAT',
+    messageAuthorKind: input.messageAuthorKind ?? 'user',
+    originBotId: input.originBotId ?? activeBotId,
+    routingPolicy: input.routingPolicy ?? 'origin_first',
+    ...(input.executeAt || delayMs === 0 ? {} : { executeAt: new Date(Date.now() + delayMs) }),
+  };
+}
 
 export async function executeDurableModerationDelete(params: {
   input: EnsureModerationDeleteIntentInput;
@@ -94,18 +118,27 @@ export function executeGuardedModerationDelete(
     Parameters<typeof executeDurableModerationDelete>[0],
     'legacy' | 'beforeDeleteMutation'
   > & {
-    options?: {
-      delayMs?: number;
-      beforeImmediateDeleteMutation?: (phase?: ModerationDeletePreDispatchPhase) => Promise<void>;
-    };
+    options?: ModerationDeleteExecutionOptions;
     profanityGuard?: Pick<ProfanityDeleteGuardService, 'assertMessageStillActionable'>;
     commercialGuard?: Pick<CommercialDeleteGuardService, 'assertMessageStillActionable'>;
     legacyExecute(
       hooks?: ProfanityDeleteMutationHooks,
+      options?: Omit<MaxActionDispatchOptions, 'immediate'>,
     ): Promise<{ ok: boolean; botId: string | null }>;
   },
 ): Promise<ModerationDeleteExecutionResult> {
   const scheduled = Boolean(params.options?.delayMs && params.options.delayMs > 0);
+  const { beforeImmediateDeleteMutation, ...transportOptions } = params.options ?? {};
+  // FLAG: Durable phases are source-qualification evidence, never a transport checkpoint.
+  // Legacy dispatch invokes that callback without a phase; its own guard owns admission.
+  const legacyOptions = params.options
+    ? {
+        ...transportOptions,
+        ...(beforeImmediateDeleteMutation
+          ? { beforeImmediateDeleteMutation: () => beforeImmediateDeleteMutation() }
+          : {}),
+      }
+    : undefined;
   return executeDurableModerationDelete({
     ...params,
     beforeDeleteMutation: params.options?.beforeImmediateDeleteMutation,
@@ -119,7 +152,8 @@ export function executeGuardedModerationDelete(
             input: params.input,
             scheduled,
             guard: params.profanityGuard,
-            execute: (profanityHooks) => params.legacyExecute(commercialHooks ?? profanityHooks),
+            execute: (profanityHooks) =>
+              params.legacyExecute(commercialHooks ?? profanityHooks, legacyOptions),
           }),
       }),
   });

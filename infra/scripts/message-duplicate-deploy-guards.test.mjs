@@ -815,7 +815,9 @@ test('rejects an extra awaited read after the final duplicate authority permit',
 
 test('rejects removal of only the last duplicate permit fence after suggestion proof', (t) => {
   const source = readFileSync(resolve(root, paths.executor), 'utf8');
-  const start = source.indexOf('const beforeImmediateDeleteMutation = async () => {');
+  const start = source.search(
+    /const beforeImmediateDeleteMutation = async \(\s*(?:beforeFinalAuthority\?: \(\) => Promise<void>,?\s*)?\) => \{/u,
+  );
   const end = source.indexOf('\n          };', start);
   assert.ok(start >= 0 && end > start);
   const mutation = source.slice(start, end);
@@ -832,6 +834,45 @@ test('rejects removal of only the last duplicate permit fence after suggestion p
   const result = probe(t, { executor });
   assert.notEqual(result.status, 0);
 });
+
+const checkpointSignature =
+  /const beforeImmediateDeleteMutation = async \(\s*beforeFinalAuthority\?: \(\) => Promise<void>,?\s*\) => \{/u;
+const checkpointBlock =
+  / {12}try \{\n {14}await beforeFinalAuthority\?\.\(\);\n {12}\} catch \(error\) \{\n {14}throw new ModerationDeletePreDispatchGuardError\(error\);\n {12}\}\n/u;
+
+test('retains the legacy unmarked parameterless duplicate mutation reader', (t) => {
+  const source = readFileSync(resolve(root, paths.executor), 'utf8');
+  assert.match(source, checkpointSignature);
+  assert.match(source, checkpointBlock);
+  const executor = source
+    .replace(checkpointSignature, 'const beforeImmediateDeleteMutation = async () => {')
+    .replace(checkpointBlock, '')
+    .replace(
+      /beforeImmediateDeleteMutation: withMaxFinalAuthorityCheckpoint\(\s*beforeImmediateDeleteMutation,\s*\),/u,
+      'beforeImmediateDeleteMutation,',
+    );
+  const result = probe(t, { executor });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+for (const change of ['missing', 'after final permit']) {
+  test(`rejects a marked duplicate mutation with checkpoint ${change}`, (t) => {
+    const source = readFileSync(resolve(root, paths.executor), 'utf8');
+    const checkpoint = source.match(checkpointBlock)?.[0];
+    assert.ok(checkpoint);
+    let executor = source.replace(checkpoint, '');
+    if (change === 'after final permit') {
+      const finalDeadline =
+        '            const finalAuthorityAtMs = Math.max(Date.now(), verifiedReasonAuthorityAtMs);';
+      assert.ok(executor.includes(finalDeadline));
+      executor = executor.replace(finalDeadline, checkpoint + finalDeadline);
+    }
+    assert.notEqual(executor, source);
+    assert.ok(executor.includes('authorityOnly: true'));
+    const result = probe(t, { executor });
+    assert.notEqual(result.status, 0);
+  });
+}
 
 for (const [name, method, before, after] of [
   [

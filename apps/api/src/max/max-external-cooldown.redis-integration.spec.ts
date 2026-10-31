@@ -6,6 +6,7 @@ import { of, throwError } from 'rxjs';
 import type { ActionHealthService } from '../system/action-health.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { MaxBotContextService } from './max-bot-context.service';
+import { withMaxFinalAuthorityCheckpoint } from './max-action-pre-dispatch-guard';
 import { normalizeMaxApiRateLimitServiceScope } from './max-api-metrics-key.util';
 import {
   MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
@@ -229,6 +230,92 @@ describeRedis('MAX configured token burst pacing', () => {
       await close(fixtures);
     }
   });
+
+  it.each([2, 25])(
+    'paces actual HTTP sends after delayed final-authority preparation at %i rps using the actual Redis clock',
+    async (rps) => {
+      const fixture = nativeTransportFixture(`test-final-authority-${randomUUID()}`, {
+        MAX_API_GLOBAL_RPS: String(rps),
+        MAX_API_GLOBAL_BURST: '0',
+        MAX_API_GLOBAL_RPS_CRITICAL: String(rps),
+        MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL: '2500',
+      });
+      const independent = nativeTransportFixture(`test-independent-final-${randomUUID()}`);
+      const dispatchedAt: number[] = [];
+      fixture.request.mockImplementation(() => {
+        dispatchedAt.push(performance.now());
+        return of({ status: 200, data: { message: { body: { mid: randomUUID() } } } });
+      });
+      let releasePreparation!: () => void;
+      const preparation = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+      let entered = 0;
+      const sends = Array.from({ length: 3 }, (_, index) =>
+        fixture.service.sendMessage(
+          `test-final-authority-chat-${index}`,
+          'Fixture notice',
+          undefined,
+          {
+            immediate: true,
+            idempotencyKey: `test-final-authority-${index}-${randomUUID()}`,
+            beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(
+              async (beforeFinalAuthority) => {
+                entered++;
+                await preparation;
+                // FLAG: Real guards finish their remote preparation before this checkpoint,
+                // then obtain their final SQL/feature permit without another quota wait.
+                await beforeFinalAuthority?.();
+              },
+            ),
+          },
+        ),
+      );
+      try {
+        const deadline = Date.now() + 4_000;
+        while (entered < sends.length && Date.now() < deadline)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(entered).toBe(3);
+        expect(dispatchedAt).toEqual([]);
+        await independent.service.getOwnProfile({ trafficClass: 'background' });
+        expect(independent.request).toHaveBeenCalledTimes(1);
+        releasePreparation();
+        await Promise.all(sends);
+        expect(dispatchedAt).toHaveLength(3);
+        const interval = 1000 / rps;
+        for (let index = 1; index < dispatchedAt.length; index++)
+          expect(dispatchedAt[index]! - dispatchedAt[index - 1]!).toBeGreaterThanOrEqual(
+            interval - Math.min(20, interval * 0.1),
+          );
+        await redis.eval(
+          MAX_API_EXTERNAL_COOLDOWN_SCRIPT,
+          1,
+          `${fixture.tokenKey}:cooldown`,
+          '5000',
+        );
+        await expect(
+          fixture.service.sendMessage('test-cooled-chat', 'Cooled fixture', undefined, {
+            immediate: true,
+            timeoutMs: 1,
+            beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(async (checkpoint) => {
+              await checkpoint?.();
+            }),
+          }),
+        ).rejects.toMatchObject({
+          code: 'MAX_API_INTERNAL_RATE_LIMIT',
+          preDispatch: true,
+          limitScope: 'external_cooldown',
+        });
+        expect(dispatchedAt).toHaveLength(3);
+        await independent.service.getOwnProfile({ trafficClass: 'background' });
+        expect(independent.request).toHaveBeenCalledTimes(2);
+      } finally {
+        releasePreparation();
+        await Promise.allSettled(sends);
+        await close([fixture, independent]);
+      }
+    },
+  );
 });
 
 describeRedis('MAX external cooldown atomic admission', () => {

@@ -32,6 +32,7 @@ import {
   consumeMaxHttpOutcome,
   createMaxHttpFailureOwner,
   mapMaxHttpOutcome,
+  readMaxHttpFailureAssociation,
   type MaxHttpFailureAssociation,
   type MaxHttpFailureOwner,
   type MaxHttpOutcome,
@@ -49,6 +50,7 @@ import {
 import { readMaxChatAvatar } from './max-chat-avatar';
 import { readMaxRetryAfterMs } from './max-retry-after';
 import {
+  isMaxMutationOutcomeAmbiguous,
   markMaxMessageSendAttempted,
   wasMaxMessageSendAttempted,
 } from './max-mutation-outcome.util';
@@ -195,6 +197,8 @@ import {
   MAX_MEMBER_PRE_DISPATCH_GUARD_REJECTED_CODE,
   MAX_SEND_PRE_DISPATCH_GUARD_REJECTED_CODE,
   wasMaxPreDispatchGuardRejected,
+  usesMaxFinalAuthorityCheckpoint,
+  withMaxFinalAuthorityCheckpoint,
 } from './max-action-pre-dispatch-guard';
 import {
   MAX_ACTION_BACKGROUND_QUEUE,
@@ -358,6 +362,104 @@ function scopeMaxHttpOperation<T>(
     : associatedMaxHttpOperation((owner) =>
         scope(() => operation[MAX_HTTP_ASSOCIATED_OPERATION](owner)),
       );
+}
+
+type MaxObservedReadHttp429Binding =
+  | { kind: 'exact_message'; chatId: string; messageId: string; botId: string }
+  | { kind: 'chat_member'; chatId: string; userId: string; botId: string };
+type MaxReadFailureObserver = (
+  error: unknown,
+  association: MaxHttpFailureAssociation | null,
+  botId: string,
+) => void;
+const observedReadHttp429Errors = new WeakMap<
+  object,
+  { binding: MaxObservedReadHttp429Binding; observer: MaxReadFailureObserver }
+>();
+
+function isUnattemptedHttp429ReadFailure(error: unknown): error is object {
+  try {
+    const failure = error as {
+      response?: { status?: unknown; config?: { method?: unknown } };
+      config?: { method?: unknown };
+    } | null;
+    const methods = [failure?.config?.method, failure?.response?.config?.method];
+    return Boolean(
+      error &&
+      typeof error === 'object' &&
+      failure?.response?.status === 429 &&
+      methods.every(
+        (method) =>
+          method === undefined ||
+          (typeof method === 'string' && method.trim().toLowerCase() === 'get'),
+      ) &&
+      !wasMaxMessageSendAttempted(error) &&
+      !wasMaxMemberMutationAttempted(error) &&
+      !isMaxMutationOutcomeAmbiguous(error),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function observeBoundReadHttp429(binding: MaxObservedReadHttp429Binding): MaxReadFailureObserver {
+  const observer: MaxReadFailureObserver = (error, association, botId) => {
+    const facts = readMaxHttpFailureAssociation(association);
+    if (
+      botId === binding.botId &&
+      isUnattemptedHttp429ReadFailure(error) &&
+      facts?.method === 'get' &&
+      facts.phase === 'adapter_rejection' &&
+      (binding.kind === 'exact_message'
+        ? facts.endpointKind === 'messages' || facts.endpointKind === 'message'
+        : facts.endpointKind === 'chat_members')
+    )
+      observedReadHttp429Errors.set(error, { binding, observer });
+  };
+  return observer;
+}
+
+function discardForeignReadHttp429(error: unknown, observer: MaxReadFailureObserver): void {
+  if (
+    error &&
+    typeof error === 'object' &&
+    observedReadHttp429Errors.get(error)?.observer !== observer
+  )
+    observedReadHttp429Errors.delete(error);
+}
+
+function consumeBoundReadHttp429(error: unknown, expected: MaxObservedReadHttp429Binding): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const evidence = observedReadHttp429Errors.get(error)?.binding;
+  // FLAG: Only this exact invocation's observed HTTP rejection can nominate an initial
+  // no-effect continuation. Consume even a mismatched attempt; copied errors carry no proof.
+  observedReadHttp429Errors.delete(error);
+  return Boolean(
+    evidence &&
+    isUnattemptedHttp429ReadFailure(error) &&
+    evidence.kind === expected.kind &&
+    evidence.chatId === expected.chatId.trim() &&
+    evidence.botId === expected.botId.trim() &&
+    (evidence.kind === 'exact_message' && expected.kind === 'exact_message'
+      ? evidence.messageId === expected.messageId.trim()
+      : evidence.kind === 'chat_member' &&
+        expected.kind === 'chat_member' &&
+        evidence.userId === expected.userId.trim()),
+  );
+}
+
+export function consumeMaxExactMessageLookupHttp429(
+  error: unknown,
+  binding: { chatId: string; messageId: string; botId: string },
+): boolean {
+  return consumeBoundReadHttp429(error, { ...binding, kind: 'exact_message' });
+}
+
+export function consumeMaxChatMemberAccessHttp429(
+  error: unknown,
+  binding: { chatId: string; userId: string; botId: string },
+): boolean {
+  return consumeBoundReadHttp429(error, { ...binding, kind: 'chat_member' });
 }
 
 type MaxMessageMutationOperation = 'send' | 'edit' | 'delete' | 'answer';
@@ -540,7 +642,7 @@ type MaxEditableMessageOptions = Pick<
   preserveExistingChannelDialogButtons?: boolean;
   preserveExistingInlineKeyboard?: boolean;
   replaceCallbackPayloadPrefixes?: readonly string[];
-  beforeEditMutation?: () => Promise<void>;
+  beforeEditMutation?: (beforeFinalAuthority?: () => Promise<void>) => Promise<void>;
   refreshButtonText?: MaxInlineKeyboardTextRefresh;
   prepareInlineKeyboard?: (
     message: Record<string, unknown> | null,
@@ -555,7 +657,7 @@ type MaxEditableMessageOptions = Pick<
 };
 
 type MaxImmediateSendMessageOptions = MaxSendMessageOptions & {
-  beforeSend?: () => Promise<void>;
+  beforeSend?: (beforeFinalAuthority?: () => Promise<void>) => Promise<void>;
 };
 
 export type MaxCustomMessagePayload = {
@@ -642,7 +744,9 @@ export type MaxActionDispatchOptions = {
   /** Ephemeral guard evaluated after routing and ledger work, immediately before send HTTP. */
   beforeImmediateSendMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
   /** Ephemeral guard evaluated after routing and ledger work, immediately before delete HTTP. */
-  beforeImmediateDeleteMutation?: () => Promise<void>;
+  beforeImmediateDeleteMutation?:
+    | (() => Promise<void>)
+    | ((beforeFinalAuthority?: () => Promise<void>) => Promise<void>);
   /** Ephemeral guard evaluated after routing and ledger work, immediately before member HTTP. */
   beforeImmediateMemberMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
   autoDeleteDelayMs?: number;
@@ -663,7 +767,7 @@ export type MaxActionDispatchOptions = {
 };
 
 type MaxActionExecutionOptions = {
-  beforeDeleteMutation?: () => Promise<void>;
+  beforeDeleteMutation?: MaxActionDispatchOptions['beforeImmediateDeleteMutation'];
   beforeMemberMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
   beforeSendMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>;
 };
@@ -1390,11 +1494,12 @@ export class MaxClientService implements OnModuleDestroy {
           ...(timeoutMs ? { timeout: timeoutMs } : {}),
         }),
       requestOptions,
-      async (revalidateRoute) => {
+      withMaxFinalAuthorityCheckpoint(async (revalidateRoute) => {
         await this.assertLegacyMessageLinkAllowed(chatId, options?.messageLink);
-        await options?.beforeSend?.();
-        if (options?.marketplacePublication) await revalidateRoute?.();
-      },
+        await options?.beforeSend?.(revalidateRoute);
+        if (options?.marketplacePublication && !usesMaxFinalAuthorityCheckpoint(options.beforeSend))
+          await revalidateRoute?.();
+      }, usesMaxFinalAuthorityCheckpoint(options?.beforeSend)),
       options?.marketplacePublication
         ? async (config) => {
             const publicationOptions = await this.prepareMarketplacePublicationOptions(
@@ -1869,13 +1974,17 @@ export class MaxClientService implements OnModuleDestroy {
             return true;
           },
           requestOptions,
-          async (revalidateRoute) => {
+          withMaxFinalAuthorityCheckpoint(async (revalidateRoute) => {
             await assertOwnership();
             await this.assertLegacyMessageMutationAllowed(chatId, messageId);
-            await options?.beforeEditMutation?.();
-            if (options?.marketplaceChannelPost) await revalidateRoute?.();
+            await options?.beforeEditMutation?.(revalidateRoute);
+            if (
+              options?.marketplaceChannelPost &&
+              !usesMaxFinalAuthorityCheckpoint(options.beforeEditMutation)
+            )
+              await revalidateRoute?.();
             assertCurrentOwnership();
-          },
+          }, usesMaxFinalAuthorityCheckpoint(options?.beforeEditMutation)),
           options?.marketplaceChannelPost
             ? async (config) => {
                 const marketplace = options?.marketplaceChannelPost;
@@ -2158,7 +2267,20 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('chatId and messageId are required for exact MAX message lookup');
     }
 
-    const message = await this.getMessageById(normalizedMessageId, options);
+    const selectedBotId = this.resolveBot(this.normalizeReadRequestOptions(options).botId).id;
+    const failureObserver = observeBoundReadHttp429({
+      kind: 'exact_message',
+      chatId: normalizedChatId,
+      messageId: normalizedMessageId,
+      botId: selectedBotId,
+    });
+    let message: Record<string, unknown> | null;
+    try {
+      message = await this.getMessageById(normalizedMessageId, options, failureObserver);
+    } catch (error) {
+      discardForeignReadHttp429(error, failureObserver);
+      throw error;
+    }
     if (!message) {
       return null;
     }
@@ -3252,9 +3374,11 @@ export class MaxClientService implements OnModuleDestroy {
     const assertLegacyAction = async () => {
       if (this.legacyHolds) await assertLegacyActionAllowed(this.legacyHolds, action);
     };
-    const beforeDelete = async () => {
+    const beforeDelete = async (beforeFinalAuthority?: () => Promise<void>) => {
       await assertLegacyAction();
-      await executionOptions.beforeDeleteMutation?.();
+      if (usesMaxFinalAuthorityCheckpoint(executionOptions.beforeDeleteMutation))
+        await executionOptions.beforeDeleteMutation?.(beforeFinalAuthority);
+      else await executionOptions.beforeDeleteMutation?.();
     };
     const beforeMember = async (revalidateRoute?: () => Promise<void>) => {
       await assertLegacyAction();
@@ -3265,6 +3389,12 @@ export class MaxClientService implements OnModuleDestroy {
       await this.assertLegacyMessageLinkAllowed(action.chatId, action.options?.messageLink);
       await executionOptions.beforeSendMutation?.(revalidateRoute);
     };
+    if (usesMaxFinalAuthorityCheckpoint(executionOptions.beforeDeleteMutation))
+      withMaxFinalAuthorityCheckpoint(beforeDelete);
+    if (usesMaxFinalAuthorityCheckpoint(executionOptions.beforeMemberMutation))
+      withMaxFinalAuthorityCheckpoint(beforeMember);
+    if (usesMaxFinalAuthorityCheckpoint(executionOptions.beforeSendMutation))
+      withMaxFinalAuthorityCheckpoint(beforeSend);
 
     return this.botContext.runWithBot(bot.id, async () => {
       switch (action.actionType) {
@@ -3912,7 +4042,30 @@ export class MaxClientService implements OnModuleDestroy {
     if (!normalizedUserId) {
       return null;
     }
-    const accessByUserId = await this.getChatMembersAccess(chatId, [normalizedUserId], options);
+    const failureObserver =
+      options.bypassCache === true
+        ? observeBoundReadHttp429({
+            kind: 'chat_member',
+            chatId: chatId.trim(),
+            userId: normalizedUserId,
+            botId: this.resolveBot(options.botId).id,
+          })
+        : undefined;
+    let accessByUserId: Map<string, MaxChatMemberAccess>;
+    try {
+      accessByUserId = failureObserver
+        ? await this.getChatMembersAccessObserved(
+            chatId,
+            [normalizedUserId],
+            options,
+            failureObserver,
+          )
+        : await this.getChatMembersAccess(chatId, [normalizedUserId], options);
+    } catch (error) {
+      if (failureObserver) discardForeignReadHttp429(error, failureObserver);
+      else if (error && typeof error === 'object') observedReadHttp429Errors.delete(error);
+      throw error;
+    }
     return accessByUserId.get(normalizedUserId) ?? null;
   }
 
@@ -3920,6 +4073,15 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     userIds: readonly string[],
     options: MaxApiRequestOptions = {},
+  ): Promise<Map<string, MaxChatMemberAccess>> {
+    return this.getChatMembersAccessObserved(chatId, userIds, options);
+  }
+
+  private async getChatMembersAccessObserved(
+    chatId: string,
+    userIds: readonly string[],
+    options: MaxApiRequestOptions,
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<Map<string, MaxChatMemberAccess>> {
     const normalizedChatId = chatId.trim();
     const botId = this.resolveBot(options.botId).id;
@@ -3975,6 +4137,7 @@ export class MaxClientService implements OnModuleDestroy {
           chunk,
           options,
           timeoutMs,
+          failureObserver,
         ).finally(() => {
           if (this.chatMembersAccessInFlight.get(inFlightKey) === pending) {
             this.chatMembersAccessInFlight.delete(inFlightKey);
@@ -4009,6 +4172,7 @@ export class MaxClientService implements OnModuleDestroy {
     userIds: readonly string[],
     options: MaxApiRequestOptions,
     timeoutMs?: number,
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<Map<string, MaxChatMemberAccess>> {
     const accessByUserId = new Map<string, MaxChatMemberAccess>();
     if (userIds.length === 0) {
@@ -4032,6 +4196,7 @@ export class MaxClientService implements OnModuleDestroy {
           ),
         ),
         options,
+        failureObserver,
       );
       const members = Array.isArray(data?.members)
         ? data.members
@@ -4535,6 +4700,7 @@ export class MaxClientService implements OnModuleDestroy {
   private async getMessageById(
     messageId: string,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<Record<string, unknown> | null> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
@@ -4559,12 +4725,13 @@ export class MaxClientService implements OnModuleDestroy {
           ),
         ),
         requestOptions,
+        failureObserver,
       );
     } catch (error: unknown) {
       if (this.extractStatusCode(error) !== 404) throw error;
       // FLAG: A list-route 404 proves neither absence nor a successful deletion.
       // Verify the exact message, as presence lookups do; preserve direct-path failures.
-      return this.getMessageByPath(normalizedMessageId, requestOptions);
+      return this.getMessageByPath(normalizedMessageId, requestOptions, failureObserver);
     }
     const messages = Array.isArray(data.messages) ? data.messages : [];
     const matchedMessage = messages.find((message) => {
@@ -4580,12 +4747,13 @@ export class MaxClientService implements OnModuleDestroy {
 
     // Some MAX installations ignore `message_ids` filtering and return recent messages instead.
     // Fall back to the direct message path so edits target the intended post.
-    return this.getMessageByPath(normalizedMessageId, requestOptions);
+    return this.getMessageByPath(normalizedMessageId, requestOptions, failureObserver);
   }
 
   private async getMessageByPath(
     messageId: string,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<Record<string, unknown> | null> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
@@ -4603,6 +4771,7 @@ export class MaxClientService implements OnModuleDestroy {
         ),
       ),
       requestOptions,
+      failureObserver,
     );
     const nestedMessage = this.asRecord(data?.message);
     const exactMessage = [nestedMessage, data].find(
@@ -6051,7 +6220,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private async executeImmediateActionJob(
     job: MaxActionJob,
-    beforeDeleteMutation?: () => Promise<void>,
+    beforeDeleteMutation?: MaxActionDispatchOptions['beforeImmediateDeleteMutation'],
     beforeMemberMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
     beforeSendMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
   ): Promise<MaxPublishedMessage | void> {
@@ -7193,6 +7362,7 @@ export class MaxClientService implements OnModuleDestroy {
       deferRateLimitReservation?: boolean;
       deferredQuotaState?: { error?: unknown };
     } = {},
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<T> {
     const bot = this.resolveBot(options.botId);
     const trafficClass = options.trafficClass ?? 'interactive';
@@ -7241,6 +7411,13 @@ export class MaxClientService implements OnModuleDestroy {
           const outcome = consumeMaxHttpOutcome(associationOwner, terminal as MaxHttpOutcome<T>);
           if (outcome.kind === 'failure') {
             failureAssociation = outcome.association;
+            // FLAG: The observer sees only this owner's consumed, exact HTTP outcome.
+            // It cannot replace the thrown error or bypass normal cooldown bookkeeping.
+            try {
+              failureObserver?.(outcome.error, outcome.association, bot.id);
+            } catch {
+              // FLAG: Observation failure never changes the original transport result.
+            }
             throw outcome.error;
           }
           result = outcome.value;
@@ -7345,17 +7522,19 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
-    return this.executeReadRequest(operation, { chatId, ...normalizedOptions });
+    return this.executeReadRequest(operation, { chatId, ...normalizedOptions }, failureObserver);
   }
 
   private async executeGlobalRequest<T>(
     operation: MaxHttpOperation<T>,
     options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+    failureObserver?: MaxReadFailureObserver,
   ): Promise<T> {
     const normalizedOptions = this.normalizeReadRequestOptions(options);
-    return this.executeReadRequest(operation, normalizedOptions);
+    return this.executeReadRequest(operation, normalizedOptions, failureObserver);
   }
 
   private async executeMutation<T>(
@@ -7797,14 +7976,17 @@ export class MaxClientService implements OnModuleDestroy {
     mutationOptions: MaxApiRequestOptions,
     beforeMutation?: (revalidateRoute?: () => Promise<void>) => Promise<void>,
   ): Promise<MaxQueuedSendResponse> {
+    const ruleNotice = hasMaxModerationRuleNoticeProof(action);
+    const subscriptionNotice = isMaxRequiredSubscriptionNoticeAction(action);
+    const duplicateNotice = isMaxDuplicateNoticeAction(action);
+    const hasFinalNoticeAuthority = ruleNotice || subscriptionNotice || duplicateNotice;
     const finalNoticeGuard =
-      hasMaxModerationRuleNoticeProof(action) ||
-      isMaxRequiredSubscriptionNoticeAction(action) ||
-      isMaxDuplicateNoticeAction(action) ||
-      requiresMaxModerationNoticeEnvelope(action)
+      hasFinalNoticeAuthority || requiresMaxModerationNoticeEnvelope(action)
         ? async (revalidateRoute?: () => Promise<void>) => {
             assertMaxModerationNoticeEnvelope(action);
-            await beforeMutation?.(revalidateRoute);
+            // FLAG: Only the last composed authority may reserve transport. Earlier
+            // guards can still perform remote reads; none can consume its future slot.
+            await beforeMutation?.(hasFinalNoticeAuthority ? undefined : revalidateRoute);
             const selectedBotId =
               this.readTrimmedString(mutationOptions.botId) ?? this.getCurrentBot().id;
             const readOptions = (botId: string, timeoutMs: number): MaxApiRequestOptions => ({
@@ -7826,17 +8008,17 @@ export class MaxClientService implements OnModuleDestroy {
               botId: string;
               timeoutMs: number;
             }) => this.getChatMemberAccess(chatId, userId, readOptions(botId, timeoutMs));
-            if (hasMaxModerationRuleNoticeProof(action)) {
+            if (ruleNotice) {
               if (!this.moderationRuleNoticeGuard)
                 throw new UnrecoverableError('Moderation rule notice guard unavailable');
               await this.moderationRuleNoticeGuard.assertAllowed(
                 action,
                 selectedBotId,
                 getMemberAccess,
-                revalidateRoute,
+                subscriptionNotice || duplicateNotice ? undefined : revalidateRoute,
               );
             }
-            if (isMaxRequiredSubscriptionNoticeAction(action)) {
+            if (subscriptionNotice) {
               if (!this.requiredSubscriptionNoticeGuard)
                 throw new UnrecoverableError('Required subscription notice guard unavailable');
               await this.requiredSubscriptionNoticeGuard.assertAllowed(action, selectedBotId, {
@@ -7861,16 +8043,21 @@ export class MaxClientService implements OnModuleDestroy {
                   );
                   return members.has(userId);
                 },
-                beforeFinalAuthority: revalidateRoute,
+                beforeFinalAuthority: duplicateNotice ? undefined : revalidateRoute,
               });
             }
-            if (isMaxDuplicateNoticeAction(action)) {
+            if (duplicateNotice) {
               if (!this.duplicateNoticeGuard)
                 throw new UnrecoverableError('Duplicate notice guard unavailable');
               await this.duplicateNoticeGuard.assertAllowed(action, selectedBotId, revalidateRoute);
             }
           }
         : beforeMutation;
+    if (
+      finalNoticeGuard &&
+      (hasFinalNoticeAuthority || usesMaxFinalAuthorityCheckpoint(beforeMutation))
+    )
+      withMaxFinalAuthorityCheckpoint(finalNoticeGuard);
     const preparePublication = action.options?.marketplacePublication
       ? async (config: Record<string, unknown>) => {
           const options = await this.prepareMarketplacePublicationOptions(
@@ -9374,19 +9561,21 @@ export class MaxClientService implements OnModuleDestroy {
             scope.requestOptions,
             existingMessage,
           );
-          try {
-            priorityActivityId = await this.reserveRateLimitSlot(
-              bot.id,
-              scope.chatId,
-              scope.requestOptions.trafficClass ?? 'critical',
-              scope.requestOptions.sourceTag,
-              scope.requestOptions.timeoutMs,
-              scope.messageMutation,
-            );
-          } catch (error: unknown) {
-            scope.quotaState.error = error;
-            throw error;
-          }
+          const reserve = async () => {
+            try {
+              priorityActivityId = await this.reserveRateLimitSlot(
+                bot.id,
+                scope.chatId,
+                scope.requestOptions.trafficClass ?? 'critical',
+                scope.requestOptions.sourceTag,
+                scope.requestOptions.timeoutMs,
+                scope.messageMutation,
+              );
+            } catch (error: unknown) {
+              scope.quotaState.error = error;
+              throw error;
+            }
+          };
           const verifyExecutionProof = async (stage: string) => {
             if (
               proof &&
@@ -9403,14 +9592,43 @@ export class MaxClientService implements OnModuleDestroy {
               });
             }
           };
-          await verifyExecutionProof('quota wait');
-          await scope.preparePayload?.(config);
-          // FLAG: The feature owns its last authority await. Queued notice qualification calls
-          // this route recheck before its final policy/Redis permit; never await after that permit.
-          await scope.finalGuard?.(async () => {
-            await verifyExecutionProof('feature qualification');
+          if (usesMaxFinalAuthorityCheckpoint(scope.finalGuard)) {
             await scope.preparePayload?.(config);
-          });
+            let checkpoints = 0;
+            let checkpointCompleted = false;
+            let checkpointError: unknown;
+            let guardActive = true;
+            // FLAG: Remote guard reads precede this sole reservation. Route and payload
+            // checks finish here, before the guard's final permit; never await after it.
+            try {
+              await scope.finalGuard?.(async () => {
+                if (!guardActive || ++checkpoints !== 1)
+                  throw new Error('Invalid MAX final authority checkpoint');
+                try {
+                  await reserve();
+                  await verifyExecutionProof('quota wait');
+                  await scope.preparePayload?.(config);
+                  checkpointCompleted = true;
+                } catch (error) {
+                  checkpointError = error;
+                  throw error;
+                }
+              });
+            } finally {
+              guardActive = false;
+            }
+            if (checkpointError !== undefined) throw checkpointError;
+            if (checkpoints !== 1 || !checkpointCompleted)
+              throw new Error('Missing MAX final authority checkpoint');
+          } else {
+            await reserve();
+            await verifyExecutionProof('quota wait');
+            await scope.preparePayload?.(config);
+            await scope.finalGuard?.(async () => {
+              await verifyExecutionProof('feature qualification');
+              await scope.preparePayload?.(config);
+            });
+          }
           this.muteApiBudget.assertRequestAllowed();
         }, scope.guardCode);
         scope.onDispatchAttempt?.();

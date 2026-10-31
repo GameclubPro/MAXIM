@@ -34,6 +34,7 @@ type ProfanityDeleteGuardInput = {
   subjectUserId: string | null;
   botId?: string;
   minimumScore?: number;
+  beforeFinalAuthority?: () => Promise<void>;
 };
 
 @Injectable()
@@ -180,6 +181,7 @@ export class ProfanityDeleteGuardService {
       );
     }
 
+    await params.beforeFinalAuthority?.();
     const finalSettings = await this.loadSettings(params.chatId, senderId);
     const finalDecision = this.ruleEngine.detectProfanityForSettings(message.text, finalSettings);
     if (!finalDecision || finalDecision.score < (params.minimumScore ?? 0)) {

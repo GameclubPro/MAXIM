@@ -3,23 +3,30 @@ import {
   type TerminalDuplicateSanctionEventModel,
 } from './moderation-message-action-claim';
 import type { ModerationDeletePreDispatchPhase } from './moderation-delete-intent.types';
+import {
+  usesMaxFinalAuthorityCheckpoint,
+  withMaxFinalAuthorityCheckpoint,
+} from '../max/max-action-pre-dispatch-guard';
 
 export function createDuplicateMemberMutationGuard(
   lease: { assertOwned(): Promise<void> } | undefined,
   beforeMutation: ((beforeFinalAuthority?: () => Promise<void>) => Promise<void>) | undefined,
 ): ((beforeFinalAuthority?: () => Promise<void>) => Promise<void>) | undefined {
   if (!beforeMutation && !lease) return undefined;
-  return async (beforeFinalAuthority) => {
-    await lease?.assertOwned();
-    const finalLeaseAndRoute = async () => {
+  return withMaxFinalAuthorityCheckpoint(
+    async (beforeFinalAuthority) => {
       await lease?.assertOwned();
-      await beforeFinalAuthority?.();
-    };
-    // FLAG: Route/lease reads finish inside authority, before its final settings,
-    // Redis permit and synchronous deadline. No post-authority await extends that permit.
-    if (beforeMutation) await beforeMutation(finalLeaseAndRoute);
-    else await finalLeaseAndRoute();
-  };
+      const finalLeaseAndRoute = async () => {
+        await beforeFinalAuthority?.();
+        await lease?.assertOwned();
+      };
+      // FLAG: Admission can outlive the lease. Recheck it after the checkpoint,
+      // inside authority before final settings, Redis permit and synchronous deadline.
+      if (beforeMutation) await beforeMutation(finalLeaseAndRoute);
+      else await finalLeaseAndRoute();
+    },
+    !beforeMutation || usesMaxFinalAuthorityCheckpoint(beforeMutation),
+  );
 }
 
 export function createDuplicateDeleteAuthorizationGuard(params: {

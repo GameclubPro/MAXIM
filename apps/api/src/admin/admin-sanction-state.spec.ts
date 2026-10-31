@@ -233,7 +233,7 @@ describe('existing sanction-button unban attempt', () => {
     });
     expect(mutation).toHaveBeenCalledTimes(1);
     expect(revalidateRoute).toHaveBeenCalledTimes(1);
-    expect(harness.leaseGuard.assertOwned.mock.invocationCallOrder.at(-1)).toBeLessThan(
+    expect(harness.leaseGuard.assertOwned.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
       revalidateRoute.mock.invocationCallOrder[0]!,
     );
     expect(revalidateRoute.mock.invocationCallOrder[0]).toBeLessThan(
@@ -263,7 +263,36 @@ describe('existing sanction-button unban attempt', () => {
     expect(prisma.adminGlobalSpammerExemption.upsert).not.toHaveBeenCalled();
   });
 
-  it.each(['member lookup', 'lease renewal'] as const)(
+  it.each(['sanction', 'lease'] as const)(
+    'rejects %s authority changed during the unban admission checkpoint',
+    async (changed) => {
+      const { prisma, maxClient, harness, run, mutation, revalidateRoute } = fixture();
+      revalidateRoute.mockImplementation(async () => {
+        expect(maxClient.getChatMemberAccess).toHaveBeenCalledTimes(2);
+        if (changed === 'sanction')
+          prisma.moderationEvent.findFirst.mockResolvedValue({ id: 'new-ban' });
+        else
+          harness.leaseGuard.assertOwned.mockRejectedValue(
+            new ModerationSanctionStateLockLeaseLostError({ chatId: 'chat-1', userId: 'user-4' }),
+          );
+      });
+
+      await expect(run()).rejects.toBeInstanceOf(
+        changed === 'sanction'
+          ? ModerationSanctionStateChangedError
+          : ModerationSanctionStateLockLeaseLostError,
+      );
+      expect(revalidateRoute).toHaveBeenCalledTimes(1);
+      expect(mutation).not.toHaveBeenCalled();
+      expect(maxClient.unbanMember).not.toHaveBeenCalled();
+      expect(maxClient.clearTerminalBanStateAfterConfirmedUnban).not.toHaveBeenCalled();
+      expect(harness.sanctionStateFence.prepare).not.toHaveBeenCalled();
+      expect(harness.sanctionStateFence.commit).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['member lookup', 'preparation lease renewal'] as const)(
     'rejects a selected executor proof superseded during the final %s',
     async (blockedStep) => {
       const { prisma, maxClient, harness, run, mutation, revalidateRoute } = fixture();
@@ -284,7 +313,7 @@ describe('existing sanction-button unban attempt', () => {
         reachedWait = resolve;
       });
       let finalTargetReadFinished = false;
-      // FLAG: Block the second, fresh target read or its following Redis lease
+      // FLAG: Block the second, fresh target read or its preceding Redis lease
       // check. The captured dispatch proof is valid until that exact final wait.
       maxClient.getChatMemberAccess.mockResolvedValueOnce(null).mockImplementationOnce(async () => {
         if (blockedStep === 'member lookup') {
@@ -296,7 +325,11 @@ describe('existing sanction-button unban attempt', () => {
       });
       harness.leaseGuard.assertOwned.mockImplementation(async () => {
         harness.trace.push('guard');
-        if (blockedStep === 'lease renewal' && finalTargetReadFinished) {
+        if (
+          blockedStep === 'preparation lease renewal' &&
+          maxClient.attemptUnbanMember.mock.calls.length > 0 &&
+          !finalTargetReadFinished
+        ) {
           reachedWait();
           await waiting;
         }

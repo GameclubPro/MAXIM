@@ -1,5 +1,6 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { createHash } from 'node:crypto';
+import { withMaxFinalAuthorityCheckpoint } from '../max/max-action-pre-dispatch-guard';
 import { prepareFormattedTextForMaxDelivery } from './max-markdown.util';
 import {
   MAX_API_SOURCE_TAGS,
@@ -58,11 +59,13 @@ export async function deliverGroupCommandNotice(params: {
         botId: permit.executionBotId,
         candidateBotIds: [permit.executionBotId],
         routing: { purpose: 'send_message', requiredBotId: permit.executionBotId },
-        beforeImmediateSendMutation: async (revalidateRoute) => {
+        beforeImmediateSendMutation: withMaxFinalAuthorityCheckpoint(async (revalidateRoute) => {
           await authority.assertFreshHeldCommandAccess(permit, max);
+          await revalidateRoute?.();
+          // FLAG: Transport admission may outlive either SQL lease or the saved source.
+          // Recheck command and recovery ownership after its wait, before the final deadline.
           await authority.assertOwned(permit);
           await params.beforeMutation?.();
-          await revalidateRoute?.();
           // FLAG: No awaited proof may consume the command lease or source deadline
           // between its check and the actual HTTP mutation boundary.
           const now = Date.now();
@@ -72,7 +75,7 @@ export async function deliverGroupCommandNotice(params: {
               (!permit.executionDeadlineAt || permit.executionDeadlineAt.getTime() <= now))
           )
             throw new Error('Group command notice authority expired before transport');
-        },
+        }),
         idempotencyKey: groupCommandNoticeIdempotencyKey(permit.semanticKey),
         ledgerContext: { moderationNoticeEnvelope: { version: 1 } },
         ...(settings.deleteBotMessagesEnabled
