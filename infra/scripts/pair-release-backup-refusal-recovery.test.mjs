@@ -5,6 +5,7 @@ import { mkdtemp, writeFile, readFile, lstat, rm, access } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   parseBackupRefusalRecoveryArgs,
   buildBackupRefusalProof,
@@ -112,6 +113,66 @@ test('requires exact reviewed source and all five caller-bound identities', () =
     parseBackupRefusalRecoveryArgs([...args.slice(0, -2), '--source-sha', SOURCE]),
   );
 });
+
+test('the connector stdin validator imports recovery without starting its CLI', async () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const connector = await readFile(new URL('./vps-connect.sh', import.meta.url), 'utf8');
+  const importer = connector.match(
+    /node --input-type=module - "\$ROOT_DIR" "\$@" <<'NODE'\n(?<source>[\s\S]*?)\nNODE/u,
+  )?.groups?.source;
+  assert.ok(importer, 'the actual connector stdin validator must be exercised');
+  const { request } = fixture();
+  for (const mode of ['preview', 'apply']) {
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-',
+        root,
+        mode,
+        '--owner-sha256',
+        request.ownerSha256,
+        '--initial-state-sha256',
+        request.initialStateSha256,
+        '--state-sha256',
+        request.stateSha256,
+        '--source-sha',
+        request.sourceSha,
+        '--invocation-id',
+        request.invocationId,
+      ],
+      { input: importer, encoding: 'utf8', timeout: 5_000, maxBuffer: 65_536 },
+    );
+    assert.ifError(child.error);
+    assert.equal(child.signal, null);
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, '');
+    assert.equal(child.stderr, '');
+  }
+});
+
+for (const entry of ['direct file', 'streamed stdin']) {
+  test(`${entry} CLI rejects invalid arguments before observing production paths`, async () => {
+    const source = new URL('./pair-release-backup-refusal-recovery.mjs', import.meta.url);
+    const child = spawnSync(
+      process.execPath,
+      entry === 'direct file'
+        ? [fileURLToPath(source), 'invalid-mode']
+        : ['--input-type=module', '-', 'invalid-mode'],
+      {
+        ...(entry === 'streamed stdin' ? { input: await readFile(source, 'utf8') } : {}),
+        encoding: 'utf8',
+        timeout: 5_000,
+        maxBuffer: 65_536,
+      },
+    );
+    assert.ifError(child.error);
+    assert.equal(child.signal, null);
+    assert.equal(child.status, 1);
+    assert.equal(child.stdout, '');
+    assert.deepEqual(JSON.parse(child.stderr), { ok: false, code: 'invalid_arguments' });
+  });
+}
 
 test('preview proves only the observed pre-product-lock refusal and performs no archival', async () => {
   const { request, observation } = fixture();

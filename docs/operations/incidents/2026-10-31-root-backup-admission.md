@@ -23,6 +23,13 @@ recovery controller requires the original owner, sources, unit and trusted refus
 stable product state, absence of actors and all three fixed kernel locks before durably
 archiving the unchanged owner with its proof.
 
+A local preview of the new connector exposed a separate entrypoint defect before SSH:
+the controller ran its CLI while imported by the stdin argument validator. The Node 24
+`import.meta.main` boundary now distinguishes imports from direct file and stdin execution.
+A regression exercises the connector's actual validator for both preview and apply; direct
+file and streamed CLI rejection remain covered separately. No production recovery occurred
+during that local refusal.
+
 The preceding six-minute read-only baseline had 13 complete samples: all 14 exact API roles
 running, no new restarts, all 24 sampled queues unpaused, ingress/admin ready and automatic
 normal mode. Queue lag was 0.107–3.128 seconds. All six configured moderation bots had recent

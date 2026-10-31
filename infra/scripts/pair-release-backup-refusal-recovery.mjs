@@ -5,7 +5,6 @@ import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
-import { pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 
 const execute = promisify(execFile);
@@ -662,7 +661,7 @@ async function main() {
   );
 }
 
-if (process.argv[1] === '-' || import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (import.meta.main) {
   main()
     .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
     .catch((error) => {
