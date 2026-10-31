@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from '../moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 
@@ -226,6 +231,12 @@ export class CommercialOcrDeleteGuardService {
     sourceMessageAt: Date | null;
     botId: string;
   }): Promise<CommercialOcrDeleteGuardResult> {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<CommercialOcrDeleteGuardService['assertIntentStillActionable']>[0],
+  ): Promise<DeleteAuthorityPreparation<CommercialOcrDeleteGuardResult>> {
     const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, metadata: true },
@@ -412,22 +423,24 @@ export class CommercialOcrDeleteGuardService {
       );
     }
 
-    // MAX lookups and immunity checks are asynchronous. Re-read both mutable authorization sources
-    // after them so a mid-guard settings or rollout change cannot authorize the remote mutation.
-    const finalAuthorization = await this.loadCurrentAuthorization(params.chatId, binding);
-    if (finalAuthorization.settings.nightModeTimezone !== settings.nightModeTimezone) {
-      throw rejected(
-        'commercial_ocr_participant_immunity_unknown',
-        'Participant moderation immunity was checked with a stale chat timezone',
+    return prepareDeleteAuthority(async () => {
+      // MAX lookups and immunity checks are asynchronous. Re-read both mutable authorization sources
+      // after them so a mid-guard settings or rollout change cannot authorize the remote mutation.
+      const finalAuthorization = await this.loadCurrentAuthorization(params.chatId, binding);
+      if (finalAuthorization.settings.nightModeTimezone !== settings.nightModeTimezone) {
+        throw rejected(
+          'commercial_ocr_participant_immunity_unknown',
+          'Participant moderation immunity was checked with a stale chat timezone',
+        );
+      }
+      this.assertLocalAdminEligible(finalAuthorization.settings, binding.senderId);
+      await this.assertRuntimeAuthorization(
+        params.chatId,
+        finalAuthorization.settingsFingerprint,
+        binding,
       );
-    }
-    this.assertLocalAdminEligible(finalAuthorization.settings, binding.senderId);
-    await this.assertRuntimeAuthorization(
-      params.chatId,
-      finalAuthorization.settingsFingerprint,
-      binding,
-    );
-    return 'allowed';
+      return 'allowed' as const;
+    });
   }
 
   private async loadCurrentAuthorization(chatId: string, binding: CommercialOcrDeleteBinding) {

@@ -1,3 +1,9 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  isPreparedDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from '../moderation-delete-authority-preparation';
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
@@ -72,6 +78,16 @@ export class CommercialDeleteGuardService {
   async assertIntentStillActionable(
     params: GuardInput & { intentId: string; ownedReasonsOnly?: boolean },
   ): Promise<CommercialGuardProof | 'not_applicable' | 'missing_reason'> {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<CommercialDeleteGuardService['assertIntentStillActionable']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<
+      Awaited<ReturnType<CommercialDeleteGuardService['assertIntentStillActionable']>>
+    >
+  > {
     const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: {
         intentId: params.intentId,
@@ -98,7 +114,17 @@ export class CommercialDeleteGuardService {
     try {
       if (reasons.length > COMMERCIAL_TEXT_MAX_INTENT_REASONS)
         throw new CommercialDeleteGuardRejectedError('commercial_text_binding_invalid');
-      return await this.verifyMessage({ ...params, evidence: reasons });
+      const prepared = await this.prepareMessageForDispatch({ ...params, evidence: reasons });
+      if (!isPreparedDeleteAuthority(prepared)) return prepared;
+      return prepareDeleteAuthority(async (finalizeNested) => {
+        try {
+          return await finalizeNested(prepared);
+        } catch (error) {
+          if (error instanceof CommercialDeleteGuardRejectedError)
+            error.reasonFingerprint = fingerprintCommercialDeleteReasons(reasons);
+          throw error;
+        }
+      });
     } catch (error) {
       if (error instanceof CommercialDeleteGuardRejectedError)
         error.reasonFingerprint = fingerprintCommercialDeleteReasons(reasons);
@@ -229,6 +255,12 @@ export class CommercialDeleteGuardService {
   private async verifyMessage(
     params: GuardInput & { evidence: readonly DecisionEvidence[] },
   ): Promise<CommercialGuardProof> {
+    return finalizeDeleteAuthority(await this.prepareMessageForDispatch(params));
+  }
+
+  private async prepareMessageForDispatch(
+    params: GuardInput & { evidence: readonly DecisionEvidence[] },
+  ): Promise<DeleteAuthorityPreparation<CommercialGuardProof>> {
     const userId = params.subjectUserId;
     if (!userId) throw new CommercialDeleteGuardRejectedError('commercial_text_message_changed');
     if (this.maxBotLink.isKnownBotUserId(userId))
@@ -290,11 +322,17 @@ export class CommercialDeleteGuardService {
       })) === 'granted'
     )
       throw new CommercialDeleteGuardRejectedError('commercial_text_author_immune');
-    const finalSettings = await this.loadSettings(params.chatId, userId);
-    const finalEvidence = this.resolveEvidence(params.evidence, finalSettings);
-    const finalAuthority = await this.assertAuthority(params.chatId, finalEvidence, finalSettings);
-    this.assertDetection(message.text, finalSettings, finalEvidence, finalAuthority);
-    return { kind: 'allowed', reasonKeys: finalEvidence.reasonKeys };
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.loadSettings(params.chatId, userId);
+      const finalEvidence = this.resolveEvidence(params.evidence, finalSettings);
+      const finalAuthority = await this.assertAuthority(
+        params.chatId,
+        finalEvidence,
+        finalSettings,
+      );
+      this.assertDetection(message.text, finalSettings, finalEvidence, finalAuthority);
+      return { kind: 'allowed', reasonKeys: finalEvidence.reasonKeys };
+    });
   }
 
   private resolveEvidence(

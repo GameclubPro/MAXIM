@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from './moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
@@ -73,6 +78,12 @@ export class LinkHistoryDeleteGuardService {
     subjectUserId: string | null;
     botId: string;
   }): Promise<LinkHistoryDeleteGuardResult> {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<LinkHistoryDeleteGuardService['assertIntentStillActionable']>[0],
+  ): Promise<DeleteAuthorityPreparation<LinkHistoryDeleteGuardResult>> {
     const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
@@ -124,82 +135,87 @@ export class LinkHistoryDeleteGuardService {
       );
     }
 
-    const now = new Date();
-    const [settings, allowlistRows, expiredAllowlist] = await this.prisma.$transaction(
-      [
-        this.prisma.chatSettings.findUnique({
-          where: { chatId: params.chatId },
-          select: {
-            linkPolicy: true,
-            linkPolicyRevision: true,
-            linkPolicyEffectiveAt: true,
-            chat: {
-              select: {
-                admins: { select: { userId: true } },
+    const loadAuthority = async () => {
+      const now = new Date();
+      const [settings, allowlistRows, expiredAllowlist] = await this.prisma.$transaction(
+        [
+          this.prisma.chatSettings.findUnique({
+            where: { chatId: params.chatId },
+            select: {
+              linkPolicy: true,
+              linkPolicyRevision: true,
+              linkPolicyEffectiveAt: true,
+              chat: {
+                select: {
+                  admins: { select: { userId: true } },
+                },
               },
             },
-          },
-        }),
-        this.prisma.domainAllowlist.findMany({
-          where: {
-            chatId: params.chatId,
-            OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: now } }],
-          },
-          select: { domain: true },
-        }),
-        this.prisma.domainAllowlist.aggregate({
-          where: {
-            chatId: params.chatId,
-            removeAfterAt: { lte: now },
-          },
-          _max: { removeAfterAt: true },
-        }),
-      ],
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
-    );
-    const policyEffectiveAt = settings
-      ? deriveLinkPolicySemanticEffectiveAt(
-          settings.linkPolicy,
-          settings.linkPolicyEffectiveAt,
-          expiredAllowlist._max.removeAfterAt,
-        )
-      : null;
-    if (
-      !settings ||
-      settings.linkPolicy === 'ALERT_ONLY' ||
-      (usesLiveSemantics ? !settings.linkPolicyEffectiveAt : !policyEffectiveAt)
-    ) {
-      throw reject(
-        usesLiveSemantics ? 'live_policy_inactive' : 'history_policy_inactive',
-        'Strict link policy is no longer active',
+          }),
+          this.prisma.domainAllowlist.findMany({
+            where: {
+              chatId: params.chatId,
+              OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: now } }],
+            },
+            select: { domain: true },
+          }),
+          this.prisma.domainAllowlist.aggregate({
+            where: {
+              chatId: params.chatId,
+              removeAfterAt: { lte: now },
+            },
+            _max: { removeAfterAt: true },
+          }),
+        ],
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
       );
-    }
-    const matchingRecoveryReasons = recoveryReasons.filter(
-      (reason) =>
-        reason.policyRevision === settings.linkPolicyRevision &&
-        reason.policyEffectiveAt.getTime() === policyEffectiveAt?.getTime(),
-    );
-    const matchingLiveReasons = liveReasons.filter(
-      (reason) =>
-        reason.linkPolicyRevision === settings.linkPolicyRevision &&
-        settings.linkPolicyEffectiveAt !== null &&
-        reason.linkPolicyEffectiveAt.getTime() === settings.linkPolicyEffectiveAt.getTime(),
-    );
-    if (
-      usesLiveSemantics ? matchingLiveReasons.length === 0 : matchingRecoveryReasons.length === 0
-    ) {
-      throw reject(
-        usesLiveSemantics ? 'live_policy_revision_changed' : 'history_policy_revision_changed',
-        'Link policy changed after the deletion candidate was recorded',
+      const policyEffectiveAt = settings
+        ? deriveLinkPolicySemanticEffectiveAt(
+            settings.linkPolicy,
+            settings.linkPolicyEffectiveAt,
+            expiredAllowlist._max.removeAfterAt,
+          )
+        : null;
+      if (
+        !settings ||
+        settings.linkPolicy === 'ALERT_ONLY' ||
+        (usesLiveSemantics ? !settings.linkPolicyEffectiveAt : !policyEffectiveAt)
+      ) {
+        throw reject(
+          usesLiveSemantics ? 'live_policy_inactive' : 'history_policy_inactive',
+          'Strict link policy is no longer active',
+        );
+      }
+      const matchingRecoveryReasons = recoveryReasons.filter(
+        (reason) =>
+          reason.policyRevision === settings.linkPolicyRevision &&
+          reason.policyEffectiveAt.getTime() === policyEffectiveAt?.getTime(),
       );
-    }
+      const matchingLiveReasons = liveReasons.filter(
+        (reason) =>
+          reason.linkPolicyRevision === settings.linkPolicyRevision &&
+          settings.linkPolicyEffectiveAt !== null &&
+          reason.linkPolicyEffectiveAt.getTime() === settings.linkPolicyEffectiveAt.getTime(),
+      );
+      if (
+        usesLiveSemantics ? matchingLiveReasons.length === 0 : matchingRecoveryReasons.length === 0
+      ) {
+        throw reject(
+          usesLiveSemantics ? 'live_policy_revision_changed' : 'history_policy_revision_changed',
+          'Link policy changed after the deletion candidate was recorded',
+        );
+      }
 
-    if (settings.chat.admins.some((admin) => admin.userId === params.subjectUserId)) {
-      throw reject(
-        usesLiveSemantics ? 'live_admin_immune' : 'history_admin_immune',
-        'Current chat administrators are immune from link deletion',
-      );
-    }
+      if (settings.chat.admins.some((admin) => admin.userId === params.subjectUserId)) {
+        throw reject(
+          usesLiveSemantics ? 'live_admin_immune' : 'history_admin_immune',
+          'Current chat administrators are immune from link deletion',
+        );
+      }
+      return { settings, allowlistRows, policyEffectiveAt, matchingRecoveryReasons };
+    };
+    const { settings, allowlistRows, policyEffectiveAt, matchingRecoveryReasons } =
+      await loadAuthority();
     const remoteAccess = await this.maxClient.getChatMemberAccess(
       params.chatId,
       params.subjectUserId,
@@ -307,7 +323,26 @@ export class LinkHistoryDeleteGuardService {
         'Exact message content no longer violates the current link policy',
       );
     }
-    return 'allowed';
+    return prepareDeleteAuthority(async () => {
+      const current = await loadAuthority();
+      if (
+        (!usesLiveSemantics &&
+          current.policyEffectiveAt &&
+          metadata.timestampMs < current.policyEffectiveAt.getTime()) ||
+        !isLinkHistoryPolicyViolation(
+          current.settings.linkPolicy,
+          current.allowlistRows.map((row) => row.domain),
+          targets,
+        )
+      )
+        throw reject(
+          usesLiveSemantics
+            ? 'live_violation_no_longer_present'
+            : 'history_violation_no_longer_present',
+          'Current link policy no longer authorizes this deletion',
+        );
+      return 'allowed' as const;
+    });
   }
 
   private parseReasonMetadata(value: unknown): RecoveryReasonMetadata | null {

@@ -51,8 +51,14 @@ The existing first-PC legacy launcher keeps its own unchanged profile and lifecy
 A missing PC reduces total capacity without blocking the other workers. Reduced capacity can still produce admission skips; three machines
 do not guarantee zero queues or complete traffic coverage under arbitrary load.
 
-The CPU node uses the same physical lease as the legacy CPU classifier. The pinned
-llama.cpp b11804 `/health` handler ignores `fail_on_no_slot`; health is liveness only.
+The CPU node uses the same physical lease as the legacy CPU classifier.
+CPU handoff requires at least six seconds of the original inference budget, matching
+the existing measured CPU p95 admission floor. The client leaves shorter budgets to
+available GPU nodes, and the CPU adapter rechecks after headroom and lease-retention
+waits before HTTP. A rejected undispatched request releases only its own capacity;
+this neither renews a deadline nor releases uncertain work that reached HTTP.
+
+The pinned llama.cpp b11804 `/health` handler ignores `fail_on_no_slot`; health is liveness only.
 Readiness uses the bounded `/slots` contract and `/props.endpoint_slots=true`.
 The separate guarded CPU capability upgrade is described in the
 [local model runbook](commercial-llm-shadow.md); ordinary API deployment alone does

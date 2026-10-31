@@ -32,6 +32,7 @@ import {
   bindMessageLimitEvidence,
   fingerprintModerationSettings,
 } from '../moderation/message-limits-delete-guard.service';
+import { prepareDeleteAuthority } from '../moderation/moderation-delete-authority-preparation';
 import {
   buildNightModeTransitionScheduleFingerprint,
   buildNightModeTransitionSideEffectFingerprint,
@@ -3922,18 +3923,29 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       ruleCode: 'MESSAGE_TOO_LONG_DELETE',
       event: { userId: 'fixture-user', eventType: 'MESSAGE' },
     });
-    const authorizeState = s.stateGuard.authorize.bind(s.stateGuard);
+    const prepareState = s.stateGuard.prepareForDispatch.bind(s.stateGuard);
     let heldStatePermit = false;
-    jest.spyOn(s.stateGuard, 'authorize').mockImplementation(async (params) => {
-      const permit = await authorizeState(params);
-      if (typeof permit === 'object') {
-        heldStatePermit = true;
-        await new Promise((resolve) =>
-          setTimeout(resolve, Math.max(1, permit.deadlineAtMs - Date.now() + 5)),
-        );
-      }
-      return permit;
-    });
+    const preparation = jest
+      .spyOn(s.stateGuard, 'prepareForDispatch')
+      .mockImplementation(async (params) => {
+        const prepared = await prepareState(params);
+        // FLAG: Dispatch finalizes prepared evidence instead of calling authorize.
+        // Hold the real local permit through its expiry before testing receipt filtering.
+        return prepareDeleteAuthority(async (finalizeNested) => {
+          const permit = await finalizeNested(prepared);
+          if (typeof permit === 'object') {
+            expect(permit.reasonKeys).toEqual(['mute:expires']);
+            expect(permit.deadlineAtMs).toBe(muteExpiresAt.getTime());
+            expect(Date.now()).toBeLessThan(permit.deadlineAtMs);
+            heldStatePermit = true;
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(1, permit.deadlineAtMs - Date.now() + 5)),
+            );
+            expect(Date.now()).toBeGreaterThanOrEqual(permit.deadlineAtMs);
+          }
+          return permit;
+        });
+      });
     await s.prisma.moderationDeleteIntent.update({
       where: { id: queued.intentId },
       data: { executeAt: new Date(0), nextAttemptAt: new Date(0) },
@@ -3943,6 +3955,7 @@ describeStores('native current-rule authorization across mirrored bot delivery',
       verifiedReasonKeys: ['length:survives'],
     });
     expect(heldStatePermit).toBe(true);
+    expect(preparation).toHaveBeenCalledTimes(1);
     const reasons = await s.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: queued.intentId },
     });

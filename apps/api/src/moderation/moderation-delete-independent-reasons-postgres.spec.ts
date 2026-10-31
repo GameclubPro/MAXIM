@@ -4,15 +4,42 @@ import {
 } from './link-history-delete-guard.service';
 import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
+import type { MaxClientService } from '../max/max-client.service';
+import type { MaxBotLinkService } from '../max/max-bot-link.service';
 import { createPrismaClient, type Prisma, type PrismaClient } from '../prisma/prisma-client';
 import { ModerationDeleteIntentService } from './moderation-delete-intent.service';
 import { MessageLimitsDeleteGuardService } from './message-limits-delete-guard.service';
-import { MessageDuplicateDeleteGuardService } from './message-duplicate/message-duplicate-delete-guard.service';
+import {
+  MessageDuplicateDeleteGuardService,
+  MessageDuplicateGuardRejectedError,
+} from './message-duplicate/message-duplicate-delete-guard.service';
+import {
+  finalizeDeleteAuthority,
+  type PreparedDeleteAuthority,
+} from './moderation-delete-authority-preparation';
+import { ModerationStateDeleteGuardService } from './moderation-state-delete-guard.service';
+import { ModerationSanctionStateFenceService } from './moderation-sanction-state-fence.service';
+import { ModerationSanctionStateLockService } from './moderation-sanction-state-lock.service';
+import { ParticipantModerationImmunityService } from './participant-moderation-immunity.service';
+import { RedisCounterService } from './redis-counter.service';
+import type { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
 
 const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() ?? '';
-type Proof = { messageDuplicateVerified: boolean; independentVerified: boolean };
+const redisUrl = process.env.MAXIM_TEST_REDIS_URL?.trim() ?? '';
+type Proof = {
+  messageDuplicateVerified: boolean;
+  independentVerified: boolean;
+  verifiedReasonKeys: string[];
+  verifiedReasonDeadlines: { reasonKey: string; deadlineAtMs: number }[];
+  independentRecheck?: PreparedDeleteAuthority<Proof>;
+};
 type Authorization = {
-  authorizeGuardedUserDeleteReasons(intent: unknown, botId: string): Promise<Proof>;
+  authorizeGuardedUserDeleteReasons(
+    intent: unknown,
+    botId: string,
+    finalDispatchLeaseToken?: string,
+    beforeFinalAuthority?: () => Promise<void>,
+  ): Promise<Proof>;
 };
 
 (databaseUrl ? describe : describe.skip)('mixed duplicate and independent current reasons', () => {
@@ -65,21 +92,32 @@ type Authorization = {
       },
     });
     const message = {
-      sender: { user_id: 'user' },
+      sender: { user_id: 'user', is_bot: false },
       recipient: { chat_id: chatId, chat_type: 'chat' },
       timestamp: Date.now(),
       body: { mid: 'one-message', text: '12345678901' },
     };
     const max = {
-      getChatMemberAccess: jest.fn(async () => ({
+      getChatMemberAccess: jest.fn<
+        ReturnType<MaxClientService['getChatMemberAccess']>,
+        Parameters<MaxClientService['getChatMemberAccess']>
+      >(async () => ({
         userId: 'user',
         isAdmin: false,
         isOwner: false,
+        permissions: [],
       })),
-      getExactMessageRow: jest.fn(async () => message),
-    };
-    const bots = { isKnownBotUserId: () => false };
-    const immunity = { consumeForMessage: async () => 'not_granted' };
+      getExactMessageRow: jest.fn<
+        ReturnType<MaxClientService['getExactMessageRow']>,
+        Parameters<MaxClientService['getExactMessageRow']>
+      >(async () => message),
+    } satisfies Pick<MaxClientService, 'getChatMemberAccess' | 'getExactMessageRow'>;
+    const bots = {
+      isKnownBotUserId: () => false,
+    } satisfies Pick<MaxBotLinkService, 'isKnownBotUserId'>;
+    const immunity = {
+      consumeForMessage: async () => 'not_granted' as const,
+    } satisfies Pick<ParticipantModerationImmunityService, 'consumeForMessage'>;
     const config = new ConfigService();
     const lengthGuard = new MessageLimitsDeleteGuardService(
       prisma as never,
@@ -106,8 +144,316 @@ type Authorization = {
       messageLimitsDeleteGuard: lengthGuard,
       messageDuplicateDeleteGuard: duplicateGuard,
     });
-    return { service, intent, message, max, chatId };
+    return { service, intent, message, max, chatId, bots, config };
   }
+
+  it.each(['valid length', 'disabled policy', 'protected author', 'participant immunity'] as const)(
+    'rechecks SQL independent authority after final duplicate refusal: %s',
+    async (change) => {
+      const s = await fixture();
+      const immunity = new ParticipantModerationImmunityService(prisma as never);
+      const duplicateGuard = {
+        assertIntentStillActionable: jest.fn<
+          ReturnType<MessageDuplicateDeleteGuardService['assertIntentStillActionable']>,
+          Parameters<MessageDuplicateDeleteGuardService['assertIntentStillActionable']>
+        >(async (params) => {
+          if (!params.authorityOnly) return 'allowed';
+          if (change === 'disabled policy')
+            await prisma.chatSettings.update({
+              where: { chatId: s.chatId },
+              data: { maxMessageLengthEnabled: false },
+            });
+          if (change === 'protected author')
+            await prisma.chatAdminAllowlist.create({
+              data: { chatId: s.chatId, userId: 'user' },
+            });
+          if (change === 'participant immunity')
+            await prisma.chatParticipantModerationImmunity.create({
+              data: {
+                chatId: s.chatId,
+                userId: 'user',
+                dailyViolationLimit: 1,
+                expiresAt: new Date(Date.now() + 3_600_000),
+              },
+            });
+          throw new MessageDuplicateGuardRejectedError(
+            'message_duplicate_action_authority_revoked',
+          );
+        }),
+      } satisfies Pick<MessageDuplicateDeleteGuardService, 'assertIntentStillActionable'>;
+      Object.assign(s.service, {
+        messageDuplicateDeleteGuard: duplicateGuard,
+        participantImmunity: immunity,
+      });
+      const admission = jest.fn(async () => undefined);
+      const proof = await s.service.authorizeGuardedUserDeleteReasons(
+        s.intent,
+        'healthy-executor',
+        undefined,
+        admission,
+      );
+      expect(proof).toMatchObject({
+        messageDuplicateVerified: true,
+        independentVerified: true,
+        verifiedReasonKeys: ['length'],
+      });
+      await expect(
+        duplicateGuard.assertIntentStillActionable({
+          intentId: s.intent.id,
+          chatId: s.chatId,
+          messageId: s.intent.messageId,
+          subjectUserId: 'user',
+          botId: 'healthy-executor',
+          authorityOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: 'message_duplicate_action_authority_revoked' });
+      expect(proof.independentRecheck).toBeDefined();
+      const finalProof = finalizeDeleteAuthority(proof.independentRecheck!);
+      if (change === 'valid length')
+        await expect(finalProof).resolves.toMatchObject({
+          messageDuplicateVerified: false,
+          independentVerified: true,
+          verifiedReasonKeys: ['length'],
+          verifiedReasonDeadlines: [],
+        });
+      else
+        await expect(finalProof).rejects.toMatchObject({
+          code: 'moderation_delete_reasons_no_longer_authorized',
+        });
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(duplicateGuard.assertIntentStillActionable).toHaveBeenCalledTimes(2);
+      expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(1);
+      expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(1);
+      const retained = await prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: s.intent.id },
+      });
+      expect(retained.remoteDeleteSucceededAt).toBeNull();
+      expect(retained.retryUntilAt).toEqual(s.intent.retryUntilAt);
+    },
+  );
+
+  (redisUrl ? describe : describe.skip)('current SQL authority after quota admission', () => {
+    let counters: RedisCounterService;
+    let locks: ModerationSanctionStateLockService;
+    beforeAll(() => {
+      if (!/^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/u.test(redisUrl))
+        throw new Error('Quota authority checks require disposable local Redis');
+      counters = new RedisCounterService(new ConfigService({ REDIS_URL: redisUrl }));
+      locks = new ModerationSanctionStateLockService(counters);
+    });
+    afterAll(async () => {
+      await counters?.onModuleDestroy();
+    });
+
+    async function mutedFixture(withLength: boolean) {
+      const s = await fixture();
+      const sourceAt = new Date(s.message.timestamp);
+      const mute = await prisma.moderationEvent.create({
+        data: {
+          chatId: s.chatId,
+          userId: 'user',
+          eventType: 'MEMBER_ACTION',
+          action: 'MUTE',
+          ruleCode: 'NATIVE_QUOTA_MUTE',
+          createdAt: new Date(sourceAt.getTime() - 1_000),
+          metadata: { muteExpiresAt: new Date(sourceAt.getTime() + 3_600_000).toISOString() },
+        },
+      });
+      await prisma.moderationDeleteIntentReason.deleteMany({ where: { intentId: s.intent.id } });
+      const intent = await prisma.moderationDeleteIntent.update({
+        where: { id: s.intent.id },
+        data: {
+          sourceMessageAt: sourceAt,
+          retryUntilAt: new Date(sourceAt.getTime() + 300_000),
+          reasons: {
+            create: [
+              {
+                id: randomUUID(),
+                reasonKey: 'muted',
+                ruleCode: 'MUTE_ACTIVE_DELETE',
+                userId: 'user',
+                metadata: { muteEventId: mute.id },
+              },
+              ...(withLength
+                ? [
+                    {
+                      id: randomUUID(),
+                      reasonKey: 'length',
+                      ruleCode: 'MESSAGE_TOO_LONG_DELETE',
+                      userId: 'user',
+                    },
+                  ]
+                : []),
+            ],
+          },
+        },
+      });
+      const immunity = new ParticipantModerationImmunityService(prisma as never);
+      const fence = new ModerationSanctionStateFenceService(prisma as never);
+      const globalPolicy = {
+        evaluatePolicy: jest.fn<
+          ReturnType<GlobalSpammerIntelligenceService['evaluatePolicy']>,
+          Parameters<GlobalSpammerIntelligenceService['evaluatePolicy']>
+        >(async () => {
+          throw new Error('Mute authority must not query global policy');
+        }),
+      } satisfies Pick<GlobalSpammerIntelligenceService, 'evaluatePolicy'>;
+      const stateGuard = new ModerationStateDeleteGuardService(
+        prisma as never,
+        s.max as never,
+        s.bots as never,
+        immunity,
+        fence,
+        globalPolicy as unknown as GlobalSpammerIntelligenceService,
+        s.config,
+      );
+      Object.assign(s.service, {
+        moderationStateDeleteGuard: stateGuard,
+        participantImmunity: immunity,
+      });
+      const unmute = () =>
+        locks.runExclusive({ chatId: s.chatId, userId: 'user' }, async (lease) => {
+          await lease.assertOwned();
+          const transition = await fence.prepare({
+            chatId: s.chatId,
+            userId: 'user',
+            intendedAction: 'UNMUTE',
+            operator: 'ADMIN',
+            source: 'native-quota-regression',
+          });
+          const release = await prisma.moderationEvent.create({
+            data: {
+              chatId: s.chatId,
+              userId: 'user',
+              eventType: 'MEMBER_ACTION',
+              action: 'NONE',
+              ruleCode: 'MANUAL_UNMUTE',
+              operator: 'ADMIN',
+            },
+          });
+          await fence.commit(transition, release.id);
+          await lease.assertOwned();
+        });
+      return { ...s, intent, unmute };
+    }
+
+    it('rejects a mute-only DELETE when manual unmute commits during quota admission', async () => {
+      const s = await mutedFixture(false);
+      const admission = jest.fn(async () => {
+        expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(1);
+        expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(1);
+        await s.unmute();
+      });
+      await expect(
+        s.service.authorizeGuardedUserDeleteReasons(
+          s.intent,
+          'healthy-executor',
+          undefined,
+          admission,
+        ),
+      ).rejects.toMatchObject({ code: 'moderation_delete_reasons_no_longer_authorized' });
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(1);
+      expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(1);
+      const retained = await prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: s.intent.id },
+      });
+      expect(retained.remoteDeleteSucceededAt).toBeNull();
+      expect(retained.retryUntilAt).toEqual(s.intent.retryUntilAt);
+    });
+
+    it.each(['manual-unmute', 'disabled-length'] as const)(
+      'retains only the independent survivor when %s commits during quota admission',
+      async (change) => {
+        const s = await mutedFixture(true);
+        const admission = jest.fn(async () => {
+          expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(2);
+          expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(2);
+          if (change === 'manual-unmute') await s.unmute();
+          else
+            await prisma.chatSettings.update({
+              where: { chatId: s.chatId },
+              data: { maxMessageLengthEnabled: false },
+            });
+        });
+        const proof = await s.service.authorizeGuardedUserDeleteReasons(
+          s.intent,
+          'healthy-executor',
+          undefined,
+          admission,
+        );
+        const survivor = change === 'manual-unmute' ? 'length' : 'muted';
+        expect(proof).toMatchObject({
+          independentVerified: true,
+          messageDuplicateVerified: false,
+          verifiedReasonKeys: [survivor],
+        });
+        expect(proof.verifiedReasonDeadlines.map((permit) => permit.reasonKey)).toEqual(
+          survivor === 'muted' ? ['muted'] : [],
+        );
+        expect(admission).toHaveBeenCalledTimes(1);
+        expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(2);
+        expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(2);
+        const reasons = await prisma.moderationDeleteIntentReason.findMany({
+          where: { intentId: s.intent.id },
+        });
+        expect(reasons).toHaveLength(2);
+        expect(
+          reasons.some((reason) =>
+            Object.prototype.hasOwnProperty.call(reason.metadata ?? {}, 'moderationDeleteVerified'),
+          ),
+        ).toBe(false);
+      },
+    );
+
+    it('protects a participant granted immunity while both independent reasons wait for quota', async () => {
+      const s = await mutedFixture(true);
+      const admission = jest.fn(async () => {
+        expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(2);
+        expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(2);
+        await prisma.chatParticipantModerationImmunity.create({
+          data: {
+            chatId: s.chatId,
+            userId: 'user',
+            dailyViolationLimit: 1,
+            expiresAt: new Date(Date.now() + 3_600_000),
+          },
+        });
+      });
+      await expect(
+        s.service.authorizeGuardedUserDeleteReasons(
+          s.intent,
+          'healthy-executor',
+          undefined,
+          admission,
+        ),
+      ).rejects.toMatchObject({ code: 'moderation_delete_reasons_no_longer_authorized' });
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(s.max.getChatMemberAccess).toHaveBeenCalledTimes(2);
+      expect(s.max.getExactMessageRow).toHaveBeenCalledTimes(2);
+      const grant = await prisma.chatParticipantModerationImmunity.findUniqueOrThrow({
+        where: { chatId_userId: { chatId: s.chatId, userId: 'user' } },
+      });
+      expect(grant.dailyViolationUsage).toBe(1);
+      expect(
+        await prisma.moderationViolationMessageClaim.count({ where: { chatId: s.chatId } }),
+      ).toBe(1);
+      const retained = await prisma.moderationDeleteIntent.findUniqueOrThrow({
+        where: { id: s.intent.id },
+      });
+      expect(retained.remoteDeleteSucceededAt).toBeNull();
+      expect(retained.retryUntilAt).toEqual(s.intent.retryUntilAt);
+      const reasons = await prisma.moderationDeleteIntentReason.findMany({
+        where: { intentId: s.intent.id },
+      });
+      expect(reasons).toHaveLength(2);
+      expect(
+        reasons.some((reason) =>
+          Object.prototype.hasOwnProperty.call(reason.metadata ?? {}, 'moderationDeleteVerified'),
+        ),
+      ).toBe(false);
+    });
+  });
 
   it.each([false, true])(
     'terminalizes retired photo evidence while rechecking a concurrently added independent reason (%s)',

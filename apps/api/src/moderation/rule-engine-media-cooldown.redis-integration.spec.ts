@@ -1,9 +1,11 @@
 import { ConfigService } from '@nestjs/config';
+import { chatSettingsSchema } from '@maxim/contracts';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { RuleEngineService } from './rule-engine.service';
 import type { ChatSettings } from '../prisma/prisma-client';
 import { RedisCounterService } from './redis-counter.service';
+import { CommercialAdDetector } from './commercial';
 import {
   ANTI_SPAM_BURST_LIMIT,
   ANTI_SPAM_BURST_WINDOW_SEC,
@@ -62,6 +64,114 @@ const local = /^redis:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
 
   const burstWindowKey = () =>
     `message:anti-spam-burst:v2:${chatId}:user:${ANTI_SPAM_BURST_LIMIT}:${ANTI_SPAM_BURST_WINDOW_SEC}`;
+
+  it.each(['photo', 'sticker'] as const)(
+    'enforces %s cooldown alongside review-only commercial telemetry without recounting a replay',
+    async (kind) => {
+      const engine = new RuleEngineService(redis);
+      const config = {
+        ...chatSettingsSchema.parse({
+          commercialAdsFilterEnabled: true,
+          antiDuplicateEnabled: false,
+          antiSpamEnabled: false,
+        }),
+        ...settings,
+      } as ChatSettings;
+      const detect = (messageId: string, at: number) =>
+        engine.detect({
+          chatId,
+          userId: 'user',
+          messageId,
+          duplicateStateEventType: 'message_created',
+          duplicateStateEventTimestampMs: at,
+          text: 'Водитель Абакан-Аскиз-ст. Аскиза 11.40-12.00 +7 900 000 00 00 с места до места завтра',
+          settings: config,
+          domainAllowlist: [],
+          hasPhotoAttachment: kind === 'photo',
+          hasStickerAttachment: kind === 'sticker',
+        });
+      const code = kind === 'photo' ? 'PHOTO_RATE_LIMIT' : 'STICKER_RATE_LIMIT';
+      const first = await detect('review-original', now - 1_000);
+      expect(first.violations).toEqual([
+        expect.objectContaining({
+          ruleCode: 'COMMERCIAL_AD',
+          metadata: expect.objectContaining({
+            actionBand: 'REVIEW_ONLY',
+            actionable: false,
+            recordable: false,
+          }),
+        }),
+      ]);
+      for (let replay = 0; replay < 2; replay += 1) {
+        const repeat = await detect('review-repeat', now);
+        expect(repeat.violations.map((violation) => violation.ruleCode)).toEqual([
+          'COMMERCIAL_AD',
+          code,
+        ]);
+      }
+      const originalReplay = await detect('review-original', now - 1_000);
+      expect(originalReplay.violations.some((violation) => violation.ruleCode === code)).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each([
+    ['photo', 'WARN', true, true],
+    ['sticker', 'WARN', true, true],
+    ['photo', 'recordable', false, true],
+    ['sticker', 'recordable', false, true],
+  ] as const)(
+    'preserves %s cooldown for the next eligible message after a commercial %s owner',
+    async (kind, _label, actionable, recordable) => {
+      const engine = new RuleEngineService(redis);
+      const config = {
+        ...chatSettingsSchema.parse({
+          commercialAdsFilterEnabled: true,
+          antiDuplicateEnabled: false,
+          antiSpamEnabled: false,
+        }),
+        ...settings,
+      } as ChatSettings;
+      const detect = (messageId: string) =>
+        engine.detect({
+          chatId,
+          userId: 'user',
+          messageId,
+          duplicateStateEventType: 'message_created',
+          duplicateStateEventTimestampMs: now,
+          text: 'Водитель Абакан-Аскиз-ст. Аскиза 11.40-12.00 +7 900 000 00 00 с места до места завтра',
+          settings: config,
+          domainAllowlist: [],
+          hasPhotoAttachment: kind === 'photo',
+          hasStickerAttachment: kind === 'sticker',
+        });
+      const detectCommercial = CommercialAdDetector.prototype.detect;
+      const commercial = jest
+        .spyOn(CommercialAdDetector.prototype, 'detect')
+        .mockImplementation(function (this: CommercialAdDetector, input) {
+          const result = detectCommercial.call(this, input);
+          if (!result) throw new Error('Expected commercial classifier fixture');
+          return { ...result, actionBand: 'WARN', actionable, recordable };
+        });
+      try {
+        const blocked = await detect('competing-owner');
+        expect(blocked.violations).toEqual([
+          expect.objectContaining({
+            ruleCode: 'COMMERCIAL_AD',
+            metadata: expect.objectContaining({ actionable, recordable }),
+          }),
+        ]);
+      } finally {
+        commercial.mockRestore();
+      }
+      expect((await detect('first-eligible')).violations).toHaveLength(1);
+      expect((await detect('second-eligible')).violations.map((v) => v.ruleCode)).toEqual([
+        'COMMERCIAL_AD',
+        kind === 'photo' ? 'PHOTO_RATE_LIMIT' : 'STICKER_RATE_LIMIT',
+      ]);
+    },
+  );
 
   it('replays the original violation without counting delivery twice or accusing the original', async () => {
     expect(await observe('first', now - 1000)).toEqual([]);

@@ -19,7 +19,10 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
   const bot = { isKnownBotUserId: () => false };
   const queue = { add: jest.fn().mockResolvedValue(undefined) };
   const remoteMutation = jest.fn();
-  const guardStub = { assertIntentStillActionable: async () => 'not_applicable' };
+  const guardStub = {
+    assertIntentStillActionable: async () => 'not_applicable' as const,
+    prepareForDispatch: async () => 'not_applicable' as const,
+  };
   const max = {
     getExactMessageRow: jest.fn(
       async (_chat: string, message: string) => rows.get(message) ?? null,
@@ -93,7 +96,7 @@ describePostgres('PostgreSQL report to shared deletion boundary', () => {
       {} as never,
       guardStub as never,
       guardStub as never,
-      undefined,
+      immunity as never,
       undefined,
       undefined,
       trafficGuard,

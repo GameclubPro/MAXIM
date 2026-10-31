@@ -1,3 +1,9 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  isPreparedDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from '../moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -51,7 +57,7 @@ export class CommercialLlmDeleteGuardService {
 
   async authorize(params: AuthorizationInput): Promise<Authorization> {
     try {
-      return await this.authorizeFresh(params);
+      return await finalizeDeleteAuthority(await this.prepareForDispatch(params));
     } catch {
       // FLAG: An unavailable optional AI proof rejects only AI authority. Independent
       // reasons must still pass their own guards without inheriting this dependency failure.
@@ -59,7 +65,27 @@ export class CommercialLlmDeleteGuardService {
     }
   }
 
-  private async authorizeFresh(params: AuthorizationInput): Promise<Authorization> {
+  async prepareForDispatch(
+    params: AuthorizationInput,
+  ): Promise<DeleteAuthorityPreparation<Authorization>> {
+    try {
+      const preparation = await this.prepareFresh(params);
+      if (!isPreparedDeleteAuthority(preparation)) return preparation;
+      return prepareDeleteAuthority(async (finalizeNested) => {
+        try {
+          return await finalizeNested(preparation);
+        } catch {
+          return reject();
+        }
+      });
+    } catch {
+      return reject();
+    }
+  }
+
+  private async prepareFresh(
+    params: AuthorizationInput,
+  ): Promise<DeleteAuthorityPreparation<Authorization>> {
     if (
       !this.admission.enabled() ||
       !params.subjectUserId ||
@@ -155,20 +181,22 @@ export class CommercialLlmDeleteGuardService {
       reject();
     // FLAG: Recheck after all remote work. A cached model answer cannot override a changed
     // policy, expiry, immune author or missing proof at the actual DELETE attempt.
-    const finalSettings = await this.settings(params.chatId, params.subjectUserId!);
-    if (
-      !this.admission.enabled() ||
-      fingerprintCommercialDeleteSettings(finalSettings) !== source.settingsSha256 ||
-      !(await this.admission.hasProof(source)) ||
-      !commercialLlmSourceCurrent(source)
-    )
-      reject();
-    return {
-      deadlineAtMs: source.deadlineAtMs,
-      reasonKeys: selected
-        .filter((_, index) => sources[index] === source)
-        .map((reason) => reason.reasonKey),
-    };
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.settings(params.chatId, params.subjectUserId!);
+      if (
+        !this.admission.enabled() ||
+        fingerprintCommercialDeleteSettings(finalSettings) !== source.settingsSha256 ||
+        !(await this.admission.hasProof(source)) ||
+        !commercialLlmSourceCurrent(source)
+      )
+        reject();
+      return {
+        deadlineAtMs: source.deadlineAtMs,
+        reasonKeys: selected
+          .filter((_, index) => sources[index] === source)
+          .map((reason) => reason.reasonKey),
+      };
+    });
   }
 
   private async settings(chatId: string, userId: string) {

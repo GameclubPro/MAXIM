@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from '../moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
@@ -95,14 +100,24 @@ export class StopWordsDeleteGuardService {
     return result === 'absent' ? result : 'allowed';
   }
 
-  async authorizeIntent(params: GuardInput & { intentId: string }) {
+  async authorizeIntent(
+    params: GuardInput & { intentId: string },
+  ): Promise<'not_applicable' | 'absent' | { reasonKeys: string[] }> {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<StopWordsDeleteGuardService['authorizeIntent']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<Awaited<ReturnType<StopWordsDeleteGuardService['authorizeIntent']>>>
+  > {
     const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, reasonKey: true, metadata: true },
     });
     const owned = reasons.filter((r) => STOP_WORDS_DELETE_RULE_CODES.has(r.ruleCode));
     if (!owned.length) return 'not_applicable' as const;
-    return this.assertMessageStillActionable(params, owned);
+    return this.prepareMessageForDispatch(params, owned);
   }
 
   async assertSanctionStillActionable(
@@ -132,6 +147,14 @@ export class StopWordsDeleteGuardService {
     reasons: readonly GuardReason[],
     action?: 'WARN' | 'MUTE' | 'BAN',
   ): Promise<{ reasonKeys: string[] } | 'absent'> {
+    return finalizeDeleteAuthority(await this.prepareMessageForDispatch(params, reasons, action));
+  }
+
+  private async prepareMessageForDispatch(
+    params: GuardInput,
+    reasons: readonly GuardReason[],
+    action?: 'WARN' | 'MUTE' | 'BAN',
+  ): Promise<DeleteAuthorityPreparation<{ reasonKeys: string[] } | 'absent'>> {
     const senderId = params.subjectUserId;
     if (!senderId) this.reject('identity_changed');
     if (this.maxBotLink.isKnownBotUserId(senderId)) this.reject('author_protected');
@@ -284,12 +307,14 @@ export class StopWordsDeleteGuardService {
     const currentSettings = await this.load(params.chatId, senderId);
     assertReasonsMatch(currentSettings);
     await this.assertNoImmunity(params, senderId, currentSettings.nightModeTimezone);
-    const finalSettings = await this.load(params.chatId, senderId);
-    const finalReasons = assertReasonsMatch(finalSettings);
-    if (action) this.assertSanctionPolicy(finalSettings, reasons[0], action);
-    return {
-      reasonKeys: finalReasons.flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])),
-    };
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.load(params.chatId, senderId);
+      const finalReasons = assertReasonsMatch(finalSettings);
+      if (action) this.assertSanctionPolicy(finalSettings, reasons[0], action);
+      return {
+        reasonKeys: finalReasons.flatMap((r) => (r.reasonKey ? [r.reasonKey] : [])),
+      };
+    });
   }
 
   private async load(chatId: string, senderId: string) {

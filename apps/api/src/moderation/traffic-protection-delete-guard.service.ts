@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from './moderation-delete-authority-preparation';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -43,6 +48,16 @@ export class TrafficProtectionDeleteGuardService {
     ownedReasonsOnly?: boolean;
     includeDeadlinePermit?: boolean;
   }): Promise<'allowed' | 'absent' | 'not_applicable' | { deadlineAtMs: number }> {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<TrafficProtectionDeleteGuardService['assertIntentStillActionable']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<
+      Awaited<ReturnType<TrafficProtectionDeleteGuardService['assertIntentStillActionable']>>
+    >
+  > {
     const allReasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: params.intentId },
       select: { ruleCode: true, metadata: true },
@@ -112,17 +127,19 @@ export class TrafficProtectionDeleteGuardService {
       })) === 'granted'
     )
       this.reject();
-    const finalSettings = await this.load(params.chatId, userId);
-    const stillMatching = matching.filter((reason) => this.matchesPolicy(reason, finalSettings));
-    if (!stillMatching.length) this.reject();
-    if (params.includeDeadlinePermit) {
-      return {
-        deadlineAtMs: Math.max(
-          ...stillMatching.map((reason) => record(reason.metadata).trafficDeadlineAtMs as number),
-        ),
-      };
-    }
-    return 'allowed';
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.load(params.chatId, userId);
+      const stillMatching = matching.filter((reason) => this.matchesPolicy(reason, finalSettings));
+      if (!stillMatching.length) this.reject();
+      if (params.includeDeadlinePermit) {
+        return {
+          deadlineAtMs: Math.max(
+            ...stillMatching.map((reason) => record(reason.metadata).trafficDeadlineAtMs as number),
+          ),
+        };
+      }
+      return 'allowed';
+    });
   }
 
   private matchesPolicy(

@@ -524,6 +524,18 @@ const url = process.env.MAXIM_TEST_REDIS_URL ?? '';
   });
   afterAll(() => redis.disconnect());
 
+  it('rejects a nearly expired CPU handoff without HTTP or a persistent lease', async () => {
+    const reservation = await reserve();
+    now = reservation.deadlineAtMs - 25;
+    await expect(server.dispatch(reservation)).rejects.toMatchObject({ kind: 'BUSY' });
+    expect(requests.some(({ path }) => path === '/v1/chat/completions')).toBe(false);
+    expect(await redis.get(COMMERCIAL_LLM_LEASE_KEY)).toBeNull();
+    expect(await redis.exists(keys.slot)).toBe(0);
+    now += 1_001;
+    await server.tick();
+    expect(await mailbox.available()).toContain('server-9b');
+  });
+
   it('retains uncertain capacity across idle observations and adapter restart while GPUs remain usable', async () => {
     await expect(server.dispatch(await reserve())).rejects.toMatchObject({ kind: 'UNAVAILABLE' });
     const token = await redis.get(COMMERCIAL_LLM_LEASE_KEY);

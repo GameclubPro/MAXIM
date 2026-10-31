@@ -13,6 +13,7 @@ import type {
 } from './commercial-llm-pool.mailbox';
 import {
   COMMERCIAL_LLM_POOL_PROFILES,
+  COMMERCIAL_LLM_POOL_CPU_MIN_REMAINING_MS,
   COMMERCIAL_LLM_POOL_TIMEOUT_MS,
   POOL_NODE_IDS,
   commercialLlmPoolJobKey,
@@ -296,6 +297,13 @@ export class CommercialLlmPoolClient implements CommercialLlmClassifier {
       )
         continue;
       await current();
+      // FLAG: Keep the measured CPU p95 budget even after awaited authority checks;
+      // a shorter original deadline may still use an available GPU, never a doomed CPU POST.
+      if (
+        nodeId === 'server-9b' &&
+        this.options.deadlineAtMs - Date.now() < COMMERCIAL_LLM_POOL_CPU_MIN_REMAINING_MS
+      )
+        continue;
       const reservation = await this.mailbox.reserve(
         nodeId,
         {

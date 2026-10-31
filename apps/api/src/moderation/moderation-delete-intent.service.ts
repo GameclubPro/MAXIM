@@ -1,3 +1,11 @@
+import {
+  finalizeDeleteAuthority,
+  prepareDeleteAuthority,
+  prepareDeleteAuthorityRecheck,
+  isPreparedDeleteAuthority,
+  type DeleteAuthorityPreparation,
+  type PreparedDeleteAuthority,
+} from './moderation-delete-authority-preparation';
 import { DURABLE_USER_DELETE_RULES } from './durable-user-delete-rules';
 import { COMMERCIAL_LLM_DELETE_RULE_CODE } from './commercial/commercial-llm-enforcement.protocol';
 import {
@@ -330,6 +338,18 @@ const TERMINAL_STATUSES = new Set<ModerationDeleteIntentStatus>([
 ]);
 
 type VerifiedDeleteReasonDeadline = { reasonKey: string; deadlineAtMs: number };
+
+type GuardedDeleteAuthorityProof = {
+  profanityVerified: boolean;
+  commercialVerifiedReasonKeys: string[];
+  messageDuplicateVerified: boolean;
+  independentVerified: boolean;
+  independentAuthorityDeadlineAtMs: number | null;
+  guardedReasonFingerprint: string;
+  verifiedReasonKeys: string[];
+  verifiedReasonDeadlines: VerifiedDeleteReasonDeadline[];
+  independentRecheck?: PreparedDeleteAuthority<GuardedDeleteAuthorityProof>;
+};
 
 type IntentRow = {
   suggestionSubscriptionId?: string | null;
@@ -2783,19 +2803,22 @@ export class ModerationDeleteIntentService {
               botId,
               options,
               leaseToken,
+              'dispatch',
+              async () => {
+                try {
+                  await beforeFinalAuthority?.();
+                } catch (error) {
+                  throw new ModerationDeletePreDispatchGuardError(error);
+                }
+              },
             );
             profanityVerified = textProof.profanityVerified;
             commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
             verifiedReasonKeys = textProof.verifiedReasonKeys ?? [];
             if (suggestionProof)
               await this.suggestionSubscriptions!.assertDeletionAllowed(suggestionProof);
-            // FLAG: Complete both normal evidence passes before reserving the DELETE slot.
-            // Keep the database deadline fence and duplicate's final permit after admission.
-            try {
-              await beforeFinalAuthority?.();
-            } catch (error) {
-              throw new ModerationDeletePreDispatchGuardError(error);
-            }
+            // FLAG: The prepared composition has reserved the sole DELETE slot and
+            // supplied fresh local authority for each surviving reason.
             let verifiedReasonAuthorityAtMs = await this.assertVerifiedReasonDeadlineFence(
               intent,
               leaseToken,
@@ -2815,21 +2838,18 @@ export class ModerationDeleteIntentService {
               } catch (error) {
                 if (!this.isTerminalDeleteGuardRejection(error))
                   throw new ModerationDeletePreDispatchGuardError(error);
-                // FLAG: An expired duplicate permit cannot veto an independently valid rule.
-                // Re-read every current guard; this fresh pass must supply separate authority.
-                const refreshed = await this.authorizeGuardedUserDeleteReasons(
-                  intent,
-                  botId,
-                  leaseToken,
-                ).catch((refreshError: unknown) => {
-                  throw new ModerationDeletePreDispatchGuardError(refreshError);
-                });
-                if (!refreshed.independentVerified)
+                // FLAG: The last duplicate await may revoke an independent reason too.
+                // Recheck its cached evidence locally once, without MAX reads or another quota.
+                if (!textProof.independentVerified || !textProof.independentRecheck)
                   throw new ModerationDeletePreDispatchGuardError(error);
-                profanityVerified = refreshed.profanityVerified;
-                commercialVerifiedReasonKeys = refreshed.commercialVerifiedReasonKeys;
-                verifiedReasonKeys = refreshed.verifiedReasonKeys;
-                textProof = { ...refreshed, messageDuplicateVerified: false };
+                try {
+                  textProof = await finalizeDeleteAuthority(textProof.independentRecheck);
+                } catch (recheckError) {
+                  throw new ModerationDeletePreDispatchGuardError(recheckError);
+                }
+                profanityVerified = textProof.profanityVerified;
+                commercialVerifiedReasonKeys = textProof.commercialVerifiedReasonKeys;
+                verifiedReasonKeys = textProof.verifiedReasonKeys ?? [];
                 verifiedReasonAuthorityAtMs = await this.assertVerifiedReasonDeadlineFence(
                   intent,
                   leaseToken,
@@ -4022,26 +4042,32 @@ export class ModerationDeleteIntentService {
     options?: ModerationDeleteIntentAttemptOptions,
     finalDispatchLeaseToken?: string,
     retentionPhase: 'prepare' | 'dispatch' = 'dispatch',
+    beforeFinalAuthority?: () => Promise<void>,
   ): Promise<{
     profanityVerified: boolean;
     commercialVerifiedReasonKeys: string[];
     verifiedReasonKeys?: string[];
     verifiedReasonDeadlines?: VerifiedDeleteReasonDeadline[];
     messageDuplicateVerified?: boolean;
+    independentVerified?: boolean;
     independentAuthorityDeadlineAtMs?: number | null;
     guardedReasonFingerprint?: string;
+    independentRecheck?: PreparedDeleteAuthority<GuardedDeleteAuthorityProof>;
   }> {
     try {
       if (await this.isLegacyIntentHeld(intent)) throw new WebhookLegacyHoldRejectedError();
       let profanityVerified = false;
       let commercialVerifiedReasonKeys: string[] = [];
       let messageDuplicateVerified = false;
+      let independentVerified = false;
       let independentAuthorityDeadlineAtMs: number | null = null;
       let guardedReasonFingerprint: string | undefined;
+      let independentRecheck: PreparedDeleteAuthority<GuardedDeleteAuthorityProof> | undefined;
       let verifiedReasonKeys: string[] = [];
       let verifiedReasonDeadlines: VerifiedDeleteReasonDeadline[] = [];
       if (intent.retentionOwned) {
         if (!this.messageRetentionGuard) throw new Error('Retention delete guard unavailable');
+        await beforeFinalAuthority?.();
         await this.messageRetentionGuard.assertAllowed(intent.id, botId, retentionPhase);
         return { profanityVerified, commercialVerifiedReasonKeys };
       }
@@ -4056,10 +4082,12 @@ export class ModerationDeleteIntentService {
       // FLAG: A durable photo-only retry must regain authorization from current chat settings and
       // a fresh shared runtime control immediately before every remote DELETE mutation.
       await this.assertPhotoDuplicateDeleteIntentStillActionable(intent);
-      const imageTextStopListGuard = await this.assertImageTextStopListDeleteIntentStillActionable(
-        intent,
-        botId,
-      );
+      const imageTextPreparation = finalDispatchLeaseToken
+        ? await this.prepareImageTextStopListDeleteAuthority(intent, botId)
+        : await this.assertImageTextStopListDeleteIntentStillActionable(intent, botId);
+      let imageTextStopListGuard = isPreparedDeleteAuthority(imageTextPreparation)
+        ? undefined
+        : imageTextPreparation;
       if (imageTextStopListGuard === 'absent') {
         throw new ModerationDeleteGuardedMessageAbsentError(
           'guarded_image_text_stop_list_predispatch_exact_absence',
@@ -4112,26 +4140,17 @@ export class ModerationDeleteIntentService {
         if (error instanceof ModerationDeleteGuardedMessageAbsentError) throw error;
         throw new ModerationDeletePreDispatchGuardError(error, 'caller');
       }
+      let reportPreparation: DeleteAuthorityPreparation<unknown>;
       if (finalDispatchLeaseToken) {
-        // FLAG: Independent user rules share one DELETE, not each other's authorization.
-        // A stale binding may yield only to a freshly verified reason on this exact attempt.
-        const proof = await this.authorizeGuardedUserDeleteReasons(
-          intent,
-          botId,
-          finalDispatchLeaseToken,
-        );
-        profanityVerified = proof.profanityVerified;
-        commercialVerifiedReasonKeys = proof.commercialVerifiedReasonKeys;
-        messageDuplicateVerified = proof.messageDuplicateVerified;
-        independentAuthorityDeadlineAtMs = proof.independentAuthorityDeadlineAtMs;
-        guardedReasonFingerprint = proof.guardedReasonFingerprint;
-        verifiedReasonKeys = proof.verifiedReasonKeys;
-        verifiedReasonDeadlines = proof.verifiedReasonDeadlines;
-      }
-      // FLAG: Participant votes never authorize an unguarded retry after settings or author access change.
-      if (finalDispatchLeaseToken) {
-        if (this.reportDeleteGuard) {
-          const result = await this.reportDeleteGuard.assertIntentStillActionable({
+        const reportReasons = await this.prisma.moderationDeleteIntentReason.findMany({
+          where: { intentId: intent.id },
+          select: { ruleCode: true },
+        });
+        const hasReportReason = reportReasons.some((r) => REPORT_GUARDED_RULES.has(r.ruleCode));
+        if (!this.reportDeleteGuard && hasReportReason)
+          throw new Error('Participant report delete guard unavailable');
+        if (this.reportDeleteGuard && !hasReportReason)
+          reportPreparation = await this.reportDeleteGuard.prepareForDispatch({
             intentId: intent.id,
             chatId: intent.chatId,
             messageId: intent.messageId,
@@ -4141,16 +4160,33 @@ export class ModerationDeleteIntentService {
             isIndependentReasonExecutable: (reasons) =>
               this.hasExecutableIndependentReportReason(intent.chatId, reasons),
           });
-          if (result === 'absent')
-            throw new ModerationDeleteGuardedMessageAbsentError('guarded_report_absence');
-        } else {
-          const reportReasons = await this.prisma.moderationDeleteIntentReason.findMany({
-            where: { intentId: intent.id },
-            select: { ruleCode: true },
-          });
-          if (reportReasons.some((reason) => REPORT_GUARDED_RULES.has(reason.ruleCode)))
-            throw new Error('Participant report delete guard unavailable');
-        }
+      }
+      if (finalDispatchLeaseToken) {
+        // FLAG: Independent user rules share one DELETE, not each other's authorization.
+        // A stale binding may yield only to a freshly verified reason on this exact attempt.
+        const proof = await this.authorizeGuardedUserDeleteReasons(
+          intent,
+          botId,
+          finalDispatchLeaseToken,
+          async () => {
+            await beforeFinalAuthority?.();
+            imageTextStopListGuard = await finalizeDeleteAuthority(imageTextPreparation);
+            const report = await finalizeDeleteAuthority(reportPreparation);
+            if (report === 'absent')
+              throw new ModerationDeleteGuardedMessageAbsentError('guarded_report_absence');
+            await this.assertChannelAutoPostCleanupLocalAuthority(intent);
+            await this.assertNightModeCloseNoticeCleanupStillAuthorized(intent);
+          },
+        );
+        independentVerified = proof.independentVerified;
+        profanityVerified = proof.profanityVerified;
+        commercialVerifiedReasonKeys = proof.commercialVerifiedReasonKeys;
+        messageDuplicateVerified = proof.messageDuplicateVerified;
+        independentAuthorityDeadlineAtMs = proof.independentAuthorityDeadlineAtMs;
+        guardedReasonFingerprint = proof.guardedReasonFingerprint;
+        independentRecheck = proof.independentRecheck;
+        verifiedReasonKeys = proof.verifiedReasonKeys;
+        verifiedReasonDeadlines = proof.verifiedReasonDeadlines;
       }
       if (typeof imageTextStopListGuard === 'object' && finalDispatchLeaseToken) {
         await this.assertImageTextStopListDispatchDeadline(
@@ -4172,8 +4208,10 @@ export class ModerationDeleteIntentService {
         profanityVerified,
         commercialVerifiedReasonKeys,
         messageDuplicateVerified,
+        independentVerified,
         independentAuthorityDeadlineAtMs,
         guardedReasonFingerprint,
+        independentRecheck,
         verifiedReasonKeys,
         verifiedReasonDeadlines,
       };
@@ -4232,7 +4270,8 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     botId: string,
     finalDispatchLeaseToken?: string,
-  ) {
+    beforeFinalAuthority?: () => Promise<void>,
+  ): Promise<GuardedDeleteAuthorityProof> {
     const reasons = await this.prisma.moderationDeleteIntentReason.findMany({
       where: { intentId: intent.id },
       select: { ruleCode: true, reasonKey: true, score: true, metadata: true },
@@ -4241,6 +4280,7 @@ export class ModerationDeleteIntentService {
     });
     if (!reasons.length) throw new ModerationDeleteReasonMissingError();
     if (reasons.length > 64) throw new Error('Moderation delete reason validation limit exceeded');
+    const fingerprint = fingerprintGuardedDeleteReasons(reasons);
     const params = {
       intentId: intent.id,
       chatId: intent.chatId,
@@ -4250,264 +4290,193 @@ export class ModerationDeleteIntentService {
       ownedReasonsOnly: true,
       sourceMessageAt: intent.sourceMessageAt,
     };
+    const deferred = beforeFinalAuthority !== undefined;
+    type Candidate = {
+      tag: 'ordinary' | 'profanity' | 'commercial' | 'duplicate' | 'ocr' | 'traffic';
+      keys: string[];
+      preparation: DeleteAuthorityPreparation<unknown>;
+      fixedDeadlines?: VerifiedDeleteReasonDeadline[];
+      authoritySnapshot?: {
+        keys: string[];
+        deadlineAtMs: number | null;
+        deadlines: VerifiedDeleteReasonDeadline[];
+      };
+    };
+    const candidates: Candidate[] = [];
     let recognized = false;
-    let allowed = false;
     let stopWordsRejectionReason: StopWordsGuardRejectionReason | undefined;
-    let profanityVerified = false;
-    let messageDuplicateVerified = false;
-    let commercialVerifiedReasonKeys: string[] = [];
-    let independentBoundedDeadlineAtMs = 0;
-    let unboundedAuthority = false;
-    const verifiedReasonKeys: string[] = [];
-    const verifiedReasonDeadlines = new Map<string, number>();
-    const check = async (run: () => Promise<unknown>, keys: string[] = []): Promise<unknown> => {
+    const rejected = (error: unknown) => {
+      // FLAG: Unknown remote/storage state stops this attempt; only a definite
+      // policy/content rejection may yield to another independently prepared reason.
+      if (!this.isTerminalDeleteGuardRejection(error)) throw error;
+      if (error instanceof StopWordsDeleteGuardRejectedError)
+        stopWordsRejectionReason = error.rejectionReason;
+    };
+    const prepare = async (
+      run: () => Promise<DeleteAuthorityPreparation<unknown>>,
+      keys: string[] = [],
+      tag: Candidate['tag'] = 'ordinary',
+      fixedDeadlines?: VerifiedDeleteReasonDeadline[],
+    ) => {
       recognized = true;
       try {
-        const result = await run();
-        if (result === 'absent')
+        const preparation = await run();
+        if (preparation === 'absent')
           throw new ModerationDeleteGuardedMessageAbsentError('guarded_current_message_absence');
-        if (result === 'allowed' || (typeof result === 'object' && result !== null)) {
-          allowed = true;
-          if (
-            !(
-              typeof result === 'object' &&
-              result !== null &&
-              'deadlineAtMs' in result &&
-              typeof result.deadlineAtMs === 'number'
-            )
-          )
-            unboundedAuthority = true;
-          const resultKeys =
-            typeof result === 'object' && result !== null && 'reasonKeys' in result
-              ? (result as { reasonKeys: string[] }).reasonKeys
-              : keys;
-          verifiedReasonKeys.push(...resultKeys);
-          if (typeof result === 'object' && result !== null) {
-            const deadlines =
-              'reasonDeadlines' in result
-                ? (result as { reasonDeadlines: VerifiedDeleteReasonDeadline[] }).reasonDeadlines
-                : 'deadlineAtMs' in result
-                  ? resultKeys.map((reasonKey) => ({
-                      reasonKey,
-                      deadlineAtMs: Number(result.deadlineAtMs),
-                    }))
-                  : [];
-            for (const permit of deadlines) {
-              if (
-                !resultKeys.includes(permit.reasonKey) ||
-                !Number.isSafeInteger(permit.deadlineAtMs) ||
-                permit.deadlineAtMs <= 0
-              )
-                throw new Error('Verified moderation reason lost its exact deadline permit');
-              verifiedReasonDeadlines.set(
-                permit.reasonKey,
-                Math.min(
-                  verifiedReasonDeadlines.get(permit.reasonKey) ?? Infinity,
-                  permit.deadlineAtMs,
-                ),
-              );
-            }
-          }
-        } else throw new Error('Required moderation reason guard did not supply authority');
-        return result;
+        candidates.push({ preparation, keys, tag, fixedDeadlines });
       } catch (error) {
-        // FLAG: Only definite policy/content rejection can yield to another reason. A
-        // timeout, unknown remote state or storage failure must stop this transport attempt.
-        if (this.isTerminalDeleteGuardRejection(error)) {
-          if (error instanceof StopWordsDeleteGuardRejectedError)
-            stopWordsRejectionReason = error.rejectionReason;
-          return null;
-        }
-        throw error;
+        rejected(error);
       }
     };
-    if (reasons.some((reason) => MESSAGE_LIMITS_GUARDED_RULES.has(reason.ruleCode))) {
+    const keysFor = (matches: (rule: string) => boolean) =>
+      reasons.filter((r) => matches(r.ruleCode)).map((r) => r.reasonKey);
+    if (reasons.some((r) => MESSAGE_LIMITS_GUARDED_RULES.has(r.ruleCode))) {
       if (!this.messageLimitsDeleteGuard)
         throw new Error('Message limits delete guard unavailable');
-      const permit = await check(() =>
-        this.messageLimitsDeleteGuard!.authorize({ ...params, reasons }),
+      await prepare(() =>
+        deferred
+          ? this.messageLimitsDeleteGuard!.prepareForDispatch({ ...params, reasons })
+          : this.messageLimitsDeleteGuard!.authorize({ ...params, reasons }),
       );
-      if (
-        typeof permit === 'object' &&
-        permit !== null &&
-        'deadlineAtMs' in permit &&
-        typeof permit.deadlineAtMs === 'number'
-      )
-        independentBoundedDeadlineAtMs = Math.max(
-          independentBoundedDeadlineAtMs,
-          permit.deadlineAtMs,
-        );
     }
-    if (reasons.some((reason) => STOP_WORDS_DELETE_RULE_CODES.has(reason.ruleCode))) {
+    if (reasons.some((r) => STOP_WORDS_DELETE_RULE_CODES.has(r.ruleCode))) {
       if (!this.stopWordsDeleteGuard) throw new Error('Stop-list delete guard unavailable');
-      await check(() => this.stopWordsDeleteGuard!.authorizeIntent(params));
-    }
-    if (reasons.some((reason) => reason.ruleCode === PROFANITY_DELETE_RULE_CODE)) {
-      profanityVerified =
-        (await check(
-          () => this.profanityDeleteGuard.assertIntentStillActionable(params),
-          reasons.filter((r) => r.ruleCode === PROFANITY_DELETE_RULE_CODE).map((r) => r.reasonKey),
-        )) === 'allowed';
-    }
-    if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_LLM_DELETE_RULE_CODE)) {
-      if (!this.commercialLlmGuard) throw new Error('Commercial AI guard unavailable');
-      const permit = await check(() => this.commercialLlmGuard!.authorize({ ...params, reasons }));
-      if (typeof permit === 'object' && permit !== null && 'deadlineAtMs' in permit)
-        independentBoundedDeadlineAtMs = Math.max(
-          independentBoundedDeadlineAtMs,
-          Number(permit.deadlineAtMs),
-        );
-    }
-    if (reasons.some((reason) => reason.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE)) {
-      if (!this.commercialDeleteGuard) throw new Error('Commercial delete guard unavailable');
-      const proof = await check(() =>
-        this.commercialDeleteGuard!.assertIntentStillActionable(params),
+      await prepare(() =>
+        deferred
+          ? this.stopWordsDeleteGuard!.prepareForDispatch(params)
+          : this.stopWordsDeleteGuard!.authorizeIntent(params),
       );
-      if (typeof proof === 'object' && proof !== null && 'reasonKeys' in proof)
-        commercialVerifiedReasonKeys = (proof as { reasonKeys: string[] }).reasonKeys;
+    }
+    if (reasons.some((r) => r.ruleCode === PROFANITY_DELETE_RULE_CODE)) {
+      await prepare(
+        () =>
+          deferred
+            ? this.profanityDeleteGuard.prepareForDispatch(params)
+            : this.profanityDeleteGuard.assertIntentStillActionable(params),
+        keysFor((r) => r === PROFANITY_DELETE_RULE_CODE),
+        'profanity',
+      );
+    }
+    if (reasons.some((r) => r.ruleCode === COMMERCIAL_LLM_DELETE_RULE_CODE)) {
+      if (!this.commercialLlmGuard) throw new Error('Commercial AI guard unavailable');
+      await prepare(() =>
+        deferred
+          ? this.commercialLlmGuard!.prepareForDispatch({ ...params, reasons })
+          : this.commercialLlmGuard!.authorize({ ...params, reasons }),
+      );
+    }
+    if (reasons.some((r) => r.ruleCode === COMMERCIAL_TEXT_DELETE_RULE_CODE)) {
+      if (!this.commercialDeleteGuard) throw new Error('Commercial delete guard unavailable');
+      await prepare(
+        () =>
+          deferred
+            ? this.commercialDeleteGuard!.prepareForDispatch(params)
+            : this.commercialDeleteGuard!.assertIntentStillActionable(params),
+        [],
+        'commercial',
+      );
     }
     if (
       reasons.some(
-        (reason) =>
-          reason.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE ||
-          reason.ruleCode === LINK_HISTORY_RECOVERY_RULE_CODE,
+        (r) =>
+          r.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE ||
+          r.ruleCode === LINK_HISTORY_RECOVERY_RULE_CODE,
       )
     ) {
-      await check(
-        () => this.linkHistoryDeleteGuard.assertIntentStillActionable(params),
-        reasons
-          .filter(
-            (r) =>
-              r.ruleCode === LINK_BLOCKED_DELETE_RULE_CODE ||
-              r.ruleCode === LINK_HISTORY_RECOVERY_RULE_CODE,
-          )
-          .map((r) => r.reasonKey),
+      await prepare(
+        () =>
+          deferred
+            ? this.linkHistoryDeleteGuard.prepareForDispatch(params)
+            : this.linkHistoryDeleteGuard.assertIntentStillActionable(params),
+        keysFor(
+          (r) => r === LINK_BLOCKED_DELETE_RULE_CODE || r === LINK_HISTORY_RECOVERY_RULE_CODE,
+        ),
       );
     }
-    if (reasons.some((reason) => REPORT_GUARDED_RULES.has(reason.ruleCode))) {
+    if (reasons.some((r) => REPORT_GUARDED_RULES.has(r.ruleCode))) {
       if (!this.reportDeleteGuard) throw new Error('Participant report delete guard unavailable');
-      await check(() =>
-        this.reportDeleteGuard!.assertIntentStillActionable({
-          ...params,
-          trafficClass: intent.reportHistoryOnly ? 'background' : 'critical',
-          isIndependentReasonExecutable: () => false,
-        }),
+      const reportParams = {
+        ...params,
+        trafficClass: intent.reportHistoryOnly ? ('background' as const) : ('critical' as const),
+        isIndependentReasonExecutable: () => false,
+      };
+      await prepare(() =>
+        deferred
+          ? this.reportDeleteGuard!.prepareForDispatch(reportParams)
+          : this.reportDeleteGuard!.assertIntentStillActionable(reportParams),
       );
     }
-    if (reasons.some((reason) => MODERATION_STATE_DELETE_RULES.has(reason.ruleCode))) {
+    if (reasons.some((r) => MODERATION_STATE_DELETE_RULES.has(r.ruleCode))) {
       if (!this.moderationStateDeleteGuard)
         throw new Error('Moderation state delete guard unavailable');
-      const permit = await check(() =>
-        this.moderationStateDeleteGuard!.authorize({ ...params, reasons }),
+      await prepare(() =>
+        deferred
+          ? this.moderationStateDeleteGuard!.prepareForDispatch({ ...params, reasons })
+          : this.moderationStateDeleteGuard!.authorize({ ...params, reasons }),
       );
-      if (typeof permit === 'object' && permit !== null && 'deadlineAtMs' in permit)
-        independentBoundedDeadlineAtMs = Math.max(
-          independentBoundedDeadlineAtMs,
-          Number(permit.deadlineAtMs),
-        );
     }
-    const independentWithoutShortDeadline = unboundedAuthority;
-    if (reasons.some((reason) => CLOSED_CHAT_DELETE_RULE_CODES.has(reason.ruleCode))) {
+    if (reasons.some((r) => CLOSED_CHAT_DELETE_RULE_CODES.has(r.ruleCode))) {
       if (!this.closedChatDeleteGuard) throw new Error('Closed chat delete guard unavailable');
-      const permit = await check(() =>
-        this.closedChatDeleteGuard!.authorize({
-          ...params,
-          reasons,
-          sourceMessageAt: intent.sourceMessageAt,
-        }),
+      await prepare(() =>
+        deferred
+          ? this.closedChatDeleteGuard!.prepareForDispatch({ ...params, reasons })
+          : this.closedChatDeleteGuard!.authorize({ ...params, reasons }),
       );
-      if (typeof permit === 'object' && permit !== null && 'deadlineAtMs' in permit)
-        independentBoundedDeadlineAtMs = Math.max(
-          independentBoundedDeadlineAtMs,
-          Number(permit.deadlineAtMs),
-        );
     }
-    if (reasons.some((reason) => reason.ruleCode === REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE)) {
+    if (reasons.some((r) => r.ruleCode === REQUIRED_SUBSCRIPTION_DELETE_RULE_CODE)) {
       if (!this.requiredSubscriptionExecutionGuard)
         throw new Error('Required subscription execution guard unavailable');
-      const permit = await check(() =>
-        this.requiredSubscriptionExecutionGuard!.authorize({ ...params, reasons }),
+      await prepare(() =>
+        deferred
+          ? this.requiredSubscriptionExecutionGuard!.prepareForDispatch({ ...params, reasons })
+          : this.requiredSubscriptionExecutionGuard!.authorize({ ...params, reasons }),
       );
-      if (typeof permit === 'object' && permit !== null && 'deadlineAtMs' in permit)
-        independentBoundedDeadlineAtMs = Math.max(
-          independentBoundedDeadlineAtMs,
-          Number(permit.deadlineAtMs),
-        );
     }
-    if (reasons.some((reason) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(reason.ruleCode))) {
+    if (reasons.some((r) => TRAFFIC_PROTECTION_DELETE_RULE_CODES.has(r.ruleCode))) {
       if (!this.trafficProtectionDeleteGuard)
         throw new Error('Traffic protection delete guard unavailable');
-      const permit = await check(() =>
-        this.trafficProtectionDeleteGuard!.assertIntentStillActionable({
-          ...params,
-          includeDeadlinePermit: true,
-        }),
+      const trafficParams = { ...params, includeDeadlinePermit: true };
+      await prepare(
+        () =>
+          deferred
+            ? this.trafficProtectionDeleteGuard!.prepareForDispatch(trafficParams)
+            : this.trafficProtectionDeleteGuard!.assertIntentStillActionable(trafficParams),
+        [],
+        'traffic',
       );
-      if (permit !== null) {
-        if (
-          typeof permit !== 'object' ||
-          !('deadlineAtMs' in permit) ||
-          !Number.isSafeInteger(permit.deadlineAtMs) ||
-          (permit.deadlineAtMs as number) <= 0
-        )
-          throw new Error('Verified traffic reason lost its deadline permit');
-        independentBoundedDeadlineAtMs = Math.max(
-          independentBoundedDeadlineAtMs,
-          permit.deadlineAtMs as number,
-        );
-      }
     }
-    const standardOcrReasons = reasons.filter(
-      (reason) =>
-        reason.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE &&
-        this.asRecord(reason.metadata)?.source !== 'image_text_ocr',
+    const standardOcr = reasons.filter(
+      (r) =>
+        r.ruleCode === COMMERCIAL_OCR_DELETE_RULE_CODE &&
+        this.asRecord(r.metadata)?.source !== 'image_text_ocr',
     );
-    if (standardOcrReasons.length) {
-      const ocrAllowed = await check(async () => {
-        const result = await this.commercialOcrDeleteGuard.assertIntentStillActionable({
-          ...params,
-          sourceMessageAt: intent.sourceMessageAt,
-        });
-        if (result === 'allowed' && finalDispatchLeaseToken)
-          await this.assertCommercialOcrDispatchDeadline(intent.id, finalDispatchLeaseToken, botId);
-        return result;
-      });
-      if (ocrAllowed === 'allowed') {
-        const bindings = standardOcrReasons.map((reason) =>
-          parseCommercialOcrDeleteBinding(reason.metadata),
-        );
-        if (bindings.some((binding) => !binding))
-          throw new Error('Verified OCR reason lost its deadline binding');
-        const deadline = Math.min(
-          ...bindings.flatMap((binding) => [
-            Date.parse(binding!.ocrDeadlineAt),
-            ...(binding!.authority.kind === 'CERTIFIED'
-              ? [Date.parse(binding!.authority.controlExpiresAt)]
-              : []),
-          ]),
-        );
-        independentBoundedDeadlineAtMs = Math.max(independentBoundedDeadlineAtMs, deadline);
-      }
+    if (standardOcr.length) {
+      await prepare(
+        () =>
+          deferred
+            ? this.commercialOcrDeleteGuard.prepareForDispatch(params)
+            : this.commercialOcrDeleteGuard.assertIntentStillActionable(params),
+        [],
+        'ocr',
+      );
     }
-    const independentVerified = allowed;
+
     if (
       reasons.some(
-        (reason) =>
-          reason.reasonKey.startsWith('MESSAGE_DUPLICATE:') ||
-          this.asRecord(reason.metadata)?.duplicateSource === MESSAGE_DUPLICATE_SOURCE,
+        (r) =>
+          r.reasonKey.startsWith('MESSAGE_DUPLICATE:') ||
+          this.asRecord(r.metadata)?.duplicateSource === MESSAGE_DUPLICATE_SOURCE,
       )
     ) {
       if (!this.messageDuplicateDeleteGuard)
         throw new Error('Message duplicate delete guard unavailable');
-      const duplicateReceipts = reasons.flatMap((reason) => {
+      const receipts = reasons.flatMap((r) => {
         const binding =
-          reason.ruleCode === 'DUPLICATE_DELETE'
-            ? parseMessageDuplicateBinding(reason.metadata)
-            : null;
+          r.ruleCode === 'DUPLICATE_DELETE' ? parseMessageDuplicateBinding(r.metadata) : null;
         return binding?.version === 3 && binding.original && binding.authorization
           ? [
               {
-                reasonKey: reason.reasonKey,
+                reasonKey: r.reasonKey,
                 deadlineAtMs: Math.min(
                   binding.authorization.deadlineAtMs,
                   binding.original.expiresAtMs,
@@ -4516,35 +4485,203 @@ export class ModerationDeleteIntentService {
             ]
           : [];
       });
-      messageDuplicateVerified =
-        (await check(
-          () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params),
-          duplicateReceipts.map((receipt) => receipt.reasonKey),
-        )) === 'allowed';
-      if (messageDuplicateVerified)
-        for (const receipt of duplicateReceipts)
-          verifiedReasonDeadlines.set(receipt.reasonKey, receipt.deadlineAtMs);
-    }
-    if (recognized && !allowed)
-      throw new ModerationDeleteReasonsRejectedError(
-        fingerprintGuardedDeleteReasons(reasons),
-        stopWordsRejectionReason,
+      await prepare(
+        () => this.messageDuplicateDeleteGuard!.assertIntentStillActionable(params),
+        receipts.map((r) => r.reasonKey),
+        'duplicate',
+        receipts,
       );
-    return {
-      profanityVerified,
-      commercialVerifiedReasonKeys,
-      messageDuplicateVerified,
-      independentVerified,
-      independentAuthorityDeadlineAtMs: independentWithoutShortDeadline
-        ? null
-        : independentBoundedDeadlineAtMs || null,
-      guardedReasonFingerprint: fingerprintGuardedDeleteReasons(reasons),
-      verifiedReasonKeys: [...new Set(verifiedReasonKeys)],
-      verifiedReasonDeadlines: [...verifiedReasonDeadlines].map(([reasonKey, deadlineAtMs]) => ({
-        reasonKey,
-        deadlineAtMs,
-      })),
+    }
+    // FLAG: All MAX evidence is prepared before the sole transport reservation. Only
+    // local/SQL/Redis feature finalizers may run after it; each reason keeps its own result.
+    if (recognized && !candidates.length)
+      throw new ModerationDeleteReasonsRejectedError(fingerprint, stopWordsRejectionReason);
+    await beforeFinalAuthority?.();
+    const finalizeCandidates = async (
+      activeCandidates: readonly Candidate[],
+      allowIndependentRecheck: boolean,
+    ): Promise<GuardedDeleteAuthorityProof> => {
+      if (deferred && (await this.isLegacyIntentHeld(intent)))
+        throw new WebhookLegacyHoldRejectedError();
+      let allowed = false;
+      let independentVerified = false;
+      let unboundedIndependent = false;
+      let independentDeadline = 0;
+      let profanityVerified = false;
+      let messageDuplicateVerified = false;
+      let commercialVerifiedReasonKeys: string[] = [];
+      const verifiedReasonKeys = new Set<string>();
+      const verifiedReasonDeadlines = new Map<string, number>();
+      const independentCandidates: Candidate[] = [];
+      for (const candidate of activeCandidates) {
+        try {
+          const result = await finalizeDeleteAuthority(candidate.preparation);
+          if (result === 'absent')
+            throw new ModerationDeleteGuardedMessageAbsentError('guarded_current_message_absence');
+          if (result !== 'allowed' && (typeof result !== 'object' || result === null))
+            throw new Error('Required moderation reason guard did not supply authority');
+          const proof =
+            typeof result === 'object' && result !== null
+              ? (result as {
+                  reasonKeys?: string[];
+                  deadlineAtMs?: number;
+                  reasonDeadlines?: VerifiedDeleteReasonDeadline[];
+                })
+              : null;
+          if (
+            candidate.tag === 'traffic' &&
+            (!Number.isSafeInteger(proof?.deadlineAtMs) || proof!.deadlineAtMs! <= 0)
+          )
+            throw new Error('Verified traffic reason lost its deadline permit');
+          if (candidate.tag === 'ocr') {
+            const bindings = standardOcr.map((r) => parseCommercialOcrDeleteBinding(r.metadata));
+            if (bindings.some((binding) => !binding))
+              throw new Error('Verified OCR reason lost its deadline binding');
+            candidate.fixedDeadlines = standardOcr.map((r, index) => ({
+              reasonKey: r.reasonKey,
+              deadlineAtMs: Math.min(
+                Date.parse(bindings[index]!.ocrDeadlineAt),
+                ...(bindings[index]!.authority.kind === 'CERTIFIED'
+                  ? [Date.parse(bindings[index]!.authority.controlExpiresAt)]
+                  : []),
+              ),
+            }));
+          }
+          const preparedKeys = proof?.reasonKeys ?? candidate.keys;
+          const keys = candidate.authoritySnapshot
+            ? preparedKeys.filter((key) => candidate.authoritySnapshot!.keys.includes(key))
+            : preparedKeys;
+          if (candidate.authoritySnapshot?.keys.length && !keys.length)
+            throw new ModerationDeleteReasonsRejectedError(fingerprint);
+          const currentPermits =
+            proof?.reasonDeadlines ??
+            (proof?.deadlineAtMs !== undefined
+              ? preparedKeys.map((reasonKey) => ({ reasonKey, deadlineAtMs: proof.deadlineAtMs! }))
+              : candidate.tag === 'duplicate'
+                ? (candidate.fixedDeadlines ?? [])
+                : []);
+          const boundedDeadlines = new Map<string, number>();
+          for (const permit of currentPermits) {
+            if (
+              !preparedKeys.includes(permit.reasonKey) ||
+              !Number.isSafeInteger(permit.deadlineAtMs) ||
+              permit.deadlineAtMs <= 0
+            )
+              throw new Error('Verified moderation reason lost its exact deadline permit');
+            if (keys.includes(permit.reasonKey))
+              boundedDeadlines.set(
+                permit.reasonKey,
+                Math.min(boundedDeadlines.get(permit.reasonKey) ?? Infinity, permit.deadlineAtMs),
+              );
+          }
+          // FLAG: Local fallback can revoke authority but cannot renew an earlier reason
+          // deadline or attach a newly eligible reason to another reason's old preparation.
+          for (const permit of candidate.authoritySnapshot?.deadlines ?? []) {
+            if (keys.includes(permit.reasonKey))
+              boundedDeadlines.set(
+                permit.reasonKey,
+                Math.min(boundedDeadlines.get(permit.reasonKey) ?? Infinity, permit.deadlineAtMs),
+              );
+          }
+          const permits = [...boundedDeadlines].map(([reasonKey, deadlineAtMs]) => ({
+            reasonKey,
+            deadlineAtMs,
+          }));
+          for (const permit of permits) {
+            verifiedReasonDeadlines.set(
+              permit.reasonKey,
+              Math.min(
+                verifiedReasonDeadlines.get(permit.reasonKey) ?? Infinity,
+                permit.deadlineAtMs,
+              ),
+            );
+          }
+          if (candidate.tag === 'ocr' && finalDispatchLeaseToken)
+            await this.assertCommercialOcrDispatchDeadline(
+              intent.id,
+              finalDispatchLeaseToken,
+              botId,
+            );
+          allowed = true;
+          for (const key of keys) verifiedReasonKeys.add(key);
+          if (candidate.tag === 'duplicate') messageDuplicateVerified = true;
+          else {
+            independentVerified = true;
+            let deadline =
+              keys.length && keys.every((key) => boundedDeadlines.has(key))
+                ? Math.max(...keys.map((key) => boundedDeadlines.get(key)!))
+                : (proof?.deadlineAtMs ??
+                  (candidate.tag === 'ocr'
+                    ? Math.min(...candidate.fixedDeadlines!.map((r) => r.deadlineAtMs))
+                    : null));
+            if (candidate.authoritySnapshot?.deadlineAtMs != null)
+              deadline = Math.min(deadline ?? Infinity, candidate.authoritySnapshot.deadlineAtMs);
+            independentCandidates.push({
+              ...candidate,
+              authoritySnapshot: { keys, deadlineAtMs: deadline, deadlines: permits },
+            });
+            if (deadline === null) unboundedIndependent = true;
+            else independentDeadline = Math.max(independentDeadline, deadline);
+          }
+          if (candidate.tag === 'profanity') profanityVerified = result === 'allowed';
+          if (candidate.tag === 'commercial') commercialVerifiedReasonKeys = keys;
+        } catch (error) {
+          rejected(error);
+        }
+      }
+      if (recognized && !allowed)
+        throw new ModerationDeleteReasonsRejectedError(fingerprint, stopWordsRejectionReason);
+      if (deferred && allowed && intent.subjectUserId && intent.messageAuthorKind !== 'bot') {
+        if (!this.participantImmunity)
+          throw new Error('Final participant immunity guard unavailable');
+        const settings = await this.prisma.chatSettings.findUnique({
+          where: { chatId: intent.chatId },
+          select: { nightModeTimezone: true },
+        });
+        if (
+          (await this.participantImmunity.consumeForMessage({
+            chatId: intent.chatId,
+            userId: intent.subjectUserId,
+            messageId: intent.messageId,
+            scope: 'moderation-delete-final:v1',
+            nightModeTimezone: settings?.nightModeTimezone ?? null,
+          })) === 'granted'
+        )
+          throw new ModerationDeleteReasonsRejectedError(fingerprint);
+      }
+      return {
+        profanityVerified,
+        commercialVerifiedReasonKeys,
+        messageDuplicateVerified,
+        independentVerified,
+        independentAuthorityDeadlineAtMs: unboundedIndependent ? null : independentDeadline || null,
+        guardedReasonFingerprint: fingerprint,
+        verifiedReasonKeys: [...verifiedReasonKeys],
+        verifiedReasonDeadlines: [...verifiedReasonDeadlines].map(([reasonKey, deadlineAtMs]) => ({
+          reasonKey,
+          deadlineAtMs,
+        })),
+        // FLAG: Only independently finalized evidence may survive a failed duplicate permit.
+        // Its new capsule re-reads local authority and retains every original absolute deadline.
+        ...(deferred &&
+        allowIndependentRecheck &&
+        messageDuplicateVerified &&
+        independentCandidates.length
+          ? {
+              independentRecheck: prepareDeleteAuthority(async () =>
+                finalizeCandidates(
+                  independentCandidates.map((candidate) => ({
+                    ...candidate,
+                    preparation: prepareDeleteAuthorityRecheck(candidate.preparation),
+                  })),
+                  false,
+                ),
+              ),
+            }
+          : {}),
+      };
     };
+    return finalizeCandidates(candidates, true);
   }
 
   private async assertCommercialOcrDispatchDeadline(
@@ -4836,16 +4973,12 @@ export class ModerationDeleteIntentService {
     return binding;
   }
 
-  private async assertChannelAutoPostCleanupStillAuthorized(
-    intent: IntentRow,
-    botId: string,
-  ): Promise<void> {
+  private async assertChannelAutoPostCleanupLocalAuthority(intent: IntentRow): Promise<void> {
     if (
       intent.channelAutoPostCleanupReason !== true ||
       this.hasExecutableReasonIgnoringChannelAutoPostCleanup(intent)
-    ) {
+    )
       return;
-    }
     const chat = await this.prisma.chat.findUnique({
       where: { id: intent.chatId },
       select: { entityType: true },
@@ -4856,6 +4989,19 @@ export class ModerationDeleteIntentService {
         chat?.entityType ?? null,
       );
     }
+  }
+
+  private async assertChannelAutoPostCleanupStillAuthorized(
+    intent: IntentRow,
+    botId: string,
+  ): Promise<void> {
+    if (
+      intent.channelAutoPostCleanupReason !== true ||
+      this.hasExecutableReasonIgnoringChannelAutoPostCleanup(intent)
+    ) {
+      return;
+    }
+    await this.assertChannelAutoPostCleanupLocalAuthority(intent);
 
     const snapshot = await this.maxClient.getChatSnapshot(intent.chatId, {
       botId,
@@ -4925,6 +5071,19 @@ export class ModerationDeleteIntentService {
     intent: IntentRow,
     botId: string,
   ): Promise<'not_applicable' | 'absent' | { reasonDeadlines: VerifiedDeleteReasonDeadline[] }> {
+    return finalizeDeleteAuthority(
+      await this.prepareImageTextStopListDeleteAuthority(intent, botId),
+    );
+  }
+
+  private async prepareImageTextStopListDeleteAuthority(
+    intent: IntentRow,
+    botId: string,
+  ): Promise<
+    DeleteAuthorityPreparation<
+      'not_applicable' | 'absent' | { reasonDeadlines: VerifiedDeleteReasonDeadline[] }
+    >
+  > {
     if (
       intent.imageTextStopListDeleteReason !== true ||
       this.hasExecutableNonCommercialOcrReason(intent)
@@ -5069,23 +5228,44 @@ export class ModerationDeleteIntentService {
       );
     }
 
-    const finalContext = await this.loadImageTextStopListGuardContext(intent.chatId);
-    this.assertImageTextStopListContext(finalContext, validBindings, primaryBinding.senderId);
-    if (
-      this.getImageTextStopListRollout() !== 'execute' ||
-      Date.parse(primaryBinding.deleteDeadlineAt) <= Date.now()
-    ) {
-      throw new ImageTextStopListDeleteIntentGuardRejectedError(
-        'image_text_stop_list_runtime_disabled',
-        'Image text stop-list authorization expired before delete dispatch',
+    return prepareDeleteAuthority(async () => {
+      const protectionContext = await this.loadImageTextStopListGuardContext(intent.chatId);
+      this.assertImageTextStopListContext(
+        protectionContext,
+        validBindings,
+        primaryBinding.senderId,
       );
-    }
-    return {
-      reasonDeadlines: reasons.map((reason, index) => ({
-        reasonKey: reason.reasonKey,
-        deadlineAtMs: Date.parse(validBindings[index]!.deleteDeadlineAt),
-      })),
-    };
+      if (
+        (await this.participantImmunity!.consumeForMessage({
+          chatId: intent.chatId,
+          userId: primaryBinding.senderId,
+          messageId: intent.messageId,
+          scope: IMAGE_TEXT_STOP_LIST_PARTICIPANT_IMMUNITY_SCOPE,
+          nightModeTimezone: protectionContext!.settings!.nightModeTimezone,
+        })) === 'granted'
+      )
+        throw new ImageTextStopListDeleteIntentGuardRejectedError(
+          'image_text_stop_list_participant_immune',
+          'Current participant protection prevents image text deletion',
+        );
+      const finalContext = await this.loadImageTextStopListGuardContext(intent.chatId);
+      this.assertImageTextStopListContext(finalContext, validBindings, primaryBinding.senderId);
+      if (
+        this.getImageTextStopListRollout() !== 'execute' ||
+        Date.parse(primaryBinding.deleteDeadlineAt) <= Date.now()
+      ) {
+        throw new ImageTextStopListDeleteIntentGuardRejectedError(
+          'image_text_stop_list_runtime_disabled',
+          'Image text stop-list authorization expired before delete dispatch',
+        );
+      }
+      return {
+        reasonDeadlines: reasons.map((reason, index) => ({
+          reasonKey: reason.reasonKey,
+          deadlineAtMs: Date.parse(validBindings[index]!.deleteDeadlineAt),
+        })),
+      };
+    });
   }
 
   private async loadImageTextStopListGuardContext(

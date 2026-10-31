@@ -1,3 +1,8 @@
+import {
+  prepareDeleteAuthority,
+  finalizeDeleteAuthority,
+  type DeleteAuthorityPreparation,
+} from './moderation-delete-authority-preparation';
 import { fingerprintModerationSettings } from './moderation-settings-fingerprint';
 import { VOICE_SOURCE_LIFETIME_MS } from './voice-webhook-source';
 export { fingerprintModerationSettings } from './moderation-settings-fingerprint';
@@ -87,6 +92,14 @@ export class MessageLimitsDeleteGuardService {
         reasonDeadlines?: { reasonKey: string; deadlineAtMs: number }[];
       }
   > {
+    return finalizeDeleteAuthority(await this.prepareForDispatch(params));
+  }
+
+  async prepareForDispatch(
+    params: Parameters<MessageLimitsDeleteGuardService['authorize']>[0],
+  ): Promise<
+    DeleteAuthorityPreparation<Awaited<ReturnType<MessageLimitsDeleteGuardService['authorize']>>>
+  > {
     const owned = params.reasons.filter((reason) =>
       MESSAGE_LIMITS_GUARDED_RULES.has(reason.ruleCode),
     );
@@ -146,30 +159,32 @@ export class MessageLimitsDeleteGuardService {
       })) === 'granted'
     )
       this.reject();
-    const finalSettings = await this.loadSettings(params.chatId, userId);
-    const reasonKeys = owned
-      .filter((reason) => this.matchesReason(reason, update, finalSettings))
-      .map((reason) => reason.reasonKey);
-    if (!reasonKeys.length) this.reject();
-    const matched = owned.filter((reason) => reasonKeys.includes(reason.reasonKey));
-    const hasContentReason = matched.some((reason) =>
-      MESSAGE_LIMITS_CURRENT_CONTENT_RULES.has(reason.ruleCode),
-    );
-    const reasonDeadlines = matched
-      .filter((reason) => MESSAGE_LIMITS_STATEFUL_RULES.has(reason.ruleCode))
-      .map((reason) => ({
-        reasonKey: reason.reasonKey,
-        deadlineAtMs: Number(this.metadata(reason.metadata).messageLimitDeadlineAtMs),
-      }));
-    return {
-      reasonKeys,
-      ...(reasonDeadlines.length ? { reasonDeadlines } : {}),
-      ...(hasContentReason
-        ? {}
-        : {
-            deadlineAtMs: Math.max(...reasonDeadlines.map((reason) => reason.deadlineAtMs)),
-          }),
-    };
+    return prepareDeleteAuthority(async () => {
+      const finalSettings = await this.loadSettings(params.chatId, userId);
+      const reasonKeys = owned
+        .filter((reason) => this.matchesReason(reason, update, finalSettings))
+        .map((reason) => reason.reasonKey);
+      if (!reasonKeys.length) this.reject();
+      const matched = owned.filter((reason) => reasonKeys.includes(reason.reasonKey));
+      const hasContentReason = matched.some((reason) =>
+        MESSAGE_LIMITS_CURRENT_CONTENT_RULES.has(reason.ruleCode),
+      );
+      const reasonDeadlines = matched
+        .filter((reason) => MESSAGE_LIMITS_STATEFUL_RULES.has(reason.ruleCode))
+        .map((reason) => ({
+          reasonKey: reason.reasonKey,
+          deadlineAtMs: Number(this.metadata(reason.metadata).messageLimitDeadlineAtMs),
+        }));
+      return {
+        reasonKeys,
+        ...(reasonDeadlines.length ? { reasonDeadlines } : {}),
+        ...(hasContentReason
+          ? {}
+          : {
+              deadlineAtMs: Math.max(...reasonDeadlines.map((reason) => reason.deadlineAtMs)),
+            }),
+      };
+    });
   }
 
   async loadSettings(chatId: string, userId: string) {
@@ -246,7 +261,9 @@ export class MessageLimitsDeleteGuardService {
       this.reject();
     // FLAG: Re-read edits/removals and policy after awaited immunity work. The intent
     // executor also fences this same absolute reason deadline with the database clock.
-    return check(await this.loadSettings(params.chatId, userId));
+    return prepareDeleteAuthority(async () =>
+      check(await this.loadSettings(params.chatId, userId)),
+    );
   }
 
   private metadata(value: unknown): Record<string, unknown> {
