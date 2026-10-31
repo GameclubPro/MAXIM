@@ -117,7 +117,7 @@ NODE
       ''|AGENTS.md|*.md|docs/*|tests/*|tools/*|scripts/agent/*|packages/contracts/test/*|infra/scripts/*test*|\
       .github/workflows/ci.yml|scripts/ci/static-coverage.test.mjs|\
       infra/compatibility/karavan-store-profile-catalog-coverage-v1.json|infra/compatibility/karavan-transport-service-request-flow-v1.json|\
-      infra/scripts/lib/deploy-lock.sh|infra/scripts/lib/pair-release-admission.sh|infra/scripts/pair-release-admission.sh|infra/scripts/pair-release-state.mjs|infra/scripts/install-pair-release-admission.sh|infra/scripts/karavan-operation-lock.sh|\
+      infra/scripts/lib/deploy-lock.sh|infra/scripts/lib/pair-release-admission.sh|infra/scripts/pair-release-admission.sh|infra/scripts/pair-release-state.mjs|infra/scripts/pair-release-backup-refusal-recovery.mjs|infra/scripts/install-pair-release-admission.sh|infra/scripts/karavan-operation-lock.sh|\
       infra/scripts/check-infra.sh|infra/scripts/vps-connect.sh|infra/scripts/vps-pull-build-up.sh|infra/scripts/vps-install-deploy-flock.sh|infra/scripts/vps-runtime-rollback.sh|infra/scripts/vps-rollback-karavan.sh|\
       infra/scripts/vps-legacy-cold-recovery.sh|infra/scripts/vps-source-abandonment.sh|infra/scripts/vps-source-abandonment-corrective.sh|infra/scripts/vps-backlog-cancellation.sh|\
       infra/scripts/configure-karavan-api-cdn-transport.sh|infra/scripts/configure-karavan-cdn-security-headers.sh|infra/scripts/deploy-karavan-cdn-shells.sh|infra/scripts/deploy-karavan-reg-hosting.sh|infra/scripts/deploy-karavan-restricted-lte-edge.sh|\

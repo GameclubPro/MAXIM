@@ -250,7 +250,7 @@ function fixture(t, mode = 'success') {
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
-      'if [[ "$1" == -C && ( "$2" == "$FIXTURE_PAIR_MAJOR_ROOT" || "$2" == "$FIXTURE_PAIR_KARAVAN_ROOT" ) ]]; then exec "$REAL_GIT" "$@"; fi',
+      'if [[ "$#" == 7 && "$1" == -c && "$2" == "safe.directory=$4" && "$3" == -C && ( "$4" == "$FIXTURE_PAIR_MAJOR_ROOT" || "$4" == "$FIXTURE_PAIR_KARAVAN_ROOT" ) && "$5" == rev-parse && "$6" == --verify && "$7" == HEAD ]]; then exec "$REAL_GIT" "$@"; fi',
       'case "$*" in',
       '  *"rev-parse HEAD"*) printf "%s\\n" "$FIXTURE_SHA" ;;',
       '  *"status --porcelain"*) if [[ "$FIXTURE_MODE" == dirty-source ]]; then printf "?? local-change\\n"; fi ;;',

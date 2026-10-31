@@ -139,6 +139,12 @@ pair_release_admission_acquire() {
   read -r start boot cwd < <(_pair_release_process "$owner_pid") || return 70
   temporary="$owner_file.$owner_pid.$RANDOM.tmp"
   (umask 077; set -o noclobber; printf 'protocol=major-karavan-release-v1\ntoken=%s\nproduct=%s\nmode=%s\ntarget=%s\npid=%s\nstart=%s\nboot=%s\ncwd=%s\nfd=%s\ninode=%s\ninitial_state=%s\nstarted_at=%s\n' "$token" "$product" "$operation_mode" "$target" "$owner_pid" "$start" "$boot" "$cwd" "$PAIR_RELEASE_ADMISSION_FD" "$original" "$initial" "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" >"$temporary") || return 70
+  # FLAG: Root maintenance shares the operator's admission. Publish the same owner
+  # identity required by assert; a root-owned record would strand the fence before work.
+  if [[ "$EUID" == 0 ]]; then
+    chown --no-dereference --reference="$directory/state" -- "$temporary" || return 70
+  fi
+  [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%u:%a:%h' -- "$temporary")" == "$(stat -c '%u' -- "$directory/state"):600:1" ]] || return 70
   _pair_release_sync "$temporary" || return 70
   mv -T -- "$temporary" "$owner_file" || return 70
   _pair_release_sync "$directory/state" || return 70

@@ -282,6 +282,91 @@ function checkout(root) {
   return spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
 }
 
+function rootRunner(t) {
+  if (process.getuid() === 0) {
+    t.skip('Cross-UID coverage needs an ordinary operator test process.');
+    return null;
+  }
+  const clear = ['env', '-u', 'SUDO_UID', '-u', 'SUDO_GID', '-u', 'SUDO_USER'];
+  const candidates = [['sudo', '-n', ...clear]];
+  if (process.env.WSL_DISTRO_NAME) {
+    candidates.push([
+      '/mnt/c/WINDOWS/system32/wsl.exe',
+      '--distribution',
+      process.env.WSL_DISTRO_NAME,
+      '--user',
+      'root',
+      '--exec',
+      ...clear,
+    ]);
+  }
+  for (const [executable, ...prefix] of candidates) {
+    const probe = spawnSync(
+      executable,
+      [...prefix, process.execPath, '-e', 'process.exit(process.getuid() === 0 ? 0 : 1)'],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+      },
+    );
+    if (probe.status === 0) {
+      return (args) =>
+        spawnSync(executable, [...prefix, ...args], {
+          encoding: 'utf8',
+          timeout: 15_000,
+        });
+    }
+  }
+  t.skip('Cross-UID coverage requires passwordless root execution.');
+  return null;
+}
+
+test('root maintenance publishes operator-owned admission and releases the original inode', (t) => {
+  const elevated = rootRunner(t);
+  if (!elevated) return;
+  const data = fixture(t);
+  const inode = statSync(data.file).ino;
+  const result = elevated([
+    '/bin/bash',
+    '-c',
+    `set -euo pipefail
+source "$1"
+pair_release_admission_acquire major
+stat -c '%u:%a:%h' "$2/admission.owner"
+bash -c 'source "$1"; pair_release_admission_acquire major; pair_release_admission_assert' fixture "$1"
+pair_release_admission_assert
+pair_release_admission_release`,
+    'fixture',
+    data.helper,
+    data.state,
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), `${process.getuid()}:600:1`);
+  assert.equal(existsSync(join(data.state, 'admission.owner')), false);
+  assert.equal(statSync(data.file).ino, inode);
+  assert.equal(
+    run(data, 'pair_release_admission_acquire karavan; pair_release_admission_release').status,
+    0,
+  );
+});
+
+test('root maintenance observes exact operator-owned Git sources without SUDO_UID', (t) => {
+  const elevated = rootRunner(t);
+  if (!elevated) return;
+  const data = fixture(t);
+  const major = checkout(data.majorRoot);
+  const karavan = checkout(data.karavanRoot);
+  const result = elevated([process.execPath, data.reporter]);
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout);
+  assert.equal(observed.major.checkoutSha, major);
+  assert.equal(observed.karavan.checkoutSha, karavan);
+  assert.equal(
+    observed.fingerprint,
+    JSON.parse(run(data, 'pair_release_admission_state').stdout).fingerprint,
+  );
+});
+
 function state(data) {
   const result = run(data, 'pair_release_admission_state');
   assert.equal(result.status, 0, result.stderr);
