@@ -28,6 +28,8 @@ import {
   runPreviewHostV2,
 } from './backlog-cancellation-v2-host.mjs';
 import { readBacklogCancellation } from './backlog-cancellation-journal.mjs';
+import { createLegacyColdRuntime } from './legacy-cold-runtime.mjs';
+import { legacyColdFleet } from './test-fixtures/legacy-cold-fleet.mjs';
 import { LEGACY_COLD_API_SERVICES } from './multibot-legacy-cold-recovery.mjs';
 import {
   archiveReleaseTransition,
@@ -784,6 +786,78 @@ test('restored API dependency failure never produces COMPLETE', async (t) => {
   await assert.rejects(runApplyHostV2(request, h.options), /dependency failure/);
   assert.equal(readBacklogCancellation(h.directory).phase, 'APPLIED');
   assert.notEqual(readBacklogCancellation(h.directory).phase, 'COMPLETE');
+});
+
+test('v2 reports a real runtime failure after API start while retaining APPLIED and the exact resume', async (t) => {
+  const h = harness(t);
+  const diagnostics = [];
+  const rows = legacyColdFleet();
+  for (const row of rows) {
+    row.Image = nomination.imageId;
+    row.Config.Image = `maxim-api:${nomination.sourceSha}`;
+    row.Config.Labels['org.opencontainers.image.revision'] = nomination.sourceSha;
+  }
+  const original = Object.assign(new Error('private-inspect-after-start'), {
+    status: 1,
+    stderr: 'private-docker-error',
+  });
+  let failRunningRead = true;
+  let apiStarted = false;
+  h.options.report = (value) => diagnostics.push(value);
+  h.options.createRuntime = (options) =>
+    createLegacyColdRuntime({
+      ...options,
+      run: (_executable, args) => {
+        if (args[0] === 'ps') return rows.map((row) => row.Id).join('\n');
+        if (args[0] === 'inspect') {
+          if (apiStarted && failRunningRead) {
+            failRunningRead = false;
+            throw original;
+          }
+          return JSON.stringify(rows);
+        }
+        assert.ok(['start', 'stop'].includes(args[0]));
+        const selected = args[0] === 'stop' ? args.slice(3) : args.slice(1);
+        for (const id of selected) {
+          const row = rows.find((candidate) => candidate.Id === id);
+          assert.ok(row);
+          Object.assign(row.State, {
+            Running: args[0] === 'start',
+            Status: args[0] === 'start' ? 'running' : 'exited',
+          });
+          if (row.State.Health) row.State.Health.Status = 'healthy';
+        }
+        if (args[0] === 'stop') {
+          h.state.stopped = true;
+          apiStarted = false;
+        } else if (selected.length === 14) {
+          h.state.stopped = false;
+          apiStarted = true;
+        }
+        return '';
+      },
+    });
+  const request = await h.preview();
+  const previewBefore = readFileSync(join(h.op, 'preview.json'), 'utf8');
+  await assert.rejects(runApplyHostV2(request, h.options), (error) => error === original);
+  const journal = readBacklogCancellation(h.directory);
+  assert.equal(journal.phase, 'APPLIED');
+  assert.ok(rows.every((row) => row.State.Running === true));
+  const failure = diagnostics.find((value) => value.event === 'failed');
+  assert.equal(failure?.diagnostic, 'legacy_cold_progress');
+  assert.equal(failure.stage, 'readRuntimeIdentity');
+  assert.equal(failure.command, 'inspect');
+  assert.equal(failure.exitCode, 1);
+  assert.equal(failure.code, 'unclassified_failure');
+  assert.doesNotMatch(JSON.stringify(failure), /private-|stderr|Config|HostConfig/u);
+  for (const value of [nomination.sourceSha, nomination.imageId, ...rows.map((row) => row.Id)])
+    assert.equal(JSON.stringify(failure).includes(value), false);
+  const resumed = await runApplyHostV2(request, h.options);
+  assert.equal(resumed.outcome, 'APPLIED');
+  assert.equal(readBacklogCancellation(h.directory).phase, 'COMPLETE');
+  assert.deepEqual(readBacklogCancellation(h.directory).request, request);
+  assert.deepEqual(readBacklogCancellation(h.directory).baseline, journal.baseline);
+  assert.equal(readFileSync(join(h.op, 'preview.json'), 'utf8'), previewBefore);
 });
 
 test('unsafe evidence modes, links and oversized files refuse before any stop', async (t) => {

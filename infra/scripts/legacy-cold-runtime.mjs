@@ -152,6 +152,37 @@ export function createLegacyColdRuntime({
     if (deadline !== undefined) remaining(deadline);
     return rows;
   };
+  // FLAG: Keep these methods synchronous. Diagnostics cannot replace their result
+  // or original failure, grant a retry, or authorize a different generation.
+  const observeSync = (stage, operation) => {
+    const startedAt = now();
+    let command;
+    const observedRun = (executable, args, options) => {
+      command = args[0];
+      const result = run(executable, args, options);
+      command = undefined;
+      return result;
+    };
+    emitLegacyColdDiagnostic(report, { stage, event: 'begin' });
+    try {
+      const result = operation(observedRun);
+      emitLegacyColdDiagnostic(report, {
+        stage,
+        event: 'complete',
+        elapsedMs: now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      emitLegacyColdDiagnostic(report, {
+        stage,
+        event: 'failed',
+        command,
+        elapsedMs: now() - startedAt,
+        error,
+      });
+      throw error;
+    }
+  };
   return {
     inspectRuntime() {
       const snapshot = inspectLegacyColdGenerations(inventory(), bindings);
@@ -159,30 +190,34 @@ export function createLegacyColdRuntime({
       return snapshot;
     },
     readStoppedRuntime() {
-      if (!captured) throw new Error('runtime_baseline_missing');
-      return inspectLegacyColdGenerations(inventory(), bindings, captured, true);
+      return observeSync('readStoppedRuntime', (invoke) => {
+        if (!captured) throw new Error('runtime_baseline_missing');
+        return inspectLegacyColdGenerations(inventory(invoke), bindings, captured, true);
+      });
     },
     stopRuntime() {
-      if (!captured) throw new Error('runtime_baseline_missing');
-      const generations = [...captured.services, ...captured.auxiliaries];
-      if (
-        generations.length !== 16 ||
-        new Set(generations.map((row) => row.containerId)).size !== 16 ||
-        generations.some(
-          (row) => !allServices.includes(row.serviceName) || !idPattern.test(row.containerId),
+      return observeSync('stopRuntime', (invoke) => {
+        if (!captured) throw new Error('runtime_baseline_missing');
+        const generations = [...captured.services, ...captured.auxiliaries];
+        if (
+          generations.length !== 16 ||
+          new Set(generations.map((row) => row.containerId)).size !== 16 ||
+          generations.some(
+            (row) => !allServices.includes(row.serviceName) || !idPattern.test(row.containerId),
+          )
         )
-      )
-        throw new Error('runtime_baseline_invalid');
-      // FLAG: Stopping the captured identities remains possible even if a different
-      // unexpected producer appeared. Readback then refuses that changed fleet.
-      const existing = inventory();
-      const owned = generations.filter((row) =>
-        existing.some((value) => value.Id === row.containerId),
-      );
-      if (owned.length)
-        run('docker', ['stop', '--time', '40', ...owned.map((row) => row.containerId)], {
-          timeout: 180_000,
-        });
+          throw new Error('runtime_baseline_invalid');
+        // FLAG: Stopping the captured identities remains possible even if a different
+        // unexpected producer appeared. Readback then refuses that changed fleet.
+        const existing = inventory(invoke);
+        const owned = generations.filter((row) =>
+          existing.some((value) => value.Id === row.containerId),
+        );
+        if (owned.length)
+          invoke('docker', ['stop', '--time', '40', ...owned.map((row) => row.containerId)], {
+            timeout: 180_000,
+          });
+      });
     },
     async startBoundRuntime() {
       let runtimePhase = 'stopped_inventory';
@@ -254,11 +289,13 @@ export function createLegacyColdRuntime({
       }
     },
     readRuntimeIdentity() {
-      if (!captured) throw new Error('runtime_baseline_missing');
-      return {
-        ...inspectLegacyColdGenerations(inventory(), bindings, captured),
-        exactGenerationCount: 14,
-      };
+      return observeSync('readRuntimeIdentity', (invoke) => {
+        if (!captured) throw new Error('runtime_baseline_missing');
+        return {
+          ...inspectLegacyColdGenerations(inventory(invoke), bindings, captured),
+          exactGenerationCount: 14,
+        };
+      });
     },
   };
 }

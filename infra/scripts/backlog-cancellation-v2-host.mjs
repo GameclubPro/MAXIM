@@ -762,10 +762,11 @@ function context(request, options) {
     throw new Error('V2 controller source mismatch');
   (options.assertMaintenance ?? assertNoActiveLegacyColdMaintenance)(directory, request.id);
   assertActiveRelease(directory, request);
+  const report = options.report ?? ((value) => console.log(JSON.stringify(value)));
   return {
     directory,
     controllerSha,
-    report: options.report ?? ((value) => console.log(JSON.stringify(value))),
+    report,
     runtime: (previous) =>
       (options.createRuntime ?? createLegacyColdRuntime)({
         bindings: {
@@ -775,6 +776,7 @@ function context(request, options) {
           selectionDigest: request.id,
         },
         baseline: previous?.baseline ?? null,
+        report,
       }),
     connection: (baseline) => {
       let connection;
