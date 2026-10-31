@@ -21,6 +21,12 @@ import {
   resolveMessageLimitsRuleEscalation,
 } from './moderation-rule-escalation';
 import { ModerationRuleFollowupService } from './moderation-rule-followup.service';
+import { RequiredSubscriptionCandidateStore } from './required-subscription-candidate.store';
+import type { RequiredSubscriptionCandidateAttempt } from './required-subscription-candidate.contract';
+import {
+  executeRequiredSubscriptionCandidate,
+  nominateRequiredSubscriptionCandidate,
+} from './required-subscription-candidate-adapter';
 import { legacyBotCleanupSourceAt } from './legacy-bot-message-cleanup-source';
 import {
   WebhookLegacyHoldService,
@@ -177,7 +183,11 @@ import {
   classifyMaxTerminalChatActionError,
   ManagedEntityAccessLossService,
 } from '../max/managed-entity-access-loss.service';
-import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import {
+  isMaxMembershipLookupLocalQuotaResolution,
+  MaxMembershipLookupService,
+  type MaxMembershipLookupResolution,
+} from '../max/max-membership-lookup.service';
 import { hasConfirmedDeleteMessageAccess } from '../max/max-delete-message-access.util';
 import { hasMaxInsufficientRightsMessage } from '../max/max-member-error.util';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
@@ -716,6 +726,7 @@ type RequiredSubscriptionMembershipResolution = {
   membership: boolean | null;
   fresh: boolean;
   terminal: boolean;
+  localQuotaResolution?: MaxMembershipLookupResolution;
 };
 
 type WebhookUpdateGuardResult =
@@ -743,6 +754,7 @@ type RequiredSubscriptionMembershipResult = {
   missingChannelIds: string[];
   unresolvedChannelIds: string[];
   terminalChannelIds: string[];
+  localQuotaResolution?: MaxMembershipLookupResolution;
 };
 
 const VIOLATION_MESSAGE_PROCESSING_TTL_SEC = 8 * 24 * 60 * 60;
@@ -945,6 +957,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
     @Optional() private readonly commercialAi?: CommercialLlmEnforcementService,
     @Optional() private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
+    @Optional()
+    private readonly requiredSubscriptionCandidateStore?: RequiredSubscriptionCandidateStore,
   ) {
     this.requiredSubscriptionNoticePlans = new RequiredSubscriptionNoticePlanStore(
       prisma.moderationEvent,
@@ -2097,6 +2111,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (activeMute.ruleCode === REQUIRED_SUBSCRIPTION_RULE_CODE) {
           this.markWebhookHotPathStage(hotPathProfile, 'required-subscription');
           const requiredSubscriptionHandled = await this.handleRequiredSubscriptionMessage({
+            sourceUpdateType: updateType,
             chatId,
             userId: senderId,
             userLabel,
@@ -2237,6 +2252,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       this.markWebhookHotPathStage(hotPathProfile, 'required-subscription');
       const requiredSubscriptionHandled = await this.handleRequiredSubscriptionMessage({
+        sourceUpdateType: updateType,
         chatId,
         userId: senderId,
         userLabel,
@@ -10159,7 +10175,50 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.closedChatMessageModeration.handleNightModeForceCloseMessage(params);
   }
 
+  async executeRequiredSubscriptionCandidate(
+    attempt: RequiredSubscriptionCandidateAttempt,
+  ): Promise<void> {
+    await executeRequiredSubscriptionCandidate(
+      this.getRequiredSubscriptionCandidateHost(),
+      attempt,
+    );
+  }
+
+  getRequiredSubscriptionCandidateHost() {
+    return {
+      prisma: this.prisma,
+      guard: this.requiredSubscriptionExecutionGuard,
+      store: this.requiredSubscriptionCandidateStore,
+      deleteIntents: this.moderationDeleteIntentService,
+      max: this.maxClient,
+      botContext: this.maxBotContextService,
+      coordinator: this.requiredSubscriptionMediaNoticeCoordinator,
+      noticePlans: this.requiredSubscriptionNoticePlans,
+      sanctionLock: this.moderationSanctionStateLockService,
+      membership: this.getRequiredSubscriptionMembershipResolution.bind(this),
+      channels: this.resolveRequiredSubscriptionChannels.bind(this),
+      channelTitle: this.readRequiredSubscriptionChannelTitle.bind(this),
+      readChannelIds: this.readRequiredSubscriptionChannelIds.bind(this),
+      options: this.buildRequiredSubscriptionMessageOptions.bind(this),
+      escalation: this.resolveRequiredSubscriptionEscalationAction.bind(this),
+      explanation: this.buildRequiredSubscriptionExplanation.bind(this),
+      warning: this.buildRequiredSubscriptionWarnExplanation.bind(this),
+      mute: this.buildRequiredSubscriptionMuteExplanation.bind(this),
+      ban: this.buildRequiredSubscriptionBanExplanation.bind(this),
+      adminContact: this.appendAdminContactMarkdownLink.bind(this),
+      userLabel: this.resolveSanctionUserLabel.bind(this),
+      send: this.sendBotMessageWithOptionalAutoDelete.bind(this),
+      media: this.resolveBotSpeechMedia.bind(this),
+      prepareDelete: this.prepareModerationDeleteIntentInput.bind(this),
+      banImmediately: this.banMemberImmediatelyWithResult.bind(this),
+      activeMute: this.getActiveMute.bind(this),
+      manualRelease: this.resolveLatestManualReleaseCreatedAt.bind(this),
+      held: this.isLegacyModerationHeld.bind(this),
+    };
+  }
+
   private async handleRequiredSubscriptionMessage(params: {
+    sourceUpdateType?: string | null;
     chatId: string;
     userId: string;
     userLabel: string;
@@ -10231,9 +10290,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!membership) {
       return false;
     }
-    if (membership.missingChannelIds.length === 0) {
-      return false;
-    }
+    await nominateRequiredSubscriptionCandidate(this.getRequiredSubscriptionCandidateHost(), {
+      ...params,
+      localQuotaResolution: membership.localQuotaResolution,
+    });
+    if (membership.missingChannelIds.length === 0) return false;
 
     const missingChannelIdsNeedingRefresh = allowInitialRequiredSubscriptionMetadataFetch
       ? []
@@ -11371,6 +11432,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const membershipsByChannelId = new Map(
       membershipChecks.map((item) => [item.channelId, item.resolution.membership] as const),
     );
+    const resolutionsByChannelId = new Map(
+      membershipChecks.map((item) => [item.channelId, item.resolution] as const),
+    );
     const terminalChannelIds = new Set(
       membershipChecks.filter((item) => item.resolution.terminal).map((item) => item.channelId),
     );
@@ -11390,6 +11454,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }),
       );
       for (const retriedCheck of retriedChecks) {
+        resolutionsByChannelId.set(retriedCheck.channelId, retriedCheck.resolution);
         membershipsByChannelId.set(retriedCheck.channelId, retriedCheck.resolution.membership);
         if (retriedCheck.resolution.terminal) {
           terminalChannelIds.add(retriedCheck.channelId);
@@ -11436,10 +11501,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (channelId) => membershipsByChannelId.get(channelId) === false,
     );
 
+    const localQuotaResolution = unresolvedNonTerminalChannelIds
+      .map((channelId) => resolutionsByChannelId.get(channelId)?.localQuotaResolution)
+      .find(isMaxMembershipLookupLocalQuotaResolution);
     return {
       missingChannelIds,
       unresolvedChannelIds,
       terminalChannelIds: [...terminalChannelIds],
+      ...(localQuotaResolution ? { localQuotaResolution } : {}),
     };
   }
 
@@ -11553,6 +11622,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return {
           membership: resolution.membership,
           fresh: resolution.fresh,
+          ...(isMaxMembershipLookupLocalQuotaResolution(resolution)
+            ? { localQuotaResolution: resolution }
+            : {}),
           terminal:
             resolution.membership === null &&
             this.isRequiredSubscriptionTerminalLookupIssue(channelId),

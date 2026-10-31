@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "policyRulesAfter": "20260718183000_add_vk_rich_text_channel_link",
-  "baselineThrough": "20261030030000_karavan_stable_routing_authority",
-  "baselineNamesSha256": "8ca20d8b545da08af4635ab3b5717edff10c1229f4498e25f6745c1c5b078494",
-  "baselineContentsSha256": "c92e3fc137ad0e9704819b29130403cd3d0bfab533984bf32d3b6e199fd36371",
+  "baselineThrough": "20261031120000_add_required_subscription_candidates",
+  "baselineNamesSha256": "828ff4cf6b3ea7b265301d1a171decf84940bb9575aa3a48988f6ee2233a4e3c",
+  "baselineContentsSha256": "17bd3ac4e794c8a713f347d752b52ab172bc01a0f1d37fff64f07a98c96806d4",
   "approvedDestructive": {
     "20260930180000_add_duplicate_policy_revisions": {
       "reason": "Manual review approved one pure SQL policy-signature function and one static BEFORE INSERT OR UPDATE revision trigger. The parser classifies executable function bodies and CREATE TRIGGER EXECUTE FUNCTION as destructive, but this migration has no dynamic SQL, DROP, DELETE, index build or existing-data backfill.",
@@ -295,6 +295,9 @@
     },
     "20261028010000_add_marketplace_button_policies": {
       "reason": "The refresh index is created only on a new empty button-context table. The seed enumerates current bindings and indexed exact actor/platform access edges; retained event, statistics and receipt history is neither scanned nor backfilled. No existing history is indexed. Legacy publication opt-ins without known loss are reconciled in bounded runtime batches."
+    },
+    "20261031120000_add_required_subscription_candidates": {
+      "reason": "All indexes belong only to the new empty candidate owner table in this additive migration. No retained source, violation, event or DELETE history is scanned, indexed or backfilled."
     }
   }
 }

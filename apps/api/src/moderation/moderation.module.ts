@@ -1,4 +1,6 @@
 import { ModerationRuleFollowupService } from './moderation-rule-followup.service';
+import { RequiredSubscriptionCandidateService } from './required-subscription-candidate.service';
+import { RequiredSubscriptionCandidateStore } from './required-subscription-candidate.store';
 import { MODERATION_RULE_FOLLOWUP_EXECUTOR } from './moderation-rule-followup.contract';
 import { GlobalSpammerPolicyModule } from './global-spammer-policy.module';
 import { NativePhotoSandboxClient } from './photo-duplicate/native-photo-sandbox.client';
@@ -114,6 +116,8 @@ const commercialOcrEnqueueEnabled = moderationRoleEnabled && enabledModerationQu
 const moderationProviders = [
   ModerationService,
   ModerationRuleFollowupService,
+  RequiredSubscriptionCandidateStore,
+  RequiredSubscriptionCandidateService,
   { provide: MODERATION_RULE_FOLLOWUP_EXECUTOR, useExisting: ModerationService },
   {
     provide: MODERATION_EXECUTION_LEGACY,
