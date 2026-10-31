@@ -1380,13 +1380,15 @@ const databaseUrl = process.env.CHAT_ROUTING_POSTGRES_RACE_DATABASE_URL?.trim() 
               eventTimestampMs,
               'IMAGE',
             );
+            const baseBinding = bindingFor(own, eventTimestampMs);
             const binding: MessageDuplicateBinding = {
-              ...bindingFor(own, eventTimestampMs),
+              ...baseBinding,
               enforcementScope: 'full',
               compareMode: 'IMAGE',
               imageScope: 'SAME_AUTHOR',
               hasPhotos: true,
               mediaHashes: ['a'.repeat(64)],
+              original: { ...baseBinding.original!, mediaHashes: ['a'.repeat(64)] },
               authorization: { jobId, eventTimestampMs, deadlineAtMs: eventTimestampMs + 600_000 },
             };
             const identity = {

@@ -16,6 +16,7 @@ import { MaxExecutionOwnerReadinessService } from '../../max/max-execution-owner
 import { MaxBotLinkService } from '../../max/max-bot-link.service';
 import { MaxClientService } from '../../max/max-client.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import type { ChatSettings } from '../../prisma/prisma-client';
 import { WebhookParser } from '../../webhook/webhook.parser';
 import { WebhookLegacyHoldService } from '../../webhook/webhook-legacy-hold.service';
 import { BackgroundRuntimeGovernorService } from '../../system/background-runtime-governor.service';
@@ -63,6 +64,7 @@ import {
   MESSAGE_DUPLICATE_MEDIA_VERSION,
   messageDuplicateSettingsDigest,
   exactImageSettingsDigest,
+  type MessageDuplicateOriginal,
 } from './message-duplicate-state';
 import type { MessageDuplicateJob } from './message-duplicate.queue';
 import type { ExecuteDuplicateModerationAction } from '../duplicate-moderation.actions';
@@ -73,6 +75,11 @@ import {
   type MessageDuplicateMetricCounter,
 } from './message-duplicate-metrics.service';
 import { isDuplicateScheduleOpen, resolveDuplicateDailyWindow } from './message-duplicate-schedule';
+import {
+  MessageDuplicateRecompressionIndex,
+  type MessageDuplicateRecompressionCandidate,
+} from './message-duplicate-recompression-index';
+import type { PhotoRecompressionProof } from '../photo-duplicate/photo-recompression-version';
 
 const requireFromHere = createRequire(__filename);
 const MAX_UNCACHED_MEDIA_PER_ATTEMPT = 20;
@@ -105,12 +112,28 @@ const pointerSchema = z
     webhookEventId: z.string().min(1).max(200),
     messageId: z.string().min(1).max(512),
     eventTimestampMs: z.number().int().positive(),
+    recompressionAnchor: z
+      .object({
+        webhookEventId: z.string().min(1).max(128),
+        messageId: z.string().min(1).max(256),
+        eventTimestampMs: z.number().int().positive(),
+        publishedAtMs: z.number().int().positive(),
+        canonicalHash: z.string().regex(/^[a-f0-9]{64}$/),
+        recompressionHash: z.string().regex(/^[a-f0-9]{16}$/),
+        expiresAtMs: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 const hashSchema = z
   .object({
     version: z.literal(MESSAGE_DUPLICATE_MEDIA_VERSION),
     hash: z.string().regex(/^[a-f0-9]{64}$/),
+    recompressionHash: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/)
+      .optional(),
   })
   .strict();
 
@@ -158,6 +181,7 @@ export class MessageDuplicateMediaService {
   private readonly binary: SecurePhotoDownloader;
   private readonly resourceKey: string;
   private readonly sharedAdmissionEnabled: boolean;
+  private readonly recompressionIndex: MessageDuplicateRecompressionIndex;
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisCounterService,
@@ -174,6 +198,7 @@ export class MessageDuplicateMediaService {
     @Optional() private readonly executionReadiness?: MaxExecutionOwnerReadinessService,
     @Optional() private readonly legacyHolds?: WebhookLegacyHoldService,
   ) {
+    this.recompressionIndex = new MessageDuplicateRecompressionIndex(redis);
     this.sharedAdmissionEnabled =
       config.get('MESSAGE_DUPLICATE_MEDIA_SHARED_ADMISSION_ENABLED') === true;
     const maxBytes = config.get<number>('MESSAGE_DUPLICATE_MAX_BYTES') ?? 8_388_608;
@@ -397,7 +422,7 @@ export class MessageDuplicateMediaService {
       const candidateKeys = this.history
         .candidateKeys(content, settings, imageOnly)
         .map((key) => `message-duplicate:candidate:v1:${scope}:${key}`);
-      const ownPointer = {
+      const ownPointer: z.infer<typeof pointerSchema> = {
         webhookEventId: job.webhookEventId,
         messageId: job.messageId,
         eventTimestampMs: job.eventTimestampMs,
@@ -417,9 +442,12 @@ export class MessageDuplicateMediaService {
           if (ageMs < windowSec * 1000) {
             if (ageMs === 0 && parsed.data.messageId === job.messageId) retryingCurrent = true;
             else {
-              const previous = predecessors.get(parsed.data.messageId);
-              if (!previous || previous.eventTimestampMs < parsed.data.eventTimestampMs)
-                predecessors.set(parsed.data.messageId, parsed.data);
+              // FLAG: A verified copy retains its accepted original. It must never become
+              // the next similarity anchor and accumulate small edits across a chain.
+              const anchor = parsed.data.recompressionAnchor ?? parsed.data;
+              const previous = predecessors.get(anchor.messageId);
+              if (!previous || previous.eventTimestampMs < anchor.eventTimestampMs)
+                predecessors.set(anchor.messageId, anchor);
             }
             lease.assertOwned();
             continue;
@@ -538,6 +566,15 @@ export class MessageDuplicateMediaService {
                 }),
               );
               this.metrics?.record('media.baseline_verified');
+              if (imageOnly && verified.hashes.length === 1 && verified.recompressionHash)
+                await this.rememberRecompression(
+                  scope,
+                  previous.webhookEventId,
+                  baseline,
+                  verified,
+                  verified.recompressionHash,
+                  windowSec,
+                );
               baselineVerified = true;
             }
           }
@@ -580,6 +617,28 @@ export class MessageDuplicateMediaService {
       );
       if (Date.now() >= deadlineAtMs) throw new MessageDuplicateMediaDeferredError('proof_budget');
       lease.assertOwned();
+      const recompression: {
+        unverified: boolean;
+        anchor?: MessageDuplicateRecompressionCandidate;
+        proof?: PhotoRecompressionProof;
+        original?: MessageDuplicateOriginal;
+      } =
+        imageOnly && verified.hashes.length === 1 && verified.recompressionHash
+          ? await this.findRecompression({
+              scope,
+              job,
+              source,
+              settings,
+              verified,
+              hash: verified.recompressionHash,
+              deadlineAtMs,
+              budget,
+              lease,
+              heavyWorkAdmitted: heavyWorkRequired,
+            })
+          : { unverified: false };
+      if (recompression.anchor) ownPointer.recompressionAnchor = recompression.anchor;
+      if (recompression.unverified) baselineUnverified = true;
       const observation = await measureDuplicatePhase(this.metrics, 'history', () =>
         this.history.observeWithOutcome({
           content: verified.content,
@@ -592,8 +651,25 @@ export class MessageDuplicateMediaService {
           settings,
           mediaHashes: verified.hashes,
           ...(imageOnly ? { imageScope: settings.duplicatePhotoScope } : {}),
+          ...(recompression.proof
+            ? { imageRecompression: recompression.proof, imageOriginal: recompression.original }
+            : {}),
         }),
       );
+      if (
+        imageOnly &&
+        verified.hashes.length === 1 &&
+        verified.recompressionHash &&
+        !recompression.anchor
+      )
+        await this.rememberRecompression(
+          scope,
+          job.webhookEventId,
+          source,
+          verified,
+          verified.recompressionHash,
+          windowSec,
+        );
       const result = observation.match;
       if (observation.outcome === 'MATCHED') comparedOutcome = 'MATCHED_ACTION_FAILED';
       if (observation.outcome === 'COMPARED_NO_MATCH' && !baselineUnverified)
@@ -898,7 +974,12 @@ export class MessageDuplicateMediaService {
             ? 'media.proof_reused_image'
             : 'media.proof_reused_binary',
         );
-      return parsed?.success ? parsed.data.hash : null;
+      return parsed?.success &&
+        (content.media.length !== 1 ||
+          content.media[index]!.kind !== 'photo' ||
+          parsed.data.recompressionHash)
+        ? parsed.data.hash
+        : null;
     });
   }
 
@@ -911,9 +992,16 @@ export class MessageDuplicateMediaService {
     cachedHashes?: readonly (string | null)[],
     budget = { remaining: MAX_UNCACHED_MEDIA_PER_ATTEMPT },
     receiptId = update.updateId,
-  ): Promise<{ content: DuplicateMessageContent; hashes: string[] }> {
+  ): Promise<{ content: DuplicateMessageContent; hashes: string[]; recompressionHash?: string }> {
     const originalMedia = content.media;
     const hashes = cachedHashes ? [...cachedHashes] : await this.readHashes(content, update);
+    const recompressionHashes = new Map<number, string>();
+    if (content.media.length === 1 && content.media[0]?.kind === 'photo') {
+      const raw = await this.redis.getString(this.cacheKey(content.media[0].identity, update));
+      const parsed = raw && raw.length < 2048 ? hashSchema.safeParse(safeJson(raw)) : null;
+      if (parsed?.success && parsed.data.recompressionHash)
+        recompressionHashes.set(0, parsed.data.recompressionHash);
+    }
     const missing = hashes.filter((hash) => hash === null).length;
     if (missing > budget.remaining || Date.now() >= deadlineAtMs) {
       this.metrics?.record('media.budget_deferred');
@@ -944,6 +1032,7 @@ export class MessageDuplicateMediaService {
           },
           ttl,
           deadlineAtMs,
+          content.media.length === 1,
         );
       let result;
       try {
@@ -979,6 +1068,8 @@ export class MessageDuplicateMediaService {
       }
       photoIndexes.forEach((index, position) => {
         hashes[index] = result.fingerprint.images[position]!.canonicalHash;
+        const candidateHash = result.fingerprint.images[position]!.recompressionHash;
+        if (candidateHash) recompressionHashes.set(index, candidateHash);
       });
     }
     for (let index = 0; index < content.media.length; index += 1) {
@@ -1010,12 +1101,184 @@ export class MessageDuplicateMediaService {
       for (const key of cacheKeys) {
         await this.redis.setStringWithTtl(
           key,
-          JSON.stringify({ version: MESSAGE_DUPLICATE_MEDIA_VERSION, hash: hashes[index] }),
+          JSON.stringify({
+            version: MESSAGE_DUPLICATE_MEDIA_VERSION,
+            hash: hashes[index],
+            ...(recompressionHashes.has(index)
+              ? { recompressionHash: recompressionHashes.get(index) }
+              : {}),
+          }),
           ttl,
         );
       }
     }
-    return { content, hashes: hashes as string[] };
+    return {
+      content,
+      hashes: hashes as string[],
+      ...(content.media.length === 1 && recompressionHashes.has(0)
+        ? { recompressionHash: recompressionHashes.get(0) }
+        : {}),
+    };
+  }
+
+  private async rememberRecompression(
+    scope: string,
+    webhookEventId: string,
+    source: NonNullable<Awaited<ReturnType<MessageDuplicateMediaService['loadSource']>>>,
+    verified: { hashes: string[]; content: DuplicateMessageContent },
+    hash: string,
+    windowSec: number,
+  ): Promise<void> {
+    const publishedAtMs = duplicatePublicationTime(source.update);
+    if (!publishedAtMs || verified.hashes.length !== 1) return;
+    // FLAG: Image identity includes its actions. Equal pixels with different buttons
+    // establish separate originals, including when either copy is recompressed.
+    const imageScope = digestDuplicateContent([scope, verified.content.actions]);
+    await this.recompressionIndex.remember(imageScope, {
+      webhookEventId,
+      messageId: source.update.message!.messageId,
+      eventTimestampMs: source.eventTimestampMs,
+      publishedAtMs,
+      expiresAtMs: publishedAtMs + windowSec * 1000,
+      canonicalHash: verified.hashes[0]!,
+      recompressionHash: hash,
+    });
+  }
+
+  private async findRecompression(input: {
+    scope: string;
+    job: MessageDuplicateJob;
+    source: NonNullable<Awaited<ReturnType<MessageDuplicateMediaService['loadSource']>>>;
+    settings: ChatSettings;
+    verified: { hashes: string[]; content: DuplicateMessageContent };
+    hash: string;
+    deadlineAtMs: number;
+    budget: { remaining: number };
+    lease: PhotoDuplicateOrderingLease;
+    heavyWorkAdmitted: boolean;
+  }): Promise<{
+    unverified: boolean;
+    anchor?: MessageDuplicateRecompressionCandidate;
+    proof?: PhotoRecompressionProof;
+    original?: MessageDuplicateOriginal;
+  }> {
+    const imageScope = digestDuplicateContent([input.scope, input.verified.content.actions]);
+    const candidates = (
+      await this.recompressionIndex.read(imageScope, input.hash, input.job.eventTimestampMs)
+    ).filter((candidate) => {
+      let distance = BigInt(`0x${candidate.recompressionHash}`) ^ BigInt(`0x${input.hash}`);
+      let differentBits = 0;
+      while (distance) {
+        differentBits += 1;
+        distance &= distance - 1n;
+      }
+      return differentBits <= 6;
+    });
+    let unverified = candidates.length > 4;
+    for (const candidate of candidates.slice(0, 4)) {
+      input.lease.assertOwned();
+      if (candidate.messageId === input.job.messageId) continue;
+      if (Date.now() >= input.deadlineAtMs || input.budget.remaining < 2)
+        throw new MessageDuplicateMediaDeferredError('proof_budget');
+      const baseline = await this.loadSource(candidate.webhookEventId);
+      const message = baseline?.update.message;
+      if (!baseline || !message) {
+        unverified = true;
+        continue;
+      }
+      const content = extractDuplicateMessageContent(baseline.update.raw);
+      if (
+        !isExactImageContent(content) ||
+        content.media.length !== 1 ||
+        digestDuplicateContent(content.actions) !==
+          digestDuplicateContent(input.verified.content.actions) ||
+        message.chatId !== input.job.chatId ||
+        message.messageId !== candidate.messageId ||
+        (input.settings.duplicatePhotoScope !== 'CHAT' &&
+          message.senderId !== input.source.update.message!.senderId) ||
+        baseline.eventTimestampMs !== candidate.eventTimestampMs ||
+        duplicatePublicationTime(baseline.update) !== candidate.publishedAtMs ||
+        candidate.expiresAtMs <= input.job.eventTimestampMs
+      ) {
+        unverified = true;
+        continue;
+      }
+      let proof: PhotoRecompressionProof | undefined;
+      if (candidate.canonicalHash !== input.verified.hashes[0]) {
+        const originalUrl = content.media[0]?.url;
+        const currentUrl = input.verified.content.media[0]?.url;
+        if (!originalUrl || !currentUrl) {
+          unverified = true;
+          continue;
+        }
+        if (!input.heavyWorkAdmitted) {
+          await this.admitHeavyWork(input.job, input.deadlineAtMs);
+          input.heavyWorkAdmitted = true;
+        }
+        input.budget.remaining -= 2;
+        let result;
+        try {
+          result = await this.photos.verifyRecompression({
+            originalUrl,
+            currentUrl,
+            expectedOriginalHash: candidate.canonicalHash,
+            expectedCurrentHash: input.verified.hashes[0]!,
+            deadlineAtMs: input.deadlineAtMs,
+          });
+        } catch (error) {
+          // FLAG: An unsupported approximate pair is missing tolerant coverage, not
+          // evidence against independently available exact comparison or permission to delete.
+          if (
+            (error instanceof PhotoFingerprintRejectedError &&
+              !['decode_deadline_exceeded', 'decode_capacity_exceeded'].includes(error.reason)) ||
+            (error instanceof PhotoDownloadHttpError && [403, 404, 410].includes(error.statusCode))
+          ) {
+            unverified = true;
+            continue;
+          }
+          throw error;
+        }
+        input.lease.assertOwned();
+        if (!result) continue;
+        proof = result;
+      }
+      // FLAG: Establish the original's own exact history before attaching a verified
+      // copy. Its revision/window remains authoritative; a removed source cannot revive.
+      const originalInput = {
+        content,
+        chatId: input.job.chatId,
+        userId: message.senderId,
+        messageId: message.messageId,
+        eventTimestampMs: baseline.eventTimestampMs,
+        publishedAtMs: candidate.publishedAtMs,
+        controlRevision: input.job.controlRevision,
+        settings: input.settings,
+        mediaHashes: [candidate.canonicalHash],
+        imageScope: input.settings.duplicatePhotoScope,
+      };
+      const original = await this.history.observeWithOutcome(originalInput);
+      if (
+        original.outcome === 'STALE' ||
+        original.outcome === 'CONTENT_UNVERIFIED' ||
+        original.outcome === 'SCHEDULE_CLOSED'
+      ) {
+        unverified = true;
+        continue;
+      }
+      const accepted = await this.history.findImageOriginal({
+        ...originalInput,
+        eventTimestampMs: input.job.eventTimestampMs,
+      });
+      if (
+        accepted?.mediaHashes.length !== 1 ||
+        accepted.mediaHashes[0] !== candidate.canonicalHash
+      ) {
+        unverified = true;
+        continue;
+      }
+      return { unverified, anchor: candidate, ...(proof ? { proof, original: accepted } : {}) };
+    }
+    return { unverified };
   }
 
   private recordSourceRejection(error: unknown): void {

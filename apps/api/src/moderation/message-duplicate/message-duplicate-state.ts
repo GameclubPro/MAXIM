@@ -3,6 +3,7 @@ import type { ChatSettings } from '../../prisma/prisma-client';
 import { resolveDuplicateFlowConfig } from '../duplicate-flow-policy';
 import { digestDuplicateContent } from './message-duplicate-content';
 import { PHOTO_FINGERPRINT_ALGORITHM_VERSION } from '../photo-duplicate/photo-fingerprint-version';
+import { PHOTO_RECOMPRESSION_VERSION } from '../photo-duplicate/photo-recompression-version';
 import { duplicateScheduleDigestInput } from './message-duplicate-schedule';
 import { MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION } from './message-duplicate-window.script';
 
@@ -32,6 +33,7 @@ export const messageDuplicateOriginalSchema = z
       .optional(),
   })
   .strict();
+export type MessageDuplicateOriginal = z.infer<typeof messageDuplicateOriginalSchema>;
 
 export const messageDuplicateBindingSchema = z
   .object({
@@ -79,6 +81,14 @@ export const messageDuplicateBindingSchema = z
     imageScope: z.enum(['SAME_AUTHOR', 'CHAT']).optional(),
     mediaHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10),
     mediaVersion: z.literal(MESSAGE_DUPLICATE_MEDIA_VERSION),
+    imageRecompression: z
+      .object({
+        version: z.literal(PHOTO_RECOMPRESSION_VERSION),
+        originalHash: z.string().regex(/^[a-f0-9]{64}$/),
+        currentHash: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict()
+      .optional(),
     hasPhotos: z.boolean(),
     photoControlRevision: z.number().int().positive().nullable(),
     windowSeconds: z.number().int().positive().max(604800),
@@ -111,8 +121,33 @@ export const messageDuplicateBindingSchema = z
         value.photoControlRevision === null &&
         value.requiredCount >= 2
       : value.imageScope === undefined,
-  );
+  )
+  .refine(hasValidImageComparisonEvidence);
 export type MessageDuplicateBinding = z.infer<typeof messageDuplicateBindingSchema>;
+
+// FLAG: Candidate similarity never authorizes deletion. A tolerant single-image match
+// retains both exact raster identities and the separately verified original anchor.
+export function hasValidImageComparisonEvidence(value: {
+  compareMode: string;
+  mediaHashes: readonly string[];
+  original?: { mediaHashes: readonly string[] };
+  imageRecompression?: { version: string; originalHash: string; currentHash: string };
+}): boolean {
+  const proof = value.imageRecompression;
+  if (value.compareMode !== 'IMAGE') return proof === undefined;
+  const original = value.original?.mediaHashes;
+  if (!original) return proof === undefined;
+  const equal = [...original].sort().join(':') === [...value.mediaHashes].sort().join(':');
+  if (equal) return proof === undefined;
+  return Boolean(
+    proof &&
+    proof.version === PHOTO_RECOMPRESSION_VERSION &&
+    original.length === 1 &&
+    value.mediaHashes.length === 1 &&
+    proof.originalHash === original[0] &&
+    proof.currentHash === value.mediaHashes[0],
+  );
+}
 
 export function messageDuplicateEnforcementScope(
   binding: MessageDuplicateBinding,
@@ -196,7 +231,7 @@ export function messageDuplicateSanctionSettingsDigest(
 
 export function exactImageSettingsDigest(settings: ChatSettings): string {
   return digestDuplicateContent({
-    version: 'exact-image-fixed-window-v3',
+    version: 'image-recompression-fixed-window-v1',
     historyStorageVersion: MESSAGE_DUPLICATE_HISTORY_STORAGE_VERSION,
     historyRevision: settings.duplicateHistoryRevision ?? 0,
     schedule: duplicateScheduleDigestInput(settings),

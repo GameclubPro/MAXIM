@@ -700,6 +700,13 @@ maxim_topology_require_message_duplicate_delete_guard() {
     apps/api/src/moderation/message-duplicate/message-duplicate-publication-time.ts
     apps/api/src/webhook/webhook-semantic-event-key.ts
     apps/api/src/webhook/webhook-execution-deadline.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-media.service.ts
+    apps/api/src/moderation/message-duplicate/message-duplicate-recompression-index.ts
+    apps/api/src/moderation/photo-duplicate/photo-duplicate-analysis.service.ts
+    apps/api/src/moderation/photo-duplicate/photo-fingerprint.ts
+    apps/api/src/moderation/photo-duplicate/photo-recompression.ts
+    apps/api/src/moderation/photo-duplicate/photo-recompression-version.ts
+    apps/api/src/moderation/redis-counter.service.ts
   )
 
   # FLAG: Pending v3 decisions outlive environment downgrades. Both rollback paths
@@ -708,6 +715,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
   # normalization remain mandatory with v14 text fences, v8 phone evidence and bounded v4 history with retained v3 negative fences.
   # Case-sensitive quantity units before/after values and finite phone authority must survive
   # exact/near matching and lifecycle identity.
+  # FLAG: Retained single-image recompression grants require both exact hashes, independent
+  # native proof and the accepted original anchor. A candidate hash never becomes authority.
   for source_path in "${source_paths[@]}"; do
     if ! source="$(git show "${commit_sha}:${source_path}" 2>/dev/null)"; then
       echo "Rollback target predates the message duplicate v3 action guard." >&2
@@ -721,8 +730,8 @@ maxim_topology_require_message_duplicate_delete_guard() {
     const input = require("node:fs").readFileSync(0);
     if (input.length > 4 * 1024 * 1024) process.exit(1);
     const parts = input.toString("utf8").split("\0");
-    if (parts.length !== 21 || parts.pop() !== "") process.exit(1);
-    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings, semantic, publicationTime, semanticKey, executionDeadline] = parts;
+    if (parts.length !== 28 || parts.pop() !== "") process.exit(1);
+    const [guard, executor, state, authorization, module, enforcement, schema, migration, admission, queue, detector, phones, content, history, window, settings, semantic, publicationTime, semanticKey, executionDeadline, media, recompressionIndex, photoAnalysis, photoFingerprint, photoRecompression, recompressionVersion, counters] = parts;
     const stripComments = (source) => source.replace(/("(?:\\.|[^"\\])*"|\u0027(?:\\.|[^\u0027\\])*\u0027|`(?:\\.|[^`\\])*`)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/gu,
       (match, literal) => literal ?? "");
     const method = (source, marker) => {
@@ -733,8 +742,17 @@ maxim_topology_require_message_duplicate_delete_guard() {
     };
     const topLevelFunction = (source, marker) => {
       const start = source.indexOf(marker);
-      const end = source.indexOf("\n}", start + 1);
+      const tail = source.slice(start + marker.length);
+      const closing = tail.search(/\n\}(?=\r?\n|$)/u);
+      const end = closing < 0 ? -1 : start + marker.length + closing;
       return start >= 0 && end > start ? source.slice(start, end + 2) : "";
+    };
+    const classMethod = (source, marker) => {
+      const start = source.indexOf(marker);
+      if (start < 0) return "";
+      const tail = source.slice(start + marker.length);
+      const boundary = tail.search(/\n  (?:(?:private|public|protected) )?(?:async )?[A-Za-z][A-Za-z0-9]*\(|\n\}/u);
+      return boundary >= 0 ? source.slice(start, start + marker.length + boundary) : "";
     };
     const count = (source, marker) => source.split(marker).length - 1;
     const squash = (source) => source.replace(/^\s*\/\/[^\r\n]*/gmu, "").replace(/\s+/gu, " ").trim();
@@ -766,6 +784,97 @@ maxim_topology_require_message_duplicate_delete_guard() {
       returnsDuplicateQualification(reasons) && returnsDuplicateQualification(boundary);
     const permit = method(guard, "private async assertAuthorization(");
     const qualification = method(guard, "async assertQualificationAuthority(");
+    const imageEvidence = squash(topLevelFunction(state, "export function hasValidImageComparisonEvidence("));
+    const imageSettings = topLevelFunction(state, "export function exactImageSettingsDigest(");
+    const imageHistory = classMethod(history, "async observeWithOutcome(");
+    const imageHistoryRevision = method(history, "private hasCurrentRevision(");
+    const imageOriginal = squash(method(media, "private async findRecompression("));
+    const imageDownload = squash(classMethod(photoAnalysis, "async verifyRecompression("));
+    const imageNativeCall = squash(classMethod(photoFingerprint, "async verifyRecompression(")).replace(/\s+(?=\.)/gu, "");
+    const imageNative = squash(topLevelFunction(photoRecompression, "export async function verifyNativePhotoRecompression("));
+    const imageResidual = squash(topLevelFunction(photoRecompression, "function residualWithinBounds("));
+    const imageIndexRead = classMethod(recompressionIndex, "async read(");
+    const imageIndexRemember = classMethod(recompressionIndex, "async remember(");
+    const imageIndexLua = recompressionIndex.match(/export const DUPLICATE_RECOMPRESSION_INDEX_SCRIPT = `([\s\S]*?)`;/u)?.[1] ?? "";
+    const imageIndexCommand = classMethod(counters, "async duplicateRecompressionIndex(");
+    const imageObserveStart = window.indexOf("if p.op ~= \u0027observe\u0027 then");
+    const imagePinStart = window.indexOf("if p.recompressionOriginal then", imageObserveStart);
+    const imageObserveBoundary = window.indexOf("local previous = read(stateKey(p.member))", imageObserveStart);
+    const imageAtomicOriginal = squash(window.slice(imagePinStart, imageObserveBoundary));
+    const imagePinBeforeMutations = imageObserveStart >= 0 && imagePinStart > imageObserveStart &&
+      imageObserveBoundary > imagePinStart &&
+      !/\bwrite\s*\(|redis\.call\s*\(/u.test(window.slice(imageObserveStart, imagePinStart)) &&
+      imageAtomicOriginal.includes("local expected = p.recompressionOriginal") &&
+      imageAtomicOriginal.includes("if p.mode ~= \u0027IMAGE\u0027 or #p.fingerprints ~= 1 then return cjson.encode({ kind = \u0027stale\u0027 }) end") &&
+      imageAtomicOriginal.includes("local original = read(groupKey(p.fingerprints[1]))") &&
+      imageAtomicOriginal.includes("if not valid(original) or original.member ~= expected.member") &&
+      imageAtomicOriginal.includes("original.revision ~= expected.revision") &&
+      imageAtomicOriginal.includes("original.originalId ~= expected.originalId") &&
+      imageAtomicOriginal.includes("original.epoch ~= expected.epoch") &&
+      imageAtomicOriginal.includes("original.contentDigest ~= expected.contentDigest") &&
+      imageAtomicOriginal.includes("p.at < original.publishedAtMs") &&
+      imageAtomicOriginal.includes("p.at >= original.expiresAtMs") &&
+      imageAtomicOriginal.includes("or (p.periodStart and original.publishedAtMs < p.periodStart) then return cjson.encode({ kind = \u0027stale\u0027 }) end end");
+    const recompressionReader =
+      recompressionVersion.includes("PHOTO_RECOMPRESSION_VERSION = \u0027native-recompression-v1\u0027") &&
+      state.includes(".refine(hasValidImageComparisonEvidence)") &&
+      permit.includes("!hasValidImageComparisonEvidence(binding)") &&
+      imageHistoryRevision.includes("hasValidImageComparisonEvidence(binding)") &&
+      imageEvidence.includes("if (value.compareMode !== \u0027IMAGE\u0027) return proof === undefined;") &&
+      imageEvidence.includes("if (equal) return proof === undefined;") &&
+      imageEvidence.includes("proof.version === PHOTO_RECOMPRESSION_VERSION") &&
+      imageEvidence.includes("original.length === 1") && imageEvidence.includes("value.mediaHashes.length === 1") &&
+      imageEvidence.includes("proof.originalHash === original[0]") &&
+      imageEvidence.includes("proof.currentHash === value.mediaHashes[0]") &&
+      imageSettings.includes("version: \u0027image-recompression-fixed-window-v1\u0027") &&
+      imageHistory.includes("const anchorIdentity = recompression") &&
+      imageHistory.includes("[recompression.originalHash]") &&
+      imageHistory.includes("recompression.currentHash !== mediaHashes[0]") &&
+      history.includes("imageOriginal?: MessageDuplicateOriginal;") &&
+      imageHistory.includes("!input.imageOriginal ||") &&
+      imageHistory.includes("input.imageOriginal.mediaHashes.length !== 1") &&
+      imageHistory.includes("input.imageOriginal.mediaHashes[0] !== recompression.originalHash") &&
+      imageHistory.includes("recompressionOriginal: input.imageOriginal") && imagePinBeforeMutations &&
+      imageHistory.includes("if (!hasValidImageComparisonEvidence(binding))") &&
+      squash(media).includes("const anchor = parsed.data.recompressionAnchor ?? parsed.data;") &&
+      /if\s*\(\s*imageOnly && verified\.hashes\.length === 1 && verified\.recompressionHash && !recompression\.anchor\s*\)\s*await this\.rememberRecompression\(/u.test(squash(media)) &&
+      imageOriginal.includes("const baseline = await this.loadSource(candidate.webhookEventId);") &&
+      imageOriginal.includes("!isExactImageContent(content) || content.media.length !== 1") &&
+      imageOriginal.includes("message.messageId !== candidate.messageId") &&
+      imageOriginal.includes("candidate.expiresAtMs <= input.job.eventTimestampMs") &&
+      imageOriginal.includes("result = await this.photos.verifyRecompression({") &&
+      imageOriginal.includes("expectedOriginalHash: candidate.canonicalHash") &&
+      imageOriginal.includes("expectedCurrentHash: input.verified.hashes[0]!") &&
+      imageOriginal.includes("const original = await this.history.observeWithOutcome(originalInput)") &&
+      imageOriginal.includes("await this.history.findImageOriginal({") &&
+      imageOriginal.includes("accepted?.mediaHashes.length !== 1") &&
+      imageOriginal.includes("accepted.mediaHashes[0] !== candidate.canonicalHash") &&
+      imageOriginal.includes("mediaHashes: [candidate.canonicalHash]") &&
+      imageOriginal.includes("original.outcome === \u0027STALE\u0027") &&
+      imageDownload.includes("const original = await this.downloader.download(params.originalUrl,") &&
+      imageDownload.includes("const current = await this.downloader.download(params.currentUrl,") &&
+      imageDownload.includes("result.proof.originalHash !== params.expectedOriginalHash") &&
+      imageDownload.includes("result.proof.currentHash !== params.expectedCurrentHash") &&
+      imageNativeCall.includes("await this.nativeDecoder.verifyRecompression(original, current, request)") &&
+      imageNative.includes("a.info.width !== b.info.width") && imageNative.includes("a.info.height !== b.info.height") &&
+      imageNative.includes("originalHash: canonicalHash(a.data, a.info.width, a.info.height)") &&
+      imageNative.includes("currentHash: canonicalHash(b.data, b.info.width, b.info.height)") &&
+      /residualWithinBounds\(\s*blurredA, blurredB/u.test(imageNative) &&
+      /residualWithinBounds\(\s*colorA, colorB/u.test(imageNative) &&
+      imageResidual.includes("Math.abs(difference) > limits.maximum") &&
+      imageResidual.includes("square > count * limits.tileRms ** 2") &&
+      imageIndexRead.includes("await this.redis.duplicateRecompressionIndex(") &&
+      imageIndexRemember.includes("await this.redis.duplicateRecompressionIndex(") &&
+      imageIndexLua.includes("redis.call(\u0027TIME\u0027)") &&
+      imageIndexLua.includes("for i=1,8 do") && /#decoded\s*>\s*8\b/u.test(imageIndexLua) &&
+      imageIndexLua.includes("math.min(expires,r.expiresAtMs)") &&
+      imageIndexLua.includes("r.expiresAtMs>p.atMs") &&
+      imageIndexLua.includes("for i=1,16,2 do") &&
+      imageIndexLua.includes("if distance>6 then return false end") &&
+      imageIndexLua.includes("p.op~=\u0027read\u0027 or withinHamming(r.recompressionHash)") &&
+      imageIndexLua.indexOf("withinHamming(r.recompressionHash)") < imageIndexLua.indexOf("for i=1,math.min(8,#all) do") &&
+      imageIndexLua.includes("redis.call(\u0027SET\u0027,KEYS[i],encoded[i],\u0027PXAT\u0027,deadlines[i])") &&
+      imageIndexCommand.includes("DUPLICATE_RECOMPRESSION_INDEX_SCRIPT,");
     const near = method(detector, "private buildNearDuplicateFingerprint(");
     const fingerprints = method(detector, "\n  buildFingerprints(");
     const detectorTextNormalization = topLevelFunction(detector, "function normalizeDuplicateText(");
@@ -839,7 +948,7 @@ maxim_topology_require_message_duplicate_delete_guard() {
       const evidence = phoneExtraction.indexOf("const phone = phoneEvidence(");
       return ranges >= 0 && exclusion > ranges && evidence > exclusion;
     };
-    const valid = start >= 0 && end > start &&
+    const valid = recompressionReader && start >= 0 && end > start &&
       guard.includes("class MessageDuplicateDeleteGuardService") &&
       check.includes("await this.history.stillMatches(") &&
       check.includes("message_duplicate_content_changed") &&

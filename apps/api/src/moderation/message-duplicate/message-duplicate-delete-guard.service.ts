@@ -38,6 +38,7 @@ import {
   messageDuplicateSanctionSettingsDigest,
   parseMessageDuplicateBinding,
   messageDuplicateEnforcementScope,
+  hasValidImageComparisonEvidence,
   type MessageDuplicateBinding,
 } from './message-duplicate-state';
 import { MessageDuplicateAuthorizationService } from './message-duplicate-authorization.service';
@@ -205,6 +206,7 @@ export class MessageDuplicateDeleteGuardService {
   ): Promise<void> {
     if (
       binding.version !== 3 ||
+      !hasValidImageComparisonEvidence(binding) ||
       !binding.lifecycleRevision ||
       !binding.original?.revision ||
       !binding.original.originalId ||

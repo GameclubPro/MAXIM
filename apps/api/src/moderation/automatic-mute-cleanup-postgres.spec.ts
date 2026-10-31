@@ -128,7 +128,8 @@ describeStores('native automatic mute history cleanup', () => {
     const [chat, other] = await h.seedCatalog(2, { maxMessageLengthEnabled: false });
     const at = Date.now() - 100;
     const inside = [];
-    for (let i = 0; i < 7; i++)
+    // FLAG: Six deletes fit the real actor burst; mirrored receipts still require two pages.
+    for (let i = 0; i < 5; i++)
       inside.push(
         await seedMessage(
           chat!,
@@ -166,7 +167,7 @@ describeStores('native automatic mute history cleanup', () => {
     expect(deletes.map((e) => e.messageId).sort()).toEqual(inside.sort());
     expect(
       await h.prisma.automaticMuteCleanup.findUnique({ where: { eventId: event.id } }),
-    ).toMatchObject({ status: 'SCANNED' });
+    ).toMatchObject({ status: 'SCANNED', scannedReceipts: 14, attemptCount: 2 });
     await scan();
     await h.drain();
     expect(h.effects.filter((e) => e.method === 'delete')).toEqual(deletes);
